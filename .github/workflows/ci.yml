@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -48,12 +48,19 @@ jobs:
           fi
       - run: npm ci
         working-directory: ${{ steps.source.outputs.path }}
-      - name: Install Chromium for DOM tests
-        if: runner.os != 'Windows'
+      - name: Install Chromium for macOS DOM tests
+        if: runner.os == 'macOS'
         working-directory: ${{ steps.source.outputs.path }}
         run: |
           npx playwright-core install --with-deps chromium
           node --input-type=module -e 'import { chromium } from "playwright-core"; import { appendFileSync } from "node:fs"; appendFileSync(process.env.GITHUB_ENV, `M365_AGENT_TEST_BROWSER=${chromium.executablePath()}\n`);'
+      - name: Install Chrome for Ubuntu DOM tests
+        if: runner.os == 'Linux'
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          npx playwright-core install --with-deps chrome
+          browser=$(command -v google-chrome)
+          echo "M365_AGENT_TEST_BROWSER=$browser" >> "$GITHUB_ENV"
       - name: Require Edge for Windows DOM tests
         if: runner.os == 'Windows'
         shell: pwsh
@@ -61,10 +68,12 @@ jobs:
           $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $edge) { throw "Microsoft Edge is required for CI browser tests" }
           "M365_AGENT_TEST_BROWSER=$edge" >> $env:GITHUB_ENV
+          $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+          "M365_AGENT_TEST_POWERSHELL=$powershell" >> $env:GITHUB_ENV
       - name: Verify browser launches
         working-directory: ${{ steps.source.outputs.path }}
         run: |
-          node --input-type=module -e 'import { chromium } from "playwright-core"; import { existsSync } from "node:fs"; const executablePath = process.env.M365_AGENT_TEST_BROWSER; if (!executablePath || !existsSync(executablePath)) throw new Error("CI browser is missing"); const browser = await chromium.launch({ executablePath, headless: true }); console.log(process.platform, process.arch, process.version, browser.version()); await browser.close();'
+          node --input-type=module -e 'import { chromium } from "playwright-core"; import { existsSync } from "node:fs"; const executablePath = process.env.M365_AGENT_TEST_BROWSER; if (!executablePath || !existsSync(executablePath)) throw new Error("CI browser is missing"); const browser = await chromium.launch({ executablePath, headless: true, chromiumSandbox: true }); console.log(process.platform, process.arch, process.version, browser.version()); await browser.close();'
       - run: npm run typecheck
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm run lint
