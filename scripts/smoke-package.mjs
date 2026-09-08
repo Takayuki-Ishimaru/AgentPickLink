@@ -88,6 +88,35 @@ if (process.platform === "win32") {
   );
   env.NODE_OPTIONS = "--import=" + pathToFileURL(preload).href;
 }
+if (process.platform === "win32") {
+  await Promise.all(
+    [process.env, env].flatMap((processEnv, envIndex) =>
+      [false, true].map(async (cim) => {
+        const started = Date.now();
+        const script =
+          "Write-Output 'APL_PS_STARTED';" +
+          (cim ? "Get-CimInstance Win32_LogicalDisk | Select-Object -ExpandProperty DriveType;" : "") +
+          "Write-Output 'APL_PS_DONE'";
+        const pending = promisify(execFile)(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", script],
+          { env: processEnv, cwd: temporary, windowsHide: true, timeout: 30000 }
+        );
+        pending.child.stdin?.end();
+        try {
+          const result = await pending;
+          process.stdout.write(
+            `PowerShell comparison env=${envIndex} cim=${cim}: ${Date.now() - started}ms ${JSON.stringify(result.stdout)}\n`
+          );
+        } catch (error) {
+          process.stdout.write(
+            `PowerShell comparison env=${envIndex} cim=${cim}: ${Date.now() - started}ms failed ${JSON.stringify(error.stdout)}\n`
+          );
+        }
+      })
+    )
+  );
+}
 let brokerStarted = false;
 let phase = "CLI version";
 const clients = [
