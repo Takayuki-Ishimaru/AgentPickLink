@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { initializeLocalState } from "../../src/config/init.js";
 import { defaultGlobalConfig, saveGlobalConfig } from "../../src/config/global-config.js";
 import { appPaths } from "../../src/config/paths.js";
 import { saveRegistry } from "../../src/config/registry.js";
+import { ensurePrivateDirectory } from "../../src/config/storage.js";
 import { deriveBindingFingerprint, type BrowserAgentDefinition } from "../../src/domain/agent.js";
 import { WorkspaceConfigSchema } from "../../src/domain/workspace.js";
 import { BROKER_PROTOCOL } from "../../src/ipc/protocol.js";
@@ -22,8 +23,7 @@ import type {
 const fakePreparer: LocalStatePreparer & { verifications: string[] } = {
   verifications: [],
   async prepareLocalState(profilePath: string) {
-    await mkdir(profilePath, { recursive: true, mode: 0o700 });
-    await chmod(profilePath, 0o700);
+    await ensurePrivateDirectory(profilePath);
   },
   async verifyLocalState(profilePath: string) {
     fakePreparer.verifications.push(profilePath);

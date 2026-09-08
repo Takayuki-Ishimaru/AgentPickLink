@@ -63,6 +63,7 @@ const runCli = (...args) =>
     timeout: 15_000
   });
 let brokerStarted = false;
+let phase = "CLI version";
 const clients = [
   new Client({ name: "release-package-smoke-a", version: manifest.version }),
   new Client({ name: "release-package-smoke-b", version: manifest.version })
@@ -91,6 +92,7 @@ const closeClient = async (client) => {
 try {
   const { stdout } = await runCli("--version");
   assert.equal(stdout.trim(), manifest.version);
+  phase = "MCP initialization";
   await Promise.all(clients.map((client, index) => client.connect(transports[index], { timeout: 15_000 })));
   for (const client of clients) {
     assert.match(client.getInstructions() ?? "", /Japanese\/CJK/);
@@ -108,20 +110,33 @@ try {
   assert.equal(clients[1].getServerVersion()?.version, manifest.version);
   await assert.rejects(access(appData), { code: "ENOENT" });
   brokerStarted = true;
+  phase = "concurrent cold broker startup";
+  const startedAt = Date.now();
   const listedResults = await Promise.all(
-    clients.map((client) => client.callTool({ name: "m365_agent_list", arguments: {} }, { timeout: 30_000 }))
+    // Windows startup includes multiple real PowerShell ACL operations before the broker handshake.
+    clients.map((client) =>
+      client.callTool(
+        { name: "m365_agent_list", arguments: {} },
+        { timeout: process.platform === "win32" ? 120_000 : 30_000 }
+      )
+    )
   );
+  process.stdout.write(`Concurrent cold broker startup: ${Date.now() - startedAt}ms\n`);
   for (const listed of listedResults) {
     assert.notEqual(listed.isError, true, JSON.stringify(listed));
     assert.deepEqual(listed.structuredContent.agents, []);
     assert.equal(listed.structuredContent.workspace.configured, false);
   }
+  phase = "broker health";
   const health = JSON.parse((await runCli("--json", "broker", "status")).stdout);
   assert.equal(health.live, true);
   assert.equal(health.browserStarted, false);
   assert.equal(typeof health.instanceId, "string");
   await Promise.all(clients.map(closeClient));
   assert.deepEqual(stderr, ["", ""], "Packaged MCP startup must not emit errors");
+} catch (error) {
+  process.stderr.write(`Package smoke failed during ${phase}: ${JSON.stringify(stderr)}\n`);
+  throw error;
 } finally {
   await Promise.all(clients.map(closeClient));
   if (brokerStarted) {
