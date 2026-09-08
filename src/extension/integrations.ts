@@ -12,6 +12,10 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { getStaticTOMLValue, parseTOML } from "toml-eslint-parser";
+import lockfile from "proper-lockfile";
 
 /** The server name used in every integration file. */
 export const MCP_SERVER_NAME = "m365-agents";
@@ -66,22 +70,6 @@ function tomlArray(values: readonly string[]): string {
   return `[${values.map(tomlString).join(", ")}]`;
 }
 
-/** Splits a TOML table header (`[a.b."c"]`) into its key path, or `undefined` when not a header. */
-function tableHeaderPath(line: string): string[] | undefined {
-  const match = /^\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$/.exec(line.replace(/\r?\n$/, ""));
-  if (!match || match[1].startsWith("[")) return undefined;
-  const segments: string[] = [];
-  const pattern = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/g;
-  let consumed = 0;
-  let token: RegExpExecArray | null;
-  while ((token = pattern.exec(match[1])) !== null) {
-    segments.push(token[1] !== undefined ? token[1].replace(/\\(.)/g, "$1") : (token[2] ?? token[3]));
-    consumed = pattern.lastIndex;
-    if (token[4] !== ".") break;
-  }
-  return consumed === match[1].length && segments.length > 0 ? segments : undefined;
-}
-
 function renderCodexBlock(block: CodexBlock, eol: string): string {
   const lines = [
     `[mcp_servers.${MCP_SERVER_NAME}]`,
@@ -93,7 +81,8 @@ function renderCodexBlock(block: CodexBlock, eol: string): string {
   const entries = Object.entries(block.env ?? {});
   if (entries.length > 0) {
     lines.push("", `[mcp_servers.${MCP_SERVER_NAME}.env]`);
-    for (const [key, value] of entries) lines.push(`${key} = ${tomlString(value)}`);
+    for (const [key, value] of entries)
+      lines.push(`${/^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key)} = ${tomlString(value)}`);
   }
   return `${lines.join(eol)}${eol}`;
 }
@@ -104,86 +93,74 @@ function renderCodexBlock(block: CodexBlock, eol: string): string {
  * formatting and line endings.
  */
 export function mergeCodexConfigToml(existing: string, block: CodexBlock): string {
+  const ast = parseTOML(existing);
+  const before = getStaticTOMLValue(ast);
   const eol = /\r\n/.test(existing) ? "\r\n" : "\n";
   const rendered = renderCodexBlock(block, eol);
-  if (existing.trim().length === 0) return rendered;
-
-  // Keep terminators attached so the untouched parts stay byte-identical.
-  const lines = existing.split(/(?<=\n)/);
-  const kept: string[] = [];
-  let insertAt: number | undefined;
-  let dropping = false;
-  for (const line of lines) {
-    const header = tableHeaderPath(line);
-    if (header) {
-      dropping = header[0] === "mcp_servers" && header[1] === MCP_SERVER_NAME;
-      if (dropping && insertAt === undefined) insertAt = kept.length;
+  const ranges: [number, number][] = [];
+  let previousWasTarget = false;
+  for (const node of ast.body[0].body) {
+    const target =
+      node.type === "TOMLTable" &&
+      node.resolvedKey[0] === "mcp_servers" &&
+      node.resolvedKey[1] === MCP_SERVER_NAME;
+    if (target) {
+      if (previousWasTarget) ranges[ranges.length - 1][1] = node.range[1];
+      else ranges.push([...node.range]);
     }
-    if (!dropping) kept.push(line);
+    previousWasTarget = target;
   }
-
-  if (insertAt === undefined) {
-    const head = existing.endsWith(eol) ? existing : `${existing}${eol}`;
-    return `${head}${eol}${rendered}`;
+  let merged = existing;
+  if (ranges.length === 0) {
+    merged += `${existing && !existing.endsWith("\n") ? eol : ""}${existing ? eol : ""}${rendered}`;
+  } else {
+    // AST ranges cannot mistake table-looking text in multiline strings for a header.
+    // Replace backwards so offsets remain valid. Unrelated tables remain byte-identical.
+    for (let i = ranges.length - 1; i >= 0; i--) {
+      const [start, end] = ranges[i];
+      merged = merged.slice(0, start) + (i === 0 ? rendered.trimEnd() : "") + merged.slice(end);
+    }
   }
-  // Trim the blank lines that belonged to the removed table so repeated writes are stable.
-  let end = insertAt;
-  while (end > 0 && kept[end - 1].trim() === "") end -= 1;
-  const before = kept.slice(0, end).join("");
-  const after = kept.slice(insertAt).join("");
-  const separator = before.length === 0 ? "" : before.endsWith(eol) ? eol : `${eol}${eol}`;
-  return `${before}${separator}${rendered}${after.length === 0 ? "" : eol}${after}`;
+  const after = getStaticTOMLValue(parseTOML(merged));
+  if (!isDeepStrictEqual(withoutCodexServer(before), withoutCodexServer(after)))
+    throw new Error("Codex configuration update would change unrelated settings; file was not written.");
+  const expected = getStaticTOMLValue(parseTOML(rendered));
+  if (!isDeepStrictEqual(codexServer(after), codexServer(expected)))
+    throw new Error("Codex configuration uses an unsupported server shape; file was not written.");
+  return merged;
 }
 
-/** Reverses `tomlString()` for the narrow subset this file ever writes (backslash/quote/n/r/t
- * escapes only). Returns `undefined` for anything that is not a single basic string literal. */
-function parseTomlStringLiteral(raw: string): string | undefined {
-  const match = /^"((?:[^"\\]|\\.)*)"$/.exec(raw.trim());
-  if (!match) return undefined;
-  const escapes: Record<string, string> = { n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\" };
-  return match[1].replace(/\\(.)/g, (_, char: string) => escapes[char] ?? char);
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-/** Reverses `tomlArray()` for an array of basic string literals only (which is all this file ever
- * writes for `args`). Returns `undefined` when the raw text is not `[...]`-shaped. */
-function parseTomlStringArray(raw: string): string[] | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return undefined;
-  const inner = trimmed.slice(1, -1);
-  if (inner.trim().length === 0) return [];
-  const values: string[] = [];
-  const pattern = /"(?:[^"\\]|\\.)*"/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(inner)) !== null) values.push(parseTomlStringLiteral(match[0]) ?? "");
-  return values;
+function codexServer(value: unknown): Record<string, unknown> | undefined {
+  return objectValue(objectValue(objectValue(value)?.mcp_servers)?.[MCP_SERVER_NAME]);
 }
 
-/**
- * Reads `command`/`args` out of the `[mcp_servers.m365-agents]` table only (never its `.env`
- * sub-table, which cannot hold either field this file writes). Returns `undefined` when the table
- * itself is absent -- as opposed to present but missing a field, which returns `{}`-shaped values
- * (both fields `undefined`) so a caller can still tell "entry exists but looks nothing like ours"
- * from "entry does not exist at all".
- */
+function withoutCodexServer(value: unknown): unknown {
+  const copy = structuredClone(value);
+  const root = objectValue(copy);
+  const servers = objectValue(root?.mcp_servers);
+  if (root && servers) {
+    delete servers[MCP_SERVER_NAME];
+    if (Object.keys(servers).length === 0) delete root.mcp_servers;
+  }
+  return copy;
+}
+
 function parseCodexEntry(existing: string): { command?: string; args?: string[] } | undefined {
-  let inTargetTable = false;
-  let found = false;
-  let command: string | undefined;
-  let args: string[] | undefined;
-  for (const line of existing.split(/\r?\n/)) {
-    const header = tableHeaderPath(line);
-    if (header) {
-      inTargetTable = header.length === 2 && header[0] === "mcp_servers" && header[1] === MCP_SERVER_NAME;
-      if (inTargetTable) found = true;
-      continue;
-    }
-    if (!inTargetTable) continue;
-    const commandMatch = /^\s*command\s*=\s*(.+?)\s*(?:#.*)?$/.exec(line);
-    if (commandMatch) command = parseTomlStringLiteral(commandMatch[1]);
-    const argsMatch = /^\s*args\s*=\s*(.+?)\s*(?:#.*)?$/.exec(line);
-    if (argsMatch) args = parseTomlStringArray(argsMatch[1]);
-  }
-  return found ? { command, args } : undefined;
+  const entry = codexServer(getStaticTOMLValue(parseTOML(existing)));
+  if (!entry) return undefined;
+  return {
+    command: typeof entry.command === "string" ? entry.command : undefined,
+    args:
+      Array.isArray(entry.args) && entry.args.every((arg) => typeof arg === "string")
+        ? (entry.args as string[])
+        : undefined
+  };
 }
 
 /**
@@ -300,9 +277,44 @@ async function readIfPresent(file: string): Promise<string | undefined> {
   }
 }
 
-async function writeFile(file: string, content: string): Promise<void> {
+/** Same-directory replacement, with an exclusive, durable backup of every changed original.
+ * Serialize our writers and reject edits made since the merge input was read. */
+async function writeFile(file: string, content: string, expected: string | undefined): Promise<void> {
+  if (content === expected) return;
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, content, "utf8");
+  const release = await lockfile.lock(file, { realpath: false, retries: 0 });
+  const temporary = `${file}.agentpicklink-${randomUUID()}.tmp`;
+  try {
+    const info = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (info && (!info.isFile() || info.isSymbolicLink()))
+      throw new Error("Integration configuration must be a regular file.");
+    if ((await readIfPresent(file)) !== expected)
+      throw new Error("Integration configuration changed during update; please retry.");
+    const writeSynced = async (target: string, text: string, mode: number) => {
+      const handle = await fs.open(target, "wx", mode);
+      try {
+        await handle.writeFile(text, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    };
+    await writeSynced(temporary, content, info ? info.mode & 0o777 : 0o600);
+    if (expected !== undefined)
+      await writeSynced(`${file}.agentpicklink-${randomUUID()}.bak`, expected, 0o600);
+    if ((await readIfPresent(file)) !== expected)
+      throw new Error("Integration configuration changed during update; please retry.");
+    await fs.rename(temporary, file);
+  } finally {
+    try {
+      await fs.rm(temporary, { force: true });
+    } finally {
+      await release();
+    }
+  }
 }
 
 /**
@@ -316,7 +328,8 @@ export async function applyIntegrations(
   const summary: IntegrationSummary = { written: [], skipped: [] };
   const run = async (file: string, produce: (existing: string | undefined) => string): Promise<void> => {
     try {
-      await writeFile(file, produce(await readIfPresent(file)));
+      const existing = await readIfPresent(file);
+      await writeFile(file, produce(existing), existing);
       summary.written.push(file);
     } catch (error) {
       summary.skipped.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -377,7 +390,7 @@ export async function refreshStaleIntegrations(
       const existing = await readIfPresent(file);
       if (existing === undefined) return;
       if (!integrationNeedsRefresh(existing, context.definition, kind)) return;
-      await writeFile(file, produce(existing));
+      await writeFile(file, produce(existing), existing);
       refreshed.push(file);
     } catch {
       // Never fail activation over a stale-integration refresh; a real problem with the file

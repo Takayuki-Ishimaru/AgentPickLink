@@ -10,6 +10,7 @@ import {
   type AgentResponse,
   type BrowserInvokeRequest,
   type BrowserPageConversation,
+  type AttachmentCandidate,
   type PageLike
 } from "./types.js";
 import type { ChatUiAdapter } from "./ui-adapter.js";
@@ -21,8 +22,11 @@ export interface ConversationDriverOptions {
   ackTimeoutMs?: number;
   /** How long to wait for the agent's first response node after acknowledgement. */
   responseStartTimeoutMs?: number;
-  /** Grace period after completion before one cheap attachment re-scan. */
+  /** Quiet window for the attachment candidate set; zero disables settling. */
   attachmentSettleMs?: number;
+  /** Hard cap on attachment observation after text completion. */
+  attachmentMaxWaitMs?: number;
+  attachmentPollIntervalMs?: number;
 }
 
 export class ConversationDriver {
@@ -30,6 +34,8 @@ export class ConversationDriver {
   private readonly ackTimeoutMs: number;
   private readonly responseStartTimeoutMs: number;
   private readonly attachmentSettleMs: number;
+  private readonly attachmentMaxWaitMs: number;
+  private readonly attachmentPollIntervalMs: number;
   constructor(
     private readonly navigator: AgentNavigator,
     private readonly attachmentSaver = new AttachmentSaver(),
@@ -39,6 +45,8 @@ export class ConversationDriver {
     this.ackTimeoutMs = options.ackTimeoutMs ?? 30_000;
     this.responseStartTimeoutMs = options.responseStartTimeoutMs ?? 90_000;
     this.attachmentSettleMs = options.attachmentSettleMs ?? 2_000;
+    this.attachmentMaxWaitMs = options.attachmentMaxWaitMs ?? 6_000;
+    this.attachmentPollIntervalMs = Math.max(1, options.attachmentPollIntervalMs ?? 250);
   }
   async invoke(
     page: PageLike,
@@ -240,19 +248,44 @@ export class ConversationDriver {
       await assertPostSubmitContext();
       tracker.transition("EXTRACTING");
       report("extracting", "Extracting the response");
-      let extracted = await adapter.extractLatestResponse(page, responseMarker);
-      // Microsoft 365 renders an Entity Card for a generated file a moment after the response text
-      // settles. One cheap re-scan, only when the first pass found no candidate at all.
-      if (!extracted.attachmentCandidates?.length && this.attachmentSettleMs > 0) {
-        await delay(this.attachmentSettleMs, page);
+      const extracted = await adapter.extractLatestResponse(page, responseMarker);
+      const candidates = new Map<string, AttachmentCandidate>();
+      const collect = (items: AttachmentCandidate[]) => {
+        // Keep the latest locator indices, while retaining links seen in earlier passes.
+        for (const item of items) candidates.set(attachmentKey(item), item);
+        return JSON.stringify([...new Set(items.map(attachmentKey))].sort());
+      };
+      let observedSet = collect(extracted.attachmentCandidates ?? []);
+      let stableSince = Date.now();
+      const settleDeadline = Math.min(deadline, stableSince + this.attachmentMaxWaitMs);
+      while (this.attachmentSettleMs > 0 && Date.now() < settleDeadline && !request.signal?.aborted) {
+        await delay(Math.min(this.attachmentPollIntervalMs, settleDeadline - Date.now()), page);
+        if (request.signal?.aborted) break;
+        // A delayed scan must obey the same context checks as the first extraction.
+        await assertPostSubmitContext();
         try {
           const late = await adapter.extractLatestResponse(page, responseMarker);
-          if (late.attachmentCandidates?.length) extracted = late;
+          const nextSet = collect(late.attachmentCandidates ?? []);
+          if (nextSet !== observedSet) {
+            observedSet = nextSet;
+            stableSince = Date.now();
+          }
+          if (Date.now() - stableSince >= this.attachmentSettleMs) break;
         } catch {
-          /* the first extraction stands */
+          // An unreadable scan is not evidence of stability; retain known candidates.
+          stableSince = Date.now();
         }
       }
-      const { attachmentCandidates, ...response } = extracted;
+      if (request.signal?.aborted)
+        throw new BrowserTransportError(
+          "RESPONSE_TIMEOUT",
+          "The request was cancelled while collecting attachments.",
+          undefined,
+          { submissionState: "sent", partialResponse: extracted }
+        );
+      await assertPostSubmitContext();
+      const { attachmentCandidates: _initialCandidates, ...response } = extracted;
+      const attachmentCandidates = [...candidates.values()];
       report("saving-attachments", "Saving returned files");
       const attachments = await this.attachmentSaver.save(page, attachmentCandidates ?? [], {
         workspaceKey: request.workspaceKey ?? "workspace",
@@ -320,4 +353,14 @@ async function responseLength(page: PageLike): Promise<number | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** URLs identify separate same-name files. UI-only controls use their structural location too. */
+function attachmentKey(candidate: AttachmentCandidate): string {
+  if (candidate.url) return `url:${candidate.url}`;
+  return JSON.stringify([
+    candidate.fileCardIndex !== undefined ? "card" : "control",
+    candidate.fileCardIndex ?? candidate.downloadControlIndex ?? candidate.index,
+    candidate.name
+  ]);
 }

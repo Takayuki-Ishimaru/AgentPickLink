@@ -1,7 +1,9 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
+import { getStaticTOMLValue, parseTOML } from "toml-eslint-parser";
+import { mkdtemp, mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyIntegrations,
   integrationNeedsRefresh,
@@ -269,5 +271,132 @@ describe("refreshStaleIntegrations", () => {
     );
     expect(summary.refreshed).toEqual([]);
     expect(await readFile(target, "utf8")).toBe(current);
+  });
+});
+
+describe("Codex configuration preservation regressions", () => {
+  it.each(["\n", "\r\n"])("preserves array tables, quoted keys and multiline strings (%j)", (eol) => {
+    const unrelated = [
+      "[[skills.config]]",
+      'path = "/example/SKILL.md"',
+      "enabled = false",
+      'description = """',
+      "[mcp_servers.m365-agents]",
+      'command = "this is string content"',
+      '"""',
+      "[[skills.config]]",
+      "path = '/second/SKILL.md'",
+      "note = '''",
+      "[mcp_servers.m365-agents.env]",
+      "'''",
+      '[mcp_servers."other]server"]',
+      'command = "other"',
+      ""
+    ].join(eol);
+    const existing = [
+      "# keep comment",
+      '[mcp_servers."m365-\\u0061gents"]',
+      'command = "old"',
+      "args = []",
+      "",
+      unrelated
+    ].join(eol);
+    const merged = mergeCodexConfigToml(existing, { ...block, env: { "key.with.dot": "value" } });
+    expect(merged.endsWith(unrelated)).toBe(true);
+    expect(getStaticTOMLValue(parseTOML(merged))).toMatchObject({
+      skills: { config: [{ path: "/example/SKILL.md", enabled: false }, { path: "/second/SKILL.md" }] },
+      mcp_servers: { "m365-agents": { command: block.command, env: { "key.with.dot": "value" } } }
+    });
+    expect(mergeCodexConfigToml(merged, { ...block, env: { "key.with.dot": "value" } })).toBe(merged);
+  });
+
+  it("preserves an interleaved unrelated table when replacing target descendants", () => {
+    const existing =
+      '[mcp_servers.m365-agents]\ncommand = "old"\n\n[[skills.config]]\npath = "keep"\n\n[mcp_servers.m365-agents.env]\nOLD = "old"\n';
+    const merged = mergeCodexConfigToml(existing, block);
+    expect(merged).toContain('[[skills.config]]\npath = "keep"');
+    expect(merged).not.toContain("OLD =");
+    expect(mergeCodexConfigToml(merged, block)).toBe(merged);
+  });
+
+  it.each(["[broken", 'mcp_servers = { m365-agents = { command = "old" } }'])(
+    "refuses malformed or unsupported inline configuration: %s",
+    (existing) => {
+      expect(() => mergeCodexConfigToml(existing, block)).toThrow();
+    }
+  );
+
+  it("parses quoted keys and multiline arguments when checking refresh", () => {
+    const existing = `[mcp_servers.'m365-agents']\n'command' = "${block.command}"\nargs = [\n"${block.args[0]}", # comment\n"${block.args[1]}"\n]\n[[skills.config]]\ncommand = "unrelated"\n`;
+    expect(integrationNeedsRefresh(existing, block, "codex")).toBe(false);
+  });
+
+  it.each(["save", "refresh"])("backs up original bytes before %s", async (operation) => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-backup-"));
+    const directory = path.join(home, ".codex");
+    const file = path.join(directory, "config.toml");
+    await mkdir(directory);
+    const original = '[mcp_servers.m365-agents]\r\ncommand = "old"\r\n[[skills.config]]\r\npath = "keep"\r\n';
+    await writeFile(file, original);
+    const context = { definition: block, homeDirectory: home };
+    const settings = { codex: true, claudeCode: false, vscodeMcpJson: false };
+    if (operation === "save") expect((await applyIntegrations(context, settings)).skipped).toEqual([]);
+    else expect((await refreshStaleIntegrations(context, settings)).refreshed).toEqual([file]);
+    const files = await readdir(directory);
+    const backups = files.filter((name) => name.endsWith(".bak"));
+    expect(backups).toHaveLength(1);
+    expect(await readFile(path.join(directory, backups[0]), "utf8")).toBe(original);
+    expect(await readFile(file, "utf8")).toContain('path = "keep"');
+    expect(files.some((name) => name.endsWith(".tmp") || name.endsWith(".lock"))).toBe(false);
+  });
+
+  it("does not replace the configuration if the backup cannot be written", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-backup-failure-"));
+    const directory = path.join(home, ".codex");
+    const file = path.join(directory, "config.toml");
+    await mkdir(directory);
+    const original = 'model = "keep"\n';
+    await writeFile(file, original);
+    const originalOpen = fs.open;
+    const open = vi
+      .spyOn(fs, "open")
+      .mockImplementationOnce(originalOpen)
+      .mockRejectedValueOnce(new Error("backup failed"));
+    try {
+      const result = await applyIntegrations(
+        { definition: block, homeDirectory: home },
+        { codex: true, claudeCode: false, vscodeMcpJson: false }
+      );
+      expect(result.written).toEqual([]);
+      expect(result.skipped[0]).toContain("backup failed");
+    } finally {
+      open.mockRestore();
+    }
+    expect(await readFile(file, "utf8")).toBe(original);
+    expect(await readdir(directory)).toEqual(["config.toml"]);
+  });
+
+  it("keeps the original and backup if atomic replacement fails", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-failed-write-"));
+    const directory = path.join(home, ".codex");
+    const file = path.join(directory, "config.toml");
+    await mkdir(directory);
+    const original = 'model = "keep"\n';
+    await writeFile(file, original);
+    const rename = vi.spyOn(fs, "rename").mockRejectedValueOnce(new Error("rename failed"));
+    try {
+      const result = await applyIntegrations(
+        { definition: block, homeDirectory: home },
+        { codex: true, claudeCode: false, vscodeMcpJson: false }
+      );
+      expect(result.written).toEqual([]);
+      expect(result.skipped[0]).toContain("rename failed");
+    } finally {
+      rename.mockRestore();
+    }
+    expect(await readFile(file, "utf8")).toBe(original);
+    const files = await readdir(directory);
+    expect(files.filter((name) => name.endsWith(".bak"))).toHaveLength(1);
+    expect(files.some((name) => name.endsWith(".tmp") || name.endsWith(".lock"))).toBe(false);
   });
 });

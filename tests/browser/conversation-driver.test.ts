@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { ConversationDriver } from "../../src/transports/browser/conversation-driver.js";
@@ -92,7 +92,7 @@ describe("conversation submission guard", () => {
       submissionState: "sent",
       text: "answer"
     });
-    expect(assertions).toBe(7);
+    expect(assertions).toBe(8);
     expect(submissions).toBe(1);
     expect(extractions).toBe(1);
   });
@@ -670,68 +670,114 @@ describe("conversation timing and completion metadata", () => {
     });
   });
 
-  it("re-scans once for a late attachment card, and only when the first pass found none", async () => {
+  it.each([0, 1])("collects staged attachments starting with %i candidates", async (initialCount) => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const items = [0, 1, 2, 3].map((index) => ({
+      index,
+      name: index === 3 ? "bundle.zip" : "report.pdf",
+      url: `https://m365.example.test/files/${index}`
+    }));
+    let extractions = 0;
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
-      waitForTimeout: async (ms) => {
-        await new Promise((resolve) => setTimeout(resolve, ms));
-      },
       on: () => undefined,
-      off: () => undefined
+      off: () => undefined,
+      waitForTimeout: async (ms) => {
+        now += ms;
+      }
     };
-    let extractions = 0;
     const adapter = fixtureAdapter({
       extractLatestResponse: async () => ({
         text: "answer",
         citations: [],
         actionRequired: false,
         truncated: false,
-        // The Entity Card only exists on the second look, as Microsoft 365 renders it late.
-        attachmentCandidates: ++extractions > 1 ? [{ index: 0, name: "report.docx" }] : []
+        attachmentCandidates:
+          ++extractions === 1
+            ? items.slice(0, initialCount)
+            : extractions === 2
+              ? items.slice(0, 3)
+              : [...items].reverse()
       })
     });
-    const saved: unknown[] = [];
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
     const driver = new ConversationDriver(
       new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
-      { save: async (_page: unknown, candidates: unknown[]) => saved.push(...candidates) } as never,
-      { attachmentSettleMs: 5 }
+      { save } as never,
+      { attachmentSettleMs: 100, attachmentPollIntervalMs: 50, attachmentMaxWaitMs: 500 }
     );
-
-    await driver.invoke(page, conversation(), agent, adapter, { message: "hello" });
-
-    expect(extractions).toBe(2);
-    expect(saved).toEqual([{ index: 0, name: "report.docx" }]);
+    try {
+      await driver.invoke(page, conversation(), agent, adapter, { message: "hello" });
+      expect(extractions).toBe(5);
+      expect(save.mock.calls[0]?.[1]).toEqual(items);
+      expect(now).toBe(1_200);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
-  it("does not re-scan when the first extraction already found an attachment", async () => {
+  it("stops at the hard observation deadline even when candidates keep arriving", async () => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let extractions = 0;
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
-      waitForTimeout: async () => undefined,
       on: () => undefined,
-      off: () => undefined
-    };
-    let extractions = 0;
-    const adapter = fixtureAdapter({
-      extractLatestResponse: async () => {
-        extractions++;
-        return {
-          text: "answer",
-          citations: [],
-          actionRequired: false,
-          truncated: false,
-          attachmentCandidates: [{ index: 0, name: "report.docx" }]
-        };
+      off: () => undefined,
+      waitForTimeout: async (ms) => {
+        now += ms;
       }
+    };
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => ({
+        text: "answer",
+        citations: [],
+        actionRequired: false,
+        truncated: false,
+        attachmentCandidates: [
+          { index: 0, name: "report.pdf", url: `https://m365.example.test/${++extractions}` }
+        ]
+      })
     });
     const driver = new ConversationDriver(
       new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
-      { save: async () => [] } as never,
-      { attachmentSettleMs: 5_000 }
+      { save } as never,
+      { attachmentSettleMs: 100, attachmentPollIntervalMs: 50, attachmentMaxWaitMs: 200 }
     );
+    try {
+      await driver.invoke(page, conversation(), agent, adapter, { message: "hello" });
+      expect(now).toBe(1_200);
+      expect(save.mock.calls[0]?.[1]).toHaveLength(5);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
-    await driver.invoke(page, conversation(), agent, adapter, { message: "hello" });
-
-    expect(extractions).toBe(1);
+  it("cancels observation before saving files", async () => {
+    const controller = new AbortController();
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      on: () => undefined,
+      off: () => undefined,
+      waitForTimeout: async () => {
+        controller.abort();
+      }
+    };
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save } as never,
+      { attachmentSettleMs: 100 }
+    );
+    await expect(
+      driver.invoke(page, conversation(), agent, fixtureAdapter({}), {
+        message: "hello",
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+    expect(save).not.toHaveBeenCalled();
   });
 });
 

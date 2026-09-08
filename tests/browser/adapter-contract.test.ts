@@ -586,7 +586,7 @@ function pageFixture(
         }
       };
     },
-    evaluate: async (fn: unknown) => {
+    evaluate: async (fn: unknown, arg?: unknown) => {
       const source = String(fn);
       if (source.includes("hasMainRegion"))
         return { hasMainRegion: true, hasSendButton: true, hasConversationRegion: true };
@@ -604,7 +604,8 @@ function pageFixture(
           actionRequired: false
         };
       if (source.includes("nodes.at")) return latestUser;
-      if (source.includes("const stop")) return { text: "Answer", idle: true, id: "response-1" };
+      if (arg && typeof arg === "object" && "marker" in arg && "selector" in arg)
+        return { text: "Answer", streaming: false, id: "response-1" };
       return { id: conversationId, userCount, assistantCount };
     },
     waitForTimeout: async (ms) => {

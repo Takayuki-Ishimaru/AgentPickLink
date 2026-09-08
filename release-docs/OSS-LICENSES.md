@@ -32,6 +32,7 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 | [playwright-core](https://www.npmjs.com/package/playwright-core/v/1.62.1)                          | 1.62.1  | Apache-2.0 | Runtime     | Direct     |
 | [prettier](https://www.npmjs.com/package/prettier/v/3.9.6)                                         | 3.9.6   | MIT        | Development | Direct     |
 | [proper-lockfile](https://www.npmjs.com/package/proper-lockfile/v/4.1.2)                           | 4.1.2   | MIT        | Runtime     | Direct     |
+| [toml-eslint-parser](https://www.npmjs.com/package/toml-eslint-parser/v/0.10.1)                    | 0.10.1  | MIT        | Runtime     | Direct     |
 | [typescript](https://www.npmjs.com/package/typescript/v/5.9.3)                                     | 5.9.3   | Apache-2.0 | Development | Direct     |
 | [typescript-eslint](https://www.npmjs.com/package/typescript-eslint/v/8.69.0)                      | 8.69.0  | MIT        | Development | Direct     |
 | [vitest](https://www.npmjs.com/package/vitest/v/3.2.7)                                             | 3.2.7   | MIT        | Development | Direct     |
@@ -40,11 +41,12 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 
 ## 実行時の間接依存 / Transitive runtime dependencies
 
-| Package                                                           | Version | License | Scope   | Dependency |
-| ----------------------------------------------------------------- | ------- | ------- | ------- | ---------- |
-| [graceful-fs](https://www.npmjs.com/package/graceful-fs/v/4.2.11) | 4.2.11  | ISC     | Runtime | Transitive |
-| [retry](https://www.npmjs.com/package/retry/v/0.12.0)             | 0.12.0  | MIT     | Runtime | Transitive |
-| [signal-exit](https://www.npmjs.com/package/signal-exit/v/3.0.7)  | 3.0.7   | ISC     | Runtime | Transitive |
+| Package                                                                          | Version | License    | Scope   | Dependency |
+| -------------------------------------------------------------------------------- | ------- | ---------- | ------- | ---------- |
+| [graceful-fs](https://www.npmjs.com/package/graceful-fs/v/4.2.11)                | 4.2.11  | ISC        | Runtime | Transitive |
+| [retry](https://www.npmjs.com/package/retry/v/0.12.0)                            | 0.12.0  | MIT        | Runtime | Transitive |
+| [signal-exit](https://www.npmjs.com/package/signal-exit/v/3.0.7)                 | 3.0.7   | ISC        | Runtime | Transitive |
+| [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/3.4.3) | 3.4.3   | Apache-2.0 | Runtime | Transitive |
 
 ## Playwright 同梱 OSS / OSS bundled inside Playwright
 
