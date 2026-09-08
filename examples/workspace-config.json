@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "alias": "requirements",
+      "bindingFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    { "alias": "architecture" }
+  ]
+}

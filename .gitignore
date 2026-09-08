@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-vsix/
+coverage/
+*.vsix
+*.log
+.DS_Store
+.m365-agents.local.json
+APL_downloads/

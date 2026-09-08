@@ -1,0 +1,191 @@
+{
+  "name": "agent-pick-link",
+  "displayName": "AgentPickLink for M365",
+  "publisher": "agentpicklink",
+  "version": "0.1.0",
+  "description": "Policy-enforced local MCP bridge for consulting approved Microsoft 365 agents from VS Code",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#191827",
+    "theme": "dark"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/extension/extension.cjs",
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "bin": {
+    "m365-agent": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "media",
+    "node_modules",
+    "schemas",
+    "examples",
+    "release-docs",
+    "README.md",
+    "README.en.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22",
+    "vscode": "^1.101.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode the panel only shows status. Signing in, discovering agents, saving, and offering the MCP server require a trusted workspace."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentpicklink",
+          "title": "AgentPickLink for M365",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentpicklink": [
+        {
+          "type": "webview",
+          "id": "agentpicklink.setup",
+          "name": "Microsoft 365 Agents"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentpicklink.setup",
+        "category": "AgentPickLink",
+        "title": "環境をセットアップする / Set up environment"
+      },
+      {
+        "command": "agentpicklink.refresh",
+        "category": "AgentPickLink",
+        "title": "接続して更新 / Connect and refresh"
+      },
+      {
+        "command": "agentpicklink.signOut",
+        "category": "AgentPickLink",
+        "title": "サインアウト / Sign out"
+      },
+      {
+        "command": "agentpicklink.cancelSignIn",
+        "category": "AgentPickLink",
+        "title": "サインインを中止 / Cancel sign-in"
+      },
+      {
+        "command": "agentpicklink.revokeWorkspace",
+        "category": "AgentPickLink",
+        "title": "このワークスペースの承認を取り消す / Revoke this workspace's approval"
+      },
+      {
+        "command": "agentpicklink.openLogs",
+        "category": "AgentPickLink",
+        "title": "ログを開く / Open logs"
+      },
+      {
+        "command": "agentpicklink.copyDiagnostics",
+        "category": "AgentPickLink",
+        "title": "診断をコピー / Copy diagnostics"
+      },
+      {
+        "command": "agentpicklink.openPanel",
+        "category": "AgentPickLink",
+        "title": "パネルを開く / Open panel"
+      }
+    ],
+    "configuration": {
+      "title": "AgentPickLink for M365",
+      "properties": {
+        "agentpicklink.nodePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a Node.js 22+ executable used for the broker and the MCP server. Leave empty to use `node` from PATH, a well-known installation, or VS Code's own Node runtime."
+        },
+        "agentpicklink.integrations.codex": {
+          "type": "boolean",
+          "default": false,
+          "description": "On Save, merge the m365-agents MCP server into ~/.codex/config.toml."
+        },
+        "agentpicklink.integrations.claudeCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "On Save, merge the m365-agents MCP server into <workspace>/.mcp.json for Claude Code."
+        },
+        "agentpicklink.integrations.vscodeMcpJson": {
+          "type": "boolean",
+          "default": false,
+          "description": "On Save, merge the m365-agents MCP server into <workspace>/.vscode/mcp.json."
+        },
+        "agentpicklink.autoStartBroker": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the local broker shortly after the window opens so the panel and the status bar show live state. The broker does not open a browser until an agent operation needs one."
+        },
+        "agentpicklink.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Restore saved agents and silently check Microsoft 365 sign-in when opening an approved, configured workspace. If sign-in is needed, notify without opening a browser. Use Refresh to discover new agents. Has no effect while agentpicklink.autoStartBroker is off."
+        }
+      }
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "agentpicklink.mcp",
+        "label": "AgentPickLink for M365"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run build:extension",
+    "build:extension": "node esbuild.extension.mjs",
+    "clean": "node -e \"for (const d of ['dist','dist-vsix']) require('node:fs').rmSync(d,{recursive:true,force:true})\"",
+    "prepack": "npm run clean && npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.extension.json",
+    "schemas:generate": "npm run build && node scripts/generate-schemas.mjs",
+    "schemas:check": "npm run build && node scripts/generate-schemas.mjs --check",
+    "package:vsix": "npm run clean && npm run build && node -e \"require('node:fs').mkdirSync('dist-vsix',{recursive:true})\" && vsce package --no-rewrite-relative-links --out dist-vsix/ --pre-release --allow-missing-repository",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "smoke:package": "node scripts/smoke-package.mjs",
+    "oss:generate": "node scripts/generate-oss-notices.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "commander": "^14.0.3",
+    "playwright-core": "^1.62.1",
+    "proper-lockfile": "^4.1.2",
+    "yaml": "^2.8.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^22.15.3",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.9.1",
+    "prettier": "^3.9.6",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.69.0",
+    "vitest": "^3.1.4"
+  }
+}

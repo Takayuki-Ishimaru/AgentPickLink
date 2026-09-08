@@ -1,0 +1,433 @@
+/* AgentPickLink setup panel. Structural and state colors come from VS Code theme variables so the
+   panel follows whatever theme the user runs. The Dawn brand palette below is used only where the
+   brand, not the theme, owns the element: the accent rule under the title and the development-mode
+   badge (see docs/design-guidelines.md). The only asset referenced is the activity bar mark that
+   ships next to this file in media/, applied as a CSS mask so it takes the theme's foreground. */
+
+/* Dawn palette. Keep byte-for-byte in sync with brand/07-source/palette.json; the values are
+   checked by tests/extension/manifest-assets.test.ts. */
+:root {
+  --brand-orange: #ff6b1a;
+  --brand-lavender: #c6a7e8;
+  --brand-blue: #4057d6;
+  --brand-black: #191827;
+  --brand-mist: #f2eef5;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+#app,
+section,
+details {
+  min-width: 0;
+}
+
+body {
+  margin: 0;
+  padding: 10px 12px 24px;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: transparent;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+h2 {
+  margin: 0 0 2px;
+  font-size: 1.02em;
+  font-weight: 600;
+}
+
+/* The one brand-colored line in the panel: a thin Dawn Orange rule under the title. It is purely
+   decorative (no information rides on it), so its sub-3:1 contrast on light themes is acceptable.
+   Orange stays an accent, never a surface. */
+.header-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--brand-orange);
+}
+
+.header-row .dev {
+  grid-column: 2;
+  justify-self: start;
+  white-space: normal;
+}
+
+.connection-status {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+p {
+  margin: 6px 0;
+}
+
+.header-row + .muted {
+  margin-top: 6px;
+}
+
+.header-row h2 {
+  margin: 0;
+}
+
+/* The same monochrome mink-and-link mark as the activity bar (media/activitybar.svg). Only the
+   SVG's alpha is used, so the color always follows the theme foreground. */
+.brand-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  background-color: currentColor;
+  -webkit-mask: url("activitybar.svg") center / contain no-repeat;
+  mask: url("activitybar.svg") center / contain no-repeat;
+}
+
+section {
+  margin-top: 14px;
+}
+
+.muted {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 2px 10px;
+  margin-top: 6px;
+  font-size: 0.92em;
+}
+
+.status-grid dt {
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.banner {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 0.94em;
+}
+
+.banner.warn {
+  border-color: var(--vscode-inputValidation-warningBorder, #b89500);
+  background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.12));
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.banner.error {
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+  background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.12));
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+}
+
+.banner.info {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  color: var(--vscode-foreground);
+}
+
+.banner ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+}
+
+/* The error banner's localized one-liner, above the original English text. */
+.banner .headline {
+  font-weight: 600;
+}
+
+/* The untranslated message/remediation the domain layer produced, kept verbatim for reports. */
+.banner .original {
+  margin-top: 4px;
+  font-size: 0.86em;
+}
+
+.progress {
+  margin-top: 8px;
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.primary-actions,
+.save-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+button {
+  font-family: inherit;
+  font-size: 0.94em;
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 30px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+}
+
+button.link.danger {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input[type="text"],
+input[type="search"],
+input[type="number"],
+select,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 0.94em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible,
+summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 46px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+label.check > span {
+  min-width: 0;
+}
+
+label.check {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 4px;
+  font-size: 0.94em;
+  cursor: pointer;
+}
+
+.agents {
+  margin-top: 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 3px;
+  max-height: min(520px, 60vh);
+  overflow-y: auto;
+}
+
+.agent {
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  padding: 10px 8px;
+}
+
+.agent:last-child {
+  border-bottom: none;
+}
+
+.agent-head {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  align-items: start;
+}
+
+.agent-head input[type="checkbox"] {
+  margin: 3px 0 0;
+}
+
+.agent-select {
+  display: inline-flex;
+  margin: 0;
+  cursor: pointer;
+}
+
+.agent-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-description {
+  margin: 4px 0 0;
+  font-size: 0.92em;
+  font-weight: normal;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+}
+
+.agent-details-toggle {
+  white-space: nowrap;
+  align-self: start;
+}
+
+.agent-url {
+  display: block;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 0.78em;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* Development-mode marker. Fixed brand colors on purpose so it reads the same in every theme:
+   Silhouette Black on Dawn Orange is about 6:1, whereas white on that orange would fail AA. */
+.badge.dev {
+  margin-left: 0;
+  color: var(--brand-black);
+  background: var(--brand-orange);
+}
+
+.suggested-hosts {
+  margin-top: 4px;
+}
+
+.agent-body {
+  margin: 6px 0 2px 20px;
+}
+
+.agent-body label {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.88em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.agent-body label.check {
+  display: flex;
+}
+
+.options-section {
+  margin-top: 14px;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 6px 0;
+}
+
+.options-section > label,
+section > label:not(.check) {
+  display: block;
+  margin-top: 10px;
+}
+
+.options-section h2 {
+  margin-top: 12px;
+}
+
+@media (max-width: 340px) {
+  body {
+    padding-inline: 8px;
+  }
+
+  .agent-head {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .agent-details-toggle {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+.empty {
+  padding: 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+}

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-pick-link/agent-registry.schema.json",
+  "title": "AgentPickLink local registry",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "agents": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "alias": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "m365-agent-builder",
+              "sharepoint-agent",
+              "copilot-studio"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "const": "browser"
+          },
+          "entryPoint": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "direct-chat"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "surface": {
+                "type": "string",
+                "enum": [
+                  "m365-copilot",
+                  "teams-web"
+                ]
+              }
+            },
+            "required": [
+              "mode",
+              "url",
+              "surface"
+            ],
+            "additionalProperties": false
+          },
+          "description": {
+            "type": "string"
+          },
+          "usageHint": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "capabilityClass": {
+            "type": "string",
+            "enum": [
+              "knowledge-only",
+              "actions-possible",
+              "unknown"
+            ]
+          },
+          "uiActionPolicy": {
+            "type": "string",
+            "const": "never-click"
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "verified",
+                  "unverified"
+                ]
+              },
+              "adapterId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedDisplayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedStableAgentId": {
+                "type": "string"
+              },
+              "expectedSurface": {
+                "type": "string",
+                "enum": [
+                  "m365-copilot",
+                  "teams-web"
+                ]
+              },
+              "validatedUrlPattern": {
+                "type": "string",
+                "minLength": 1
+              },
+              "bindingFingerprint": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "validatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              }
+            },
+            "required": [
+              "status",
+              "adapterId",
+              "expectedDisplayName",
+              "expectedSurface",
+              "validatedUrlPattern",
+              "bindingFingerprint",
+              "validatedAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "alias",
+          "displayName",
+          "kind",
+          "transport",
+          "entryPoint",
+          "enabled",
+          "capabilityClass",
+          "uiActionPolicy",
+          "verification"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "version",
+    "agents"
+  ],
+  "additionalProperties": false
+}

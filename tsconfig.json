@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  // `src/extension/**` is bundled straight from source by esbuild.extension.mjs into
+  // `dist/extension/extension.cjs`; emitting the loose ESM copy and its .d.ts files here as well
+  // only shipped 25 unused files in the VSIX. It is still type-checked, by tsconfig.extension.json
+  // (which `npm run typecheck` runs alongside this project).
+  "exclude": ["dist", "node_modules", "src/extension"]
+}

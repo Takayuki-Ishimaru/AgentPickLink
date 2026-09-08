@@ -1,0 +1,76 @@
+version: 1
+downloadDefaultsVersion: 1
+runtime:
+  brokerProtocolMajor: 1
+browser:
+  channel: msedge
+  headless: true
+  profilePath: "%LOCALAPPDATA%\\M365AgentWorkspace\\browser-profile"
+  startupTimeoutMs: 45000
+  navigationTimeoutMs: 45000
+  # Whole-response budget, measured from the moment the prompt was submitted.
+  responseTimeoutMs: 300000
+  ackTimeoutMs: 30000
+  responseStartTimeoutMs: 90000
+  typingDelayMs: 20
+  attachmentSettleMs: 2000
+  stabilityWindowMs: 1800
+  pollIntervalMs: 250
+  idleShutdownMinutes: 30
+  acceptDownloads: true
+  # Optional browser knobs. Leave `args` empty unless a tenant needs a specific switch; every
+  # entry must be a long-form Chromium switch. Some tenants only render the chat surface when
+  # the automation flag is hidden -- if so, add exactly:
+  #   - --disable-blink-features=AutomationControlled
+  args: []
+  viewport:
+    width: 1440
+    height: 900
+  # userAgent: "Mozilla/5.0 ..."
+  # locale: ja-JP
+  # timezoneId: Asia/Tokyo
+  maxAttachments: 10
+  maxAttachmentBytes: 26214400
+  maxTotalAttachmentBytes: 104857600
+conversations:
+  maxPerWorkspace: 6
+  maxTotal: 10
+  idleExpirationMinutes: 30
+  perConversationQueueLimit: 3
+invocation:
+  maxConcurrentTotal: 4
+  maxPerMinutePerWorkspace: 30
+security:
+  allowArbitraryUrls: false
+  allowedCapabilityClasses: [knowledge-only]
+  uiActionPolicy: never-click
+  storePromptBodies: false
+  storeResponseBodies: false
+  saveFailureHtml: false
+  saveFailureScreenshot: false
+  diagnosticRetentionHours: 24
+  # Saved response attachments are deleted once they are older than this (one week), and the
+  # oldest are dropped whenever the attachments directory exceeds the quota (1 GiB).
+  attachmentRetentionHours: 168
+  attachmentQuotaBytes: 1073741824
+navigation:
+  appHosts: [m365.cloud.microsoft]
+  authHosts:
+    [
+      login.microsoftonline.com,
+      login.microsoft.com,
+      login.live.com,
+      login.windows.net,
+      aadcdn.msftauth.net,
+      aadcdn.msauth.net,
+      autologon.microsoftazuread-sso.com,
+      device.login.microsoftonline.com,
+      msft.sts.microsoft.com
+    ]
+  # Hosts a response file may be fetched from: exact hostnames or `*.` wildcards (a wildcard
+  # matches any host below the domain, never the domain itself). The default covers every
+  # tenant's SharePoint Online / OneDrive for Business plus consumer OneDrive.
+  downloadHosts: ["*.sharepoint.com", onedrive.live.com]
+logging:
+  level: info
+  audit: true

@@ -1,0 +1,13 @@
+// Type-checks the VS Code extension host sources, which the root project deliberately excludes
+// from its emit (esbuild bundles them from source; see esbuild.extension.mjs). Nothing is written:
+// this project exists only so `npm run typecheck` still covers src/extension/**.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vscode"]
+  },
+  "include": ["src/extension/**/*.ts"],
+  // The root project excludes src/extension; that must not be inherited here.
+  "exclude": ["dist", "node_modules"]
+}

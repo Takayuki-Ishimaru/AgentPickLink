@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "m365-agents": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/agent-pick-link/dist/cli/index.js", "serve"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
