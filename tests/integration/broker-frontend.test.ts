@@ -620,7 +620,8 @@ describe("broker resource maintenance", () => {
     };
 
     await expect(fixture.client.call("broker.shutdown", {})).resolves.toEqual({ stopping: true });
-    const deadline = Date.now() + 2_000;
+    // Publishing the failure rewrites a protected descriptor through real Windows ACLs.
+    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
     while ((await readDescriptorForTest(fixture.paths))?.state !== "stop-failed") {
       if (Date.now() >= deadline) throw new Error("Shutdown failure was not published");
       await new Promise((resolve) => setTimeout(resolve, 5));

@@ -237,14 +237,18 @@ describe("SetupService.ensureSignedIn", () => {
 
     expect(result).toEqual({ state: "authenticated" });
     expect(client.calls.map((c) => c.method)).toEqual(["browser.authState", "browser.login"]);
-    expect(events.map((e) => e.phase)).toEqual([
+    // Real filesystem setup may emit additional heartbeats on slower runners.
+    const transitions = events.filter((event) => !event.message?.endsWith("(still working)"));
+    expect(transitions.map((e) => e.phase)).toEqual([
       "connecting",
       "connecting",
       "connecting",
       "login-waiting",
       "login-closing"
     ]);
-    expect(events.slice(0, 3).every((event) => event.message && event.elapsedMs !== undefined)).toBe(true);
+    expect(transitions.slice(0, 3).every((event) => event.message && event.elapsedMs !== undefined)).toBe(
+      true
+    );
   });
 
   it("emits a bounded heartbeat while waiting and clears it after setup finishes", async () => {
@@ -431,13 +435,15 @@ describe("SetupService.discover", () => {
 
     await service.discover((event) => events.push(event));
 
-    expect(events.map((event) => event.phase)).toEqual([
+    // Heartbeats may occur while real filesystem permissions are prepared.
+    const transitions = events.filter((event) => !event.message?.endsWith("(still working)"));
+    expect(transitions.map((event) => event.phase)).toEqual([
       "connecting",
       "connecting",
       "connecting",
       "discovering"
     ]);
-    expect(events.slice(0, 3).every((event) => event.elapsedMs !== undefined)).toBe(true);
+    expect(transitions.slice(0, 3).every((event) => event.elapsedMs !== undefined)).toBe(true);
   });
 
   it("refreshes the registered description without changing the verified binding or approving a workspace", async () => {
