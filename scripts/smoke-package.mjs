@@ -114,15 +114,26 @@ try {
   brokerStarted = true;
   phase = "concurrent cold broker startup";
   const startedAt = Date.now();
+  const startupDiagnostics = setInterval(() => {
+    void readdir(appData, { recursive: true }).then(
+      (files) =>
+        process.stdout.write(`Startup after ${Date.now() - startedAt}ms: ${JSON.stringify(files)}\n`),
+      () => process.stdout.write(`Startup after ${Date.now() - startedAt}ms: no local state yet\n`)
+    );
+  }, 30_000);
   const listedResults = await Promise.all(
     // Windows startup includes multiple real PowerShell ACL operations before the broker handshake.
-    clients.map((client) =>
-      client.callTool(
+    clients.map(async (client, index) => {
+      const result = await client.callTool(
         { name: "m365_agent_list", arguments: {} },
         { timeout: process.platform === "win32" ? 120_000 : 30_000 }
-      )
-    )
-  );
+      );
+      process.stdout.write(
+        `MCP client ${index + 1} responded after ${Date.now() - startedAt}ms (isError=${result.isError === true})\n`
+      );
+      return result;
+    })
+  ).finally(() => clearInterval(startupDiagnostics));
   process.stdout.write(`Concurrent cold broker startup: ${Date.now() - startedAt}ms\n`);
   for (const listed of listedResults) {
     assert.notEqual(listed.isError, true, JSON.stringify(listed));
