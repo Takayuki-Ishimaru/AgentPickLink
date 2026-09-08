@@ -98,52 +98,56 @@ describe.skipIf(!executable)("agent description discovery through a real browser
     }
   }, 60_000);
 
-  it("waits for cold metadata for every rail agent even when the store yielded no descriptions", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
-    try {
-      const page = await browser.newPage();
-      const origin = "http://127.0.0.1:9";
-      const visits: string[] = [];
-      await page.route(`${origin}/**`, async (route) => {
-        const pathname = new URL(route.request().url()).pathname;
-        const match = /agent\/(agent-\d)$/.exec(pathname);
-        if (match) visits.push(match[1]!);
-        const body = match
-          ? `<main>Microsoft 365 Copilot<button id="title" hidden onclick="document.getElementById('details').hidden=false">Agent ${match[1]!.slice(-1)}</button></main>
+  it(
+    "waits for cold metadata for every rail agent even when the store yielded no descriptions",
+    async () => {
+      const browser = await chromium.launch({ executablePath: executable, headless: true });
+      try {
+        const page = await browser.newPage();
+        const origin = "http://127.0.0.1:9";
+        const visits: string[] = [];
+        await page.route(`${origin}/**`, async (route) => {
+          const pathname = new URL(route.request().url()).pathname;
+          const match = /agent\/(agent-\d)$/.exec(pathname);
+          if (match) visits.push(match[1]!);
+          const body = match
+            ? `<main>Microsoft 365 Copilot<button id="title" hidden onclick="document.getElementById('details').hidden=false">Agent ${match[1]!.slice(-1)}</button></main>
             <div role="dialog" aria-label="Agent ${match[1]!.slice(-1)}" id="details" hidden>
               <span>Microsoft 365 Copilot エージェント ビルダーを使用して構築します</span>
               <span><p>Description ${match[1]}</p></span>
               <button onclick="document.getElementById('details').hidden=true">閉じる</button>
             </div><script>setTimeout(() => document.getElementById("title").hidden=false, 300)</script>`
-          : `<main>Microsoft 365 Copilot</main><nav>${[1, 2, 3, 4].map((n) => `<a href="/chat/agent/agent-${n}">Agent ${n}</a>`).join("")}</nav>`;
-        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
-      });
-      const policy = new NavigationPolicy({ appHosts: ["127.0.0.1"], allowInsecureLoopback: true });
-      const discovery = new AgentDiscovery({
-        manager: {
-          createConversationPage: async () => ({ page: page as unknown as PageLike }),
-          closePage: async () => page.close()
-        } as unknown as BrowserManager,
-        policy,
-        navigator: new AgentNavigator(policy),
-        appHosts: ["127.0.0.1"],
-        neutralAppUrl: `${origin}/chat`,
-        rowsSettleMs: 20,
-        storeWaitMs: 100,
-        storeItemWaitMs: 50,
-        descriptionWaitMs: 1_000
-      });
-      const result = await discovery.discover(10_000);
-      expect(result.agents.map((agent) => agent.description)).toEqual(
-        [1, 2, 3, 4].map((n) => `Description agent-${n}`)
-      );
-      expect(visits).toEqual(["agent-1", "agent-2", "agent-3", "agent-4"]);
-      expect(result.warnings).toContain("description-retry:attempted=4 recovered=4");
-      expect(page.isClosed()).toBe(true);
-    } finally {
-      await browser.close();
-    }
-  }, 15_000);
+            : `<main>Microsoft 365 Copilot</main><nav>${[1, 2, 3, 4].map((n) => `<a href="/chat/agent/agent-${n}">Agent ${n}</a>`).join("")}</nav>`;
+          await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+        });
+        const policy = new NavigationPolicy({ appHosts: ["127.0.0.1"], allowInsecureLoopback: true });
+        const discovery = new AgentDiscovery({
+          manager: {
+            createConversationPage: async () => ({ page: page as unknown as PageLike }),
+            closePage: async () => page.close()
+          } as unknown as BrowserManager,
+          policy,
+          navigator: new AgentNavigator(policy),
+          appHosts: ["127.0.0.1"],
+          neutralAppUrl: `${origin}/chat`,
+          rowsSettleMs: 20,
+          storeWaitMs: 100,
+          storeItemWaitMs: 50,
+          descriptionWaitMs: 1_000
+        });
+        const result = await discovery.discover(10_000);
+        expect(result.agents.map((agent) => agent.description)).toEqual(
+          [1, 2, 3, 4].map((n) => `Description agent-${n}`)
+        );
+        expect(visits).toEqual(["agent-1", "agent-2", "agent-3", "agent-4"]);
+        expect(result.warnings).toContain("description-retry:attempted=4 recovered=4");
+        expect(page.isClosed()).toBe(true);
+      } finally {
+        await browser.close();
+      }
+    },
+    process.platform === "win32" ? 60_000 : 15_000
+  );
 
   it.each([false, true])(
     "bounds retries and closes the page when missing metadata recovers: %s",
@@ -239,6 +243,6 @@ describe.skipIf(!executable)("agent description discovery through a real browser
         await browser.close();
       }
     },
-    15_000
+    process.platform === "win32" ? 60_000 : 15_000
   );
 });
