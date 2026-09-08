@@ -1,13 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import lockfile from "proper-lockfile";
 import { DomainError } from "../domain/errors.js";
 
-const execFileAsync = promisify(execFile);
+import { executePowerShell } from "./powershell.js";
 const WINDOWS_ACL_TIMEOUT_MS = 30_000;
 const ACL_STAGES = new Set([
   "identity",
@@ -202,10 +200,7 @@ async function protectWindowsPaths(targets: string[], directory: boolean): Promi
 
 async function runPowerShell(script: string, failureMessage: string): Promise<void> {
   try {
-    await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      windowsHide: true,
-      timeout: WINDOWS_ACL_TIMEOUT_MS
-    });
+    await executePowerShell(script, WINDOWS_ACL_TIMEOUT_MS);
   } catch (error) {
     const timedOut =
       (error as NodeJS.ErrnoException).code === "ETIMEDOUT" ||

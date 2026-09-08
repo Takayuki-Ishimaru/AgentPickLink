@@ -9,10 +9,10 @@ const execFileMock = vi.hoisted(() =>
       _file: string,
       _args: string[],
       options: unknown,
-      callback?: (error: NodeJS.ErrnoException | null) => void
+      callback?: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
     ) => {
       const done = typeof options === "function" ? options : callback;
-      done?.(null);
+      done?.(null, "", "");
       return {};
     }
   )
@@ -29,7 +29,7 @@ describe("Windows profile safety timeout", () => {
     execFileMock.mockImplementationOnce((_file, _args, options, callback) => {
       const done = typeof options === "function" ? options : callback;
       const error = Object.assign(new Error("timed out"), { killed: true, code: "ETIMEDOUT" });
-      done?.(error);
+      done?.(error, "", "");
       return {};
     });
     try {

@@ -10,10 +10,10 @@ const execFileMock = vi.hoisted(() =>
       _file: string,
       _args: string[],
       options: unknown,
-      callback?: (error: NodeJS.ErrnoException | null) => void
+      callback?: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
     ) => {
       const done = typeof options === "function" ? options : callback;
-      done?.(null);
+      done?.(null, "", "");
       return {};
     }
   )
@@ -85,7 +85,7 @@ describe("Windows private storage batching", () => {
     execFileMock.mockImplementationOnce((_file, _args, options, callback) => {
       const done = typeof options === "function" ? options : callback;
       const error = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
-      done?.(error);
+      done?.(error, "", "stderr" in error ? String(error.stderr) : "");
       return {};
     });
     try {
@@ -109,7 +109,7 @@ describe("Windows private storage batching", () => {
         code: 1,
         stderr: `APL_ACL_STAGE=write-acl;CATEGORY=access-denied\n${secretPath}`
       });
-      done?.(error);
+      done?.(error, "", "stderr" in error ? String(error.stderr) : "");
       return {};
     });
     try {
@@ -143,7 +143,7 @@ describe("Windows private storage batching", () => {
     const base = await mkdtemp(path.join(os.tmpdir(), "apl-storage-stdout-"));
     execFileMock.mockImplementationOnce((_file, _args, options, callback) => {
       const done = typeof options === "function" ? options : callback;
-      done?.(Object.assign(new Error("private native message"), { code: 1, stdout }));
+      done?.(Object.assign(new Error("private native message"), { code: 1 }), stdout, "");
       return {};
     });
     try {
