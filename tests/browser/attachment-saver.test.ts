@@ -108,7 +108,7 @@ describe("response attachment saving", () => {
   it("does not follow a workspace-root symlink", async () => {
     const realRoot = await mkdtemp(path.join(os.tmpdir(), "apl-workspace-real-"));
     const linkedRoot = path.join(os.tmpdir(), `apl-workspace-link-${Date.now()}`);
-    await symlink(realRoot, linkedRoot, "dir");
+    await symlink(realRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
       context: () => ({
@@ -392,6 +392,85 @@ describe("response attachment saving", () => {
     expect(result).toMatchObject([
       { status: "saved", name: "report.pdf", mediaType: "application/pdf", sizeBytes: body.length }
     ]);
+  });
+
+  it.each(["pdf", "docx", "xlsx", "pptx", "csv", "zip"])(
+    "resolves a personal sharing link after delayed SSO and saves %s bytes",
+    async (extension) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sharing-"));
+      const origin = "https://tenant-my.sharepoint.com";
+      const filePath = `/personal/person/Documents/result.${extension}`;
+      const viewer = `${origin}/personal/person/_layouts/15/onedrive.aspx?id=${encodeURIComponent(filePath)}`;
+      const body = Buffer.from(extension === "pdf" ? "%PDF-1.7 synthetic" : "synthetic file bytes");
+      const requested: string[] = [];
+      let ticks = 0;
+      let closed = false;
+      const page: PageLike = {
+        url: () => "https://m365.example.test/chat",
+        context: () => ({
+          request: {
+            get: async (url) => {
+              requested.push(url);
+              const authenticated = ticks >= 4;
+              return {
+                ok: () => true,
+                status: () => 200,
+                headers: () =>
+                  authenticated
+                    ? {
+                        "content-type": "application/octet-stream",
+                        "content-disposition": `attachment; filename="result.${extension}"`
+                      }
+                    : { "content-type": "text/html" },
+                body: async () =>
+                  authenticated ? body : Buffer.from("<!doctype html><title>Sign in</title>")
+              };
+            }
+          },
+          newPage: async () => ({
+            url: () => (ticks >= 4 ? viewer : "https://login.microsoftonline.com/synthetic"),
+            goto: async () => undefined,
+            waitForTimeout: async () => {
+              ticks++;
+            },
+            close: async () => {
+              closed = true;
+            }
+          })
+        })
+      };
+      try {
+        const [saved] = await new AttachmentSaver({
+          enabled: true,
+          directory,
+          allowedHosts: ["tenant-my.sharepoint.com"]
+        }).save(page, [{ index: 1, name: "attachment-1", url: `${origin}/:b:/p/person/opaque-token` }], {
+          workspaceKey: "workspace",
+          requestId: "delayed"
+        });
+        expect(saved).toMatchObject({ status: "saved", name: `result.${extension}` });
+        expect(await readFile(saved!.localPath!)).toEqual(body);
+        expect(requested).toHaveLength(2);
+        const direct = new URL(requested[1]!);
+        expect(direct.pathname).toBe("/personal/person/_layouts/15/download.aspx");
+        expect(direct.searchParams.get("SourceUrl")).toBe(origin + filePath);
+        expect(closed).toBe(true);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    "https://evil.test/file.pdf",
+    "//evil.test/file.pdf",
+    "/\\evil.test/file.pdf",
+    "/file.pdf?redirect=https://evil.test",
+    "/file.pdf#part"
+  ])("does not convert an unsafe OneDrive file id: %s", (id) => {
+    const viewer = new URL("https://tenant.sharepoint.com/_layouts/15/onedrive.aspx");
+    viewer.searchParams.set("id", id);
+    expect(sharePointViewerDownloadUrl(viewer)).toBeUndefined();
   });
 
   it("uses Content-Disposition to name an opaque allowlisted SharePoint attachment", async () => {

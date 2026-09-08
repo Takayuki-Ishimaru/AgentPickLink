@@ -12,6 +12,8 @@ import { connectOrStartBroker } from "../broker/broker-lifecycle.js";
 import { SetupService } from "../services/setup-service.js";
 import { createSetupDeps, readBrokerHealth, spawnBroker, type BrokerHealthSnapshot } from "./broker.js";
 import type { ExtensionRuntime } from "./runtime.js";
+import type * as vscode from "vscode";
+import { startUpdateCheck } from "./update-checker.js";
 
 /** Windows needs tens of seconds to apply the private ACLs before the descriptor appears. */
 const BROKER_START_TIMEOUT_MS = 60_000;
@@ -41,6 +43,7 @@ export type SetupServiceLike = Pick<
 export type ClosableClient = { close: () => void };
 
 export type ExtensionDeps = {
+  checkForUpdates?: (context: vscode.ExtensionContext, runtime: ExtensionRuntime) => vscode.Disposable;
   /** Built lazily, once, the first time the panel runs an action. */
   createSetupService: (runtime: ExtensionRuntime) => SetupServiceLike;
   /** Reads `broker.health` from an already running broker; never starts one. */
@@ -53,6 +56,7 @@ export type ExtensionDeps = {
 
 export function defaultExtensionDeps(): ExtensionDeps {
   return {
+    checkForUpdates: startUpdateCheck,
     createSetupService: (runtime) => new SetupService(createSetupDeps(runtime)),
     readBrokerHealth: (runtime) => readBrokerHealth(runtime),
     connectOrStartBroker: (runtime) =>

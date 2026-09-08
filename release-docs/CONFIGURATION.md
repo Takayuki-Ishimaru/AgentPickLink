@@ -25,6 +25,8 @@ VS Code には拡張機能から MCP 定義を提供します。追加の連携�
 | `agentpicklink.integrations.claudeCode`    | `false` | Claude Code 設定の更新を有効化                                    |
 | `agentpicklink.integrations.vscodeMcpJson` | `false` | VS Code の MCP JSON 設定の更新を有効化                            |
 
+`agentpicklink.checkForUpdates` は初期値 `true` です。VS Code 起動時に GitHub の新リリース（ベータ版を含む）を確認し、バージョンごとに一度通知します。ユーザー設定で無効にできます。自動インストールは行いません。
+
 ## ローカルデータ
 
 Windows の標準保存先は `%LOCALAPPDATA%\M365AgentWorkspace\`、macOS は `~/.local/share/M365AgentWorkspace/` です。設定ファイルはその中の `config.yaml` です。`M365_AGENT_APP_DATA` で変更する場合は、専用のローカル保存先を指定してください。

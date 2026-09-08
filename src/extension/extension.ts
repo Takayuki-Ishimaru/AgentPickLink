@@ -122,6 +122,7 @@ export function activate(
   const t = translator(runtime.locale);
   runtime.log(`activating AgentPickLink ${runtime.version} on ${process.platform}-${process.arch}`);
   void refreshIntegrationsOnActivate(runtime);
+  if (deps.checkForUpdates) context.subscriptions.push(deps.checkForUpdates(context, runtime));
 
   const mcp = registerMcpProvider(runtime, context);
   const provider = new SetupViewProvider(runtime, mcp, deps.createSetupService);

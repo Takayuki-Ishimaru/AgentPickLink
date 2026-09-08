@@ -24,13 +24,44 @@ public static class AplWindowVisibility {
   private static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")]
   private static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")]
+  private static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", EntryPoint="GetWindowLongW")]
+  private static extern int GetWindowLong(IntPtr window, int index);
+  [DllImport("user32.dll", EntryPoint="SetWindowLongW")]
+  private static extern int SetWindowLong(IntPtr window, int index, int value);
+  [DllImport("user32.dll")]
+  private static extern bool SetLayeredWindowAttributes(IntPtr window, uint color, byte alpha, uint flags);
+  [DllImport("user32.dll")]
+  private static extern bool GetLayeredWindowAttributes(IntPtr window, out uint color, out byte alpha, out uint flags);
+  [DllImport("user32.dll")]
+  private static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")]
+  private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
   public static bool Hide(uint processId) {
     bool hidden = true;
     bool enumerated = EnumWindows(delegate(IntPtr window, IntPtr data) {
       uint owner;
       GetWindowThreadProcessId(window, out owner);
       if (owner == processId && IsWindowVisible(window)) {
+        // Hide before changing window styles. Chromium explicitly shows its
+        // window for new background tabs. Keep its subsequent shows transparent, non-activating
+        // and outside the virtual desktop, including browser-owned download popups.
+        // Relinquish foreground ownership before removing the sign-in window. SW_HIDE alone
+        // can leave keyboard focus assigned to the now invisible Edge window on Windows.
+        if (GetForegroundWindow() == window) ShowWindow(window, 6);
         ShowWindow(window, 0);
+        const int required = 0x00080000 | 0x08000000 | 0x00000080;
+        int style = (GetWindowLong(window, -20) | required) & ~0x00040000;
+        SetWindowLong(window, -20, style);
+        uint color, flags;
+        byte alpha;
+        int outside = GetSystemMetrics(76) + GetSystemMetrics(78) + 1024;
+        if ((GetWindowLong(window, -20) & required) != required ||
+            !SetLayeredWindowAttributes(window, 0, 0, 2) ||
+            !GetLayeredWindowAttributes(window, out color, out alpha, out flags) ||
+            alpha != 0 || (flags & 2) == 0 ||
+            !SetWindowPos(window, IntPtr.Zero, outside, GetSystemMetrics(77), 0, 0, 0x0035)) hidden = false;
         if (IsWindowVisible(window)) hidden = false;
       }
       return true;

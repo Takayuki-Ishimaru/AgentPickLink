@@ -36,6 +36,9 @@ export function createBrowserLauncher(
               context = await browserType.launchPersistentContext(profilePath, {
                 ...options,
                 headless: false,
+                // The previous background session may have persisted an off-desktop placement.
+                // Explicit sign-in must always start on the primary display.
+                args: [...((options.args as string[] | undefined) ?? []), "--window-position=0,0"],
                 acceptDownloads: automation.acceptDownloads,
                 permissions: [],
                 downloadsPath

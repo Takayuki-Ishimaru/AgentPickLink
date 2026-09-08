@@ -8,13 +8,21 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.1.0 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.1.1 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
 AgentPickLink is **open-source software released under the MIT License**. Third-party software retains its respective licenses.
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
+
+## What's new in v0.1.1
+
+- Improved file downloads from SharePoint / OneDrive sharing links, including different file links with the same display label and links that redirect through sign-in.
+- Fixed Windows + Edge windows briefly appearing or taking input focus during background operations. When sign-in is needed, the dedicated window opens in a visible position.
+- Added notifications for newer releases when VS Code starts.
+
+See the [release notes](release-docs/CHANGELOG.md) for details.
 
 ## Requirements
 
@@ -29,17 +37,27 @@ WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP s
 
 ## Installation
 
-1. Download `agent-pick-link-0.1.0.vsix` from **Releases → v0.1.0 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.1.1.vsix` from **Releases → v0.1.1 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.1.0.vsix
+code --install-extension agent-pick-link-0.1.1.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
+
+### Updating from v0.1.0
+
+Install the v0.1.1 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well.
+
+## Update notifications
+
+When VS Code starts, the extension checks the public GitHub releases and notifies you if a newer version is available, including beta releases. Each version is announced once. Open the release page from the notification, download its VSIX, and install it to update. Updates are not installed automatically.
+
+Disable `agentpicklink.checkForUpdates` in VS Code settings to stop checking. If offline, normal startup continues and the extension retries on the next startup. This check does not send your questions or workspace contents.
 
 ## Initial setup
 
@@ -70,6 +88,8 @@ A single-use question automatically closes its conversation after the response i
 
 File saving is enabled by default. The default allowed download hosts are `*.sharepoint.com` and `onedrive.live.com`. Files are saved under `APL_downloads/<workspace-key>/<request-id>/` in the opened workspace.
 
+Files are retrieved through file-sharing links or download controls in the response. SharePoint / OneDrive links require an authenticated session with permission to access the file. Ordinary page links are not all treated as downloadable files.
+
 Default limits are 10 files per response, 25 MiB per file, and 100 MiB in total. Saved files are not automatically executed or converted. Check their accuracy and safety before use. They may contain sensitive information, so take care when committing files to Git or syncing them externally.
 
 ## Data and approval
@@ -93,7 +113,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](release-docs/OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](release-docs/THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.1.0-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.1.1-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -104,4 +124,4 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.1.0.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.1.1.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.

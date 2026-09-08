@@ -2,7 +2,7 @@
   "name": "agent-pick-link",
   "displayName": "AgentPickLink for M365",
   "publisher": "agentpicklink",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Policy-enforced local MCP bridge for consulting approved Microsoft 365 agents from VS Code",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -138,6 +138,12 @@
           "type": "boolean",
           "default": true,
           "description": "Restore saved agents and silently check Microsoft 365 sign-in when opening an approved, configured workspace. If sign-in is needed, notify without opening a browser. Use Refresh to discover new agents. Has no effect while agentpicklink.autoStartBroker is off."
+        },
+        "agentpicklink.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "VS Code 起動時に GitHub の新リリース（ベータ版を含む）を確認して、バージョンごとに一度通知します。自動インストールは行いません。 / Check GitHub releases, including betas, on startup and notify once per version. Does not install updates automatically."
         }
       }
     },

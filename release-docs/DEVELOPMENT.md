@@ -1,10 +1,10 @@
 # 開発者向けガイド
 
-v0.1.0 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
+v0.1.1 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
 
 ## 準備
 
-Node.js 22 以降と npm をインストールし、`agent-pick-link-0.1.0-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
+Node.js 22 以降と npm をインストールし、`agent-pick-link-0.1.1-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-生成物は `dist-vsix/agent-pick-link-0.1.0.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
+生成物は `dist-vsix/agent-pick-link-0.1.1.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
 
 ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。
 

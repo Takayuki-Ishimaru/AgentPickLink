@@ -5,7 +5,7 @@
 AgentPickLink 本体は [MIT ライセンス](../LICENSE) の OSS です。依存ソフトウェアのライセンスは変更しません。
 The AgentPickLink project is MIT licensed. Third-party software retains its original license terms.
 
-この一覧は v0.1.0 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
+この一覧は v0.1.1 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
 This inventory uses the names, pinned versions and license declarations in the lockfile. It includes direct, transitive and platform-specific optional dependencies. Not every entry is installed on every platform or shipped in the VSIX; separate installation paths have separate rows.
 
 実行時に配布するソフトウェアの著作権表示・ライセンス全文・同梱コンポーネントの通知は [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) に収録しています。VSIX 内の各パッケージの LICENSE / NOTICE も保持しています。

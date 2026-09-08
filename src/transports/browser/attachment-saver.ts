@@ -177,8 +177,9 @@ export class AttachmentSaver {
           // not received its SSO cookies yet. A passive navigation in the same persistent browser
           // context establishes that session without filling a form or clicking any action. Retry
           // the bounded HTTP download exactly once afterward.
+          let resolvedDownload: URL | undefined;
           try {
-            await establishPassiveFileSession(browserContext, source, this.timeoutMs);
+            resolvedDownload = await establishPassiveFileSession(browserContext, source, this.timeoutMs);
           } catch {
             // The retry itself could not even be attempted; the first attempt's own stage (if any)
             // remains the more useful diagnostic.
@@ -187,7 +188,7 @@ export class AttachmentSaver {
           try {
             downloaded = await fetchAttachment(
               request,
-              downloadUrl,
+              resolvedDownload ?? downloadUrl,
               this.timeoutMs,
               this.maxAttachmentBytes,
               this.maxTotalAttachmentBytes - totalBytes,
@@ -323,7 +324,7 @@ async function establishPassiveFileSession(
   context: BrowserRequestContextLike | undefined,
   source: URL,
   timeoutMs: number
-): Promise<void> {
+): Promise<URL | undefined> {
   if (!context?.newPage) throw new Error("attachment-session-bootstrap-unavailable");
   const bootstrapPage = await context.newPage();
   try {
@@ -334,6 +335,33 @@ async function establishPassiveFileSession(
       })
       .catch(() => undefined);
     await bootstrapPage.waitForTimeout?.(750);
+    // SSO can take several redirects after DOMContentLoaded. Keep the authenticated context's
+    // passive tab alive until it returns to the file host, instead of closing it on a login page.
+    const attempts = Math.max(1, Math.ceil(Math.min(timeoutMs, 15_000) / 250));
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      let current: URL | undefined;
+      try {
+        current = new URL(bootstrapPage.url());
+      } catch {
+        // A transient blank or detached page is not a resolved viewer.
+      }
+      if (current?.origin === source.origin) {
+        const direct = sharePointViewerDownloadUrl(current);
+        if (direct) return direct;
+        // Do not mistake an intermediate sign-in page on the file host for the file itself.
+        // A non-Office file can resolve to its actual path; retain any sharing/access query.
+        if (
+          current.pathname === source.pathname ||
+          (/\.[^/.]+$/.test(current.pathname) && !/\.(?:aspx?|php|html?)$/i.test(current.pathname))
+        ) {
+          current.searchParams.set("download", "1");
+          return current;
+        }
+      }
+      if (!bootstrapPage.waitForTimeout) break;
+      await bootstrapPage.waitForTimeout(250);
+    }
+    return undefined;
   } finally {
     await bootstrapPage.close?.().catch(() => undefined);
   }
@@ -821,7 +849,19 @@ function documentScopes(page: PageLike): BrowserDocumentLike[] {
 
 export function sharePointViewerDownloadUrl(source: URL): URL | undefined {
   const marker = source.pathname.toLocaleLowerCase().lastIndexOf("/_layouts/15/");
-  if (marker < 0 || !/\/(?:doc|embed)\.aspx$/i.test(source.pathname)) return undefined;
+  if (marker < 0) return undefined;
+  // PDF and other non-Office files often resolve to OneDrive's viewer with a server-relative id.
+  // Convert only that file path on the same origin; never a URL supplied for another host.
+  if (/\/onedrive\.aspx$/i.test(source.pathname)) {
+    const id = source.searchParams.get("id");
+    if (!id?.startsWith("/") || id.startsWith("//") || id.includes("\\")) return undefined;
+    const file = new URL(id, source.origin);
+    if (file.origin !== source.origin || file.search || file.hash) return undefined;
+    const direct = new URL(`${source.pathname.slice(0, marker)}/_layouts/15/download.aspx`, source.origin);
+    direct.searchParams.set("SourceUrl", file.toString());
+    return direct;
+  }
+  if (!/\/(?:doc|embed)\.aspx$/i.test(source.pathname)) return undefined;
   const rawId = (
     /\/doc\.aspx$/i.test(source.pathname)
       ? source.searchParams.get("sourcedoc")

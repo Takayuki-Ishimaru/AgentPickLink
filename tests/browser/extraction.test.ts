@@ -11,6 +11,28 @@ import {
 import type { PageLike } from "../../src/transports/browser/types.js";
 
 describe("browser response extraction helpers", () => {
+  it("recognizes personal and shared opaque file links without filenames, including repeated labels", () => {
+    const hosts = new HostAllowlist(["*.sharepoint.com"]);
+    const links = ["b", "w", "x", "p", "t", "i", "v", "u"].flatMap((kind) =>
+      ["p", "s", "r", "g"].map((scope) => ({
+        title: "Download file",
+        url: `https://tenant-my.sharepoint.com/:${kind}:/${scope}/person/token-${kind}-${scope}`
+      }))
+    );
+    const found = extractAttachmentCandidates(links.slice(0, 16), hosts);
+    expect(found).toHaveLength(16);
+    expect(found.map((item) => item.url)).toEqual(links.slice(0, 16).map((item) => item.url));
+    expect(extractAttachmentCandidates(links.slice(16), hosts)).toHaveLength(16);
+    expect(
+      extractAttachmentCandidates(
+        [
+          { title: "Folder", url: "https://tenant-my.sharepoint.com/:f:/p/person/token" },
+          { title: "Download", url: "https://outside.example/:b:/p/person/token" }
+        ],
+        hosts
+      )
+    ).toEqual([]);
+  });
   it("converts supported response structure and strips scripts", () => {
     expect(
       htmlToMarkdown(

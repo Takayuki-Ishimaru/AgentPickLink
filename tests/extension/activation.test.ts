@@ -83,6 +83,16 @@ afterEach(async () => {
 });
 
 describe("activate", () => {
+  it("registers the startup update check and disposes it with the extension", () => {
+    const update = { dispose: vi.fn() };
+    deps.checkForUpdates = vi.fn(() => update);
+    activate(harness.context as never, deps);
+    expect(deps.checkForUpdates).toHaveBeenCalledOnce();
+    expect(harness.context.subscriptions).toContain(update);
+    for (const subscription of harness.context.subscriptions) subscription.dispose();
+    expect(update.dispose).toHaveBeenCalledOnce();
+  });
+
   it("registers the palette commands and legacy keybinding aliases", async () => {
     activate(harness.context as never, deps);
     const declared = await declaredCommands();

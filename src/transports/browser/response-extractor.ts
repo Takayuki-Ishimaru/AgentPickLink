@@ -245,14 +245,17 @@ export function extractAttachmentCandidates(
       continue;
     const allowlistedHost = attachmentHosts.allows(url.hostname);
     if (attachmentHosts.size > 0 && !allowlistedHost) continue;
-    const allowlistedSharingLink = allowlistedHost && /^\/:\w:\/(?:r|g)\//i.test(url.pathname);
+    // Personal/shared opaque links often have no filename in their visible label. File links
+    // use p/s as well as r/g; folder (:f:) sharing links are not downloadable attachments.
+    const allowlistedSharingLink =
+      allowlistedHost && /^\/:(?:b|w|x|p|t|i|v|u):\/(?:r|g|p|s)\//i.test(url.pathname);
     if (!explicitName && !allowlistedSharingLink) continue;
     if (explicitName && isLikelyFilenameReference(explicitName, url.hostname)) continue;
     url.hash = "";
     const normalized = url.toString();
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    addCandidate(normalizedName, {
+    addCandidate(explicitName ? normalizedName : normalized, {
       index: 0,
       name: explicitName ?? `attachment-${out.length + 1}`,
       url: normalized

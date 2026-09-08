@@ -236,7 +236,9 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
         await server.close();
       }
       expect(await page.evaluate(() => Reflect.get(globalThis, "attachmentExecuted"))).toBeUndefined();
-      expect(context.pages()).toHaveLength(1);
+      // Windows Edge can open its own downloads hub even in headless mode. It is browser UI,
+      // not an attachment document or a leaked application tab.
+      expect(context.pages().filter((item) => item.url() !== "edge://downloads-hub/")).toEqual([page]);
       await context.close();
     } finally {
       await browser.close();
