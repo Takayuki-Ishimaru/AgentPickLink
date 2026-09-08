@@ -2,9 +2,10 @@
 // Uses an isolated empty workspace and broker; never opens a browser or contacts Microsoft 365.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -65,6 +66,28 @@ const runCli = (...args) =>
     env,
     timeout: 15_000
   });
+const traceFile = path.join(temporary, "startup-trace.jsonl");
+if (process.platform === "win32") {
+  const preload = path.join(temporary, "trace.mjs");
+  await writeFile(
+    preload,
+    `
+    import { subscribe } from 'node:diagnostics_channel';
+    import { appendFileSync } from 'node:fs';
+    import path from 'node:path';
+    const record = (entry) => appendFileSync(${JSON.stringify(traceFile)}, JSON.stringify({at: Date.now(), parent: process.pid, ...entry}) + '\\n');
+    subscribe('child_process', ({process: child}) => {
+      const started = Date.now();
+      child.once('spawn', () => {
+        const args = child.spawnargs.join(' ');
+        record({event: 'spawn', pid: child.pid, file: path.basename(child.spawnfile), operation: args.includes('Get-CimInstance') ? 'drive check' : args.includes('APL_ACL_STAGE') ? 'ACL' : 'other'});
+      });
+      child.once('exit', (code, signal) => record({event: 'exit', pid: child.pid, ms: Date.now() - started, code, signal}));
+    });
+  `
+  );
+  env.NODE_OPTIONS = "--import=" + pathToFileURL(preload).href;
+}
 let brokerStarted = false;
 let phase = "CLI version";
 const clients = [
@@ -152,6 +175,8 @@ try {
   assert.deepEqual(stderr, ["", ""], "Packaged MCP startup must not emit errors");
 } catch (error) {
   process.stderr.write(`Package smoke failed during ${phase}: ${JSON.stringify(stderr)}\n`);
+  const trace = await readFile(traceFile, "utf8").catch(() => "");
+  if (trace) process.stderr.write(`Startup subprocess trace:\n${trace}\n`);
   throw error;
 } finally {
   await Promise.all(clients.map(closeClient));
