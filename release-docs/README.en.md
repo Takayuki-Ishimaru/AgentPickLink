@@ -37,7 +37,7 @@ You can install Node.js 22 or later to provide an explicit runtime. Otherwise, t
 
 WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported. Compatibility with every Microsoft 365 agent or interface layout is not guaranteed.
 
-Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu remains experimental. CI does not verify a live Microsoft 365 tenant or the actual VS Code interface. See the [validation scope](DEVELOPMENT.md#公開ciとリリース確認).
+Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu remains experimental. CI does not verify a live Microsoft 365 tenant or the actual VS Code interface. See the [validation scope](DEVELOPMENT.md).
 
 ## Installation
 

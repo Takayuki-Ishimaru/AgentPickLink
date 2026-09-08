@@ -37,7 +37,7 @@ Node.js 22 以降を別途インストールすると実行環境を明示でき
 
 WSL、Remote SSH、Dev Containers、Codespaces、複数ルートのワークスペース、リモート MCP サーバー、無人実行は対象外です。すべての Microsoft 365 エージェントや画面構成への対応を保証するものではありません。
 
-Windows・macOS・Ubuntu の自動テストを公開 CI で実行します。Ubuntu は実験的な検証対象です。実際の Microsoft 365 テナントと VS Code 画面での確認は CI に含まれません。詳しくは [検証範囲](DEVELOPMENT.md#公開ciとリリース確認) を参照してください。
+Windows・macOS・Ubuntu の自動テストを公開 CI で実行します。Ubuntu は実験的な検証対象です。実際の Microsoft 365 テナントと VS Code 画面での確認は CI に含まれません。詳しくは [検証範囲](release-docs/DEVELOPMENT.md) を参照してください。
 
 ## インストール
 
