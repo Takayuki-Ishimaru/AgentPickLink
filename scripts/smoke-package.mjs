@@ -50,7 +50,9 @@ const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key, value]) =>
       value !== undefined &&
-      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR)$/i.test(key)
+      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|PUBLIC|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|PSMODULEPATH)$/i.test(
+        key
+      )
   )
 );
 env.M365_AGENT_APP_DATA = appData;
