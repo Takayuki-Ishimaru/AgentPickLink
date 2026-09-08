@@ -45,15 +45,20 @@ await access(path.join(packageRoot, "release-docs", "THIRD-PARTY-NOTICES.txt"));
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), "apl-package-smoke-"));
 const appData = path.join(temporary, "unused-app-data");
-// Pass an explicit environment so local development switches and user state cannot leak in.
+// Keep the OS process environment required by native tools such as Windows PowerShell.
+// Isolate application state and remove development/runtime overrides from the test children.
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key, value]) =>
       value !== undefined &&
-      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR)$/i.test(key)
+      !/^(M365_|PLAYWRIGHT_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_RUN_AS_NODE$|VSCODE_INSPECTOR_OPTIONS$)/i.test(
+        key
+      )
   )
 );
 env.M365_AGENT_APP_DATA = appData;
+// Exercise the Linux runtime explicitly; this does not change the supported-desktop policy.
+if (process.platform === "linux") env.M365_AGENT_ALLOW_UNSUPPORTED_OS = "1";
 const runCli = (...args) =>
   promisify(execFile)(process.execPath, [cli, ...args], {
     cwd: temporary,
@@ -61,6 +66,7 @@ const runCli = (...args) =>
     timeout: 15_000
   });
 let brokerStarted = false;
+let phase = "CLI version";
 const clients = [
   new Client({ name: "release-package-smoke-a", version: manifest.version }),
   new Client({ name: "release-package-smoke-b", version: manifest.version })
@@ -89,6 +95,7 @@ const closeClient = async (client) => {
 try {
   const { stdout } = await runCli("--version");
   assert.equal(stdout.trim(), manifest.version);
+  phase = "MCP initialization";
   await Promise.all(clients.map((client, index) => client.connect(transports[index], { timeout: 15_000 })));
   for (const client of clients) {
     assert.match(client.getInstructions() ?? "", /Japanese\/CJK/);
@@ -106,20 +113,39 @@ try {
   assert.equal(clients[1].getServerVersion()?.version, manifest.version);
   await assert.rejects(access(appData), { code: "ENOENT" });
   brokerStarted = true;
+  phase = "concurrent cold broker startup";
+  const startedAt = Date.now();
   const listedResults = await Promise.all(
-    clients.map((client) => client.callTool({ name: "m365_agent_list", arguments: {} }, { timeout: 30_000 }))
+    // Windows startup includes multiple real PowerShell ACL operations before the broker handshake.
+    clients.map(async (client, index) => {
+      const result = await client.callTool(
+        { name: "m365_agent_list", arguments: {} },
+        { timeout: process.platform === "win32" ? 120_000 : 30_000 }
+      );
+      process.stdout.write(
+        `MCP client ${index + 1} responded after ${Date.now() - startedAt}ms (isError=${result.isError === true})\n`
+      );
+      if (result.isError)
+        process.stdout.write(`MCP startup error: ${JSON.stringify(result.structuredContent)}\n`);
+      return result;
+    })
   );
+  process.stdout.write(`Concurrent cold broker startup: ${Date.now() - startedAt}ms\n`);
   for (const listed of listedResults) {
     assert.notEqual(listed.isError, true, JSON.stringify(listed));
     assert.deepEqual(listed.structuredContent.agents, []);
     assert.equal(listed.structuredContent.workspace.configured, false);
   }
+  phase = "broker health";
   const health = JSON.parse((await runCli("--json", "broker", "status")).stdout);
   assert.equal(health.live, true);
   assert.equal(health.browserStarted, false);
   assert.equal(typeof health.instanceId, "string");
   await Promise.all(clients.map(closeClient));
   assert.deepEqual(stderr, ["", ""], "Packaged MCP startup must not emit errors");
+} catch (error) {
+  process.stderr.write(`Package smoke failed during ${phase}: ${JSON.stringify(stderr)}\n`);
+  throw error;
 } finally {
   await Promise.all(clients.map(closeClient));
   if (brokerStarted) {

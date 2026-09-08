@@ -1,3 +1,4 @@
+import { testIpcEndpoint } from "../helpers/platform.js";
 import { describe, expect, it } from "vitest";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import type { ProgressEvent, ProgressSink } from "../../src/domain/progress.js";
 
 async function makePipe(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
-  return path.join(directory, "broker.sock");
+  return testIpcEndpoint(directory, "broker.sock");
 }
 
 function makeDescriptor(pipe: string, secret: string, instanceId: string): BrokerDescriptor {

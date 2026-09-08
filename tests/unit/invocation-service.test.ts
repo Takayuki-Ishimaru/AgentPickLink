@@ -1,3 +1,4 @@
+import { normalizeRoot } from "../../src/services/workspace-service.js";
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -118,8 +119,10 @@ async function harness(
   const base = await mkdtemp(path.join(os.tmpdir(), "apl-invocation-"));
   const logs = path.join(base, "logs");
   const diagnostics = path.join(base, "diagnostics");
-  const workspaceRoot = await realpath(
-    await mkdir(path.join(base, "workspace"), { recursive: true }).then(() => path.join(base, "workspace"))
+  const workspaceRoot = normalizeRoot(
+    await realpath(
+      await mkdir(path.join(base, "workspace"), { recursive: true }).then(() => path.join(base, "workspace"))
+    )
   );
   const config = WorkspaceConfigSchema.parse({
     version: 1,

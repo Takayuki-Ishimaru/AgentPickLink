@@ -1,3 +1,4 @@
+import { testIpcEndpoint } from "../helpers/platform.js";
 import { describe, expect, it } from "vitest";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { HandshakeSchema } from "../../src/ipc/schemas.js";
 describe("authenticated broker IPC", () => {
   it("accepts its descriptor secret and rejects another secret", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "a".repeat(43);
     const server = new IpcServer(
       pipe,
@@ -48,7 +49,7 @@ describe("authenticated broker IPC", () => {
   });
   it("negotiates only the capability intersection", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-capabilities-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "e".repeat(43);
     const server = new IpcServer(
       pipe,
@@ -74,7 +75,7 @@ describe("authenticated broker IPC", () => {
   });
   it("shares one handshake when concurrent callers connect the same client", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-connect-single-flight-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "f".repeat(43);
     const server = new IpcServer(
       pipe,
@@ -138,7 +139,7 @@ describe("authenticated broker IPC", () => {
   });
   it("cancels an in-progress handshake when the client is closed", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-connect-close-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const rawServer = net.createServer(() => undefined);
     await new Promise<void>((resolve, reject) => {
       rawServer.once("error", reject);
@@ -175,7 +176,7 @@ describe("authenticated broker IPC", () => {
   });
   it("clears a remotely closed connection so a later call reconnects cleanly", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-reconnect-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "k".repeat(43);
     const descriptor: BrokerDescriptor = {
       pid: process.pid,
@@ -212,7 +213,7 @@ describe("authenticated broker IPC", () => {
   });
   it("stops a cancelled caller without closing the broker or reissuing the request", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-cancel-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "c".repeat(43);
     let calls = 0;
     let started!: () => void;
@@ -265,7 +266,7 @@ describe("authenticated broker IPC", () => {
   });
   it("closes promptly while multiple authenticated clients remain connected", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-close-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "d".repeat(43);
     const server = new IpcServer(
       pipe,
@@ -293,7 +294,7 @@ describe("authenticated broker IPC", () => {
   });
   it("keeps other in-flight calls alive when a malformed envelope arrives on the same connection", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-malformed-"));
-    const pipe = path.join(directory, "broker.sock");
+    const pipe = testIpcEndpoint(directory, "broker.sock");
     const secret = "g".repeat(43);
     const server = new IpcServer(
       pipe,
@@ -334,7 +335,7 @@ describe("authenticated broker IPC", () => {
     // run deterministically on any OS: the underlying transport is still a plain local socket,
     // but the win32-only pre-listen probe is exercised.
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-ipc-squat-"));
-    const pipe = path.join(directory, "broker.pipe");
+    const pipe = testIpcEndpoint(directory, "broker.pipe");
     const first = new IpcServer(
       pipe,
       "h".repeat(43),

@@ -76,11 +76,8 @@ export class CompletionDetector {
             const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
             const node = nodes[nodes.length - 1];
             const text = node?.innerText?.trim() || "";
-            const body = document.body?.innerText || "";
-            const stop = /stop generating|生成を停止/i.test(body);
             const busy = node?.getAttribute("aria-busy") || "";
             const streaming =
-              stop ||
               /generating|生成中|streaming/i.test(busy) ||
               busy === "true" ||
               node?.getAttribute("data-streaming") === "true";
@@ -103,8 +100,11 @@ export class CompletionDetector {
       if (!locator) return false;
       const count = (await locator.count?.()) ?? 0;
       if (count < 1) return false;
-      const first = (count > 1 ? locator.nth?.(0) : locator) ?? locator;
-      return (await first.isVisible?.()) ?? true;
+      for (let index = 0; index < count; index++) {
+        const control = count === 1 ? locator : locator.nth?.(index);
+        if (await control?.isVisible?.()) return true;
+      }
+      return false;
     } catch {
       return false;
     }

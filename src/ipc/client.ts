@@ -25,7 +25,7 @@ export class IpcClient {
   private connectionGeneration = 0;
   constructor(
     private readonly descriptor: BrokerDescriptor,
-    private readonly packageVersion = "0.1.1",
+    private readonly packageVersion = "0.1.2",
     private readonly capabilities: readonly string[] = BROKER_CAPABILITIES
   ) {}
   isConnected(): boolean {

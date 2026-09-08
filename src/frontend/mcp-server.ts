@@ -356,7 +356,7 @@ export async function createSdkServer(
     {
       name: "agent-pick-link",
       title: "AgentPickLink for M365",
-      version: "0.1.1"
+      version: "0.1.2"
     },
     { instructions: FILE_GENERATION_INSTRUCTIONS }
   );

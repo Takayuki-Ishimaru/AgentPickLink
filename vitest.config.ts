@@ -12,5 +12,12 @@ export default defineConfig({
   resolve: { alias: { vscode: path.join(root, "tests", "extension", "vscode-mock.ts") } },
   // Several files launch real Chromium processes. Bound workers so their render budgets are
   // not consumed by competing browser startups on machines with many reported CPU cores.
-  test: { include: ["tests/**/*.test.ts"], environment: "node", maxWorkers: 2 }
+  test: {
+    include: ["tests/**/*.test.ts"],
+    environment: "node",
+    maxWorkers: 2,
+    // Windows tests exercise real PowerShell ACL operations; five seconds does not cover setup.
+    testTimeout: process.platform === "win32" ? 60_000 : 5_000,
+    hookTimeout: process.platform === "win32" ? 120_000 : 10_000
+  }
 });

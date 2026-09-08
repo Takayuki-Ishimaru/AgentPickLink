@@ -237,14 +237,18 @@ describe("SetupService.ensureSignedIn", () => {
 
     expect(result).toEqual({ state: "authenticated" });
     expect(client.calls.map((c) => c.method)).toEqual(["browser.authState", "browser.login"]);
-    expect(events.map((e) => e.phase)).toEqual([
+    // Real filesystem setup may emit additional heartbeats on slower runners.
+    const transitions = events.filter((event) => !event.message?.endsWith("(still working)"));
+    expect(transitions.map((e) => e.phase)).toEqual([
       "connecting",
       "connecting",
       "connecting",
       "login-waiting",
       "login-closing"
     ]);
-    expect(events.slice(0, 3).every((event) => event.message && event.elapsedMs !== undefined)).toBe(true);
+    expect(transitions.slice(0, 3).every((event) => event.message && event.elapsedMs !== undefined)).toBe(
+      true
+    );
   });
 
   it("emits a bounded heartbeat while waiting and clears it after setup finishes", async () => {
@@ -431,13 +435,15 @@ describe("SetupService.discover", () => {
 
     await service.discover((event) => events.push(event));
 
-    expect(events.map((event) => event.phase)).toEqual([
+    // Heartbeats may occur while real filesystem permissions are prepared.
+    const transitions = events.filter((event) => !event.message?.endsWith("(still working)"));
+    expect(transitions.map((event) => event.phase)).toEqual([
       "connecting",
       "connecting",
       "connecting",
       "discovering"
     ]);
-    expect(events.slice(0, 3).every((event) => event.elapsedMs !== undefined)).toBe(true);
+    expect(transitions.slice(0, 3).every((event) => event.elapsedMs !== undefined)).toBe(true);
   });
 
   it("refreshes the registered description without changing the verified binding or approving a workspace", async () => {
@@ -889,37 +895,41 @@ describe("SetupService.restartBroker", () => {
     expect(newClient.closed).toBe(true);
   });
 
-  it("throws BROKER_UNAVAILABLE with a manual-restart remediation when the previous broker never releases its endpoint", async () => {
-    const paths = await makeTempPaths();
-    const shutdownClient = makeFakeIpcClient({ "broker.shutdown": {} });
-    let existingCalls = 0;
-    const service = new SetupService(
-      baseDeps(paths, {
-        connectExisting: async () => {
-          existingCalls += 1;
-          if (existingCalls === 1) return shutdownClient as unknown as IpcClient;
-          // Descriptor present, pid alive, but the pipe refuses connections: "live but unreachable".
-          throw new DomainError("BROKER_UNAVAILABLE", "The broker descriptor exists but is unavailable.");
-        },
-        connect: async () => {
-          throw new Error(
-            "connect() must not be called when the previous broker never released its endpoint"
-          );
-        }
-      })
-    );
+  it(
+    "throws BROKER_UNAVAILABLE with a manual-restart remediation when the previous broker never releases its endpoint",
+    async () => {
+      const paths = await makeTempPaths();
+      const shutdownClient = makeFakeIpcClient({ "broker.shutdown": {} });
+      let existingCalls = 0;
+      const service = new SetupService(
+        baseDeps(paths, {
+          connectExisting: async () => {
+            existingCalls += 1;
+            if (existingCalls === 1) return shutdownClient as unknown as IpcClient;
+            // Descriptor present, pid alive, but the pipe refuses connections: "live but unreachable".
+            throw new DomainError("BROKER_UNAVAILABLE", "The broker descriptor exists but is unavailable.");
+          },
+          connect: async () => {
+            throw new Error(
+              "connect() must not be called when the previous broker never released its endpoint"
+            );
+          }
+        })
+      );
 
-    // Real timers rather than fake ones: `restartBroker()` interleaves this loop's 50ms retries
-    // with `prepare()`'s genuine filesystem I/O (via `initializeLocalState`), and fake timers
-    // (which only intercept `setTimeout`, not libuv's I/O completion) cannot reliably drive a
-    // promise chain that also depends on real I/O to progress -- it hangs waiting for the real
-    // work while nothing is left to advance the fake clock. This test therefore genuinely waits
-    // out the ~10s deadline; the generous timeout below covers CI scheduling slack.
-    await expect(service.restartBroker()).rejects.toMatchObject({
-      code: "BROKER_UNAVAILABLE",
-      options: { remediation: "run: m365-agent broker restart" }
-    });
-  }, 15_000);
+      // Real timers rather than fake ones: `restartBroker()` interleaves this loop's 50ms retries
+      // with `prepare()`'s genuine filesystem I/O (via `initializeLocalState`), and fake timers
+      // (which only intercept `setTimeout`, not libuv's I/O completion) cannot reliably drive a
+      // promise chain that also depends on real I/O to progress -- it hangs waiting for the real
+      // work while nothing is left to advance the fake clock. This test therefore genuinely waits
+      // out the ~10s deadline; the generous timeout below covers CI scheduling slack.
+      await expect(service.restartBroker()).rejects.toMatchObject({
+        code: "BROKER_UNAVAILABLE",
+        options: { remediation: "run: m365-agent broker restart" }
+      });
+    },
+    process.platform === "win32" ? 60_000 : 15_000
+  );
 
   it("treats a lost shutdown response followed by a successor descriptor as completed", async () => {
     const paths = await makeTempPaths();

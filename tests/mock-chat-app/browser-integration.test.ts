@@ -81,7 +81,17 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
       }
     };
     const loadingAdapter = new AgentBuilderChatAdapter({ hostnames: ["127.0.0.1"] });
-    const probe = vi.spyOn(loadingAdapter, "canHandle");
+    const canHandle = loadingAdapter.canHandle.bind(loadingAdapter);
+    let firstProbe = true;
+    const probe = vi.spyOn(loadingAdapter, "canHandle").mockImplementation(async (...args) => {
+      const result = await canHandle(...args);
+      if (firstProbe) {
+        firstProbe = false;
+        // Release rendering after the first real DOM probe, independent of runner speed.
+        await page.locator("textarea").evaluate((element) => (element.hidden = false));
+      }
+      return result;
+    });
     const navigator = new AgentNavigator(
       new NavigationPolicy({
         appHosts: ["127.0.0.1"],
@@ -94,8 +104,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
         body: `<!doctype html>
       <title>Microsoft 365 Copilot</title><main data-agent-id="delayed-fixture">
       <h1>Delayed Agent</h1><p>Microsoft 365 Copilot</p><div role="log"></div>
-      <textarea aria-label="Message" hidden></textarea><button type="submit">Send</button></main>
-      <script>setTimeout(() => document.querySelector('textarea').hidden = false, 1000);</script>`
+      <textarea aria-label="Message" hidden></textarea><button type="submit">Send</button></main>`
       })
     );
     try {

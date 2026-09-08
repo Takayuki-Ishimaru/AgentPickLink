@@ -1,5 +1,43 @@
 # リリースノート
 
+## v0.1.2 Beta
+
+- Codex 連携の設定更新で、配列テーブルなどの無関係な設定が消える問題を修正しました。変更前のバックアップを保存し、対象外の設定を保持します。
+- 質問・回答・履歴に「生成を停止」や「Stop generating」が含まれると、回答の完了待ちがタイムアウトする問題を修正しました。
+- 添付リンクが順に表示される場合に、後から現れるファイルを取りこぼす問題を改善しました。同名でもリンクが異なるファイルを取得対象にします。
+- 複数の MCP クライアントを同時に起動した際、初期設定の待機に失敗する問題を修正しました。
+- Windows・macOS・Ubuntu で、テスト、実ブラウザーによる模擬画面の操作、VSIX 作成と同梱 CLI・MCP の起動確認を行う公開 CI を追加しました。
+
+### 更新方法・配布物
+
+`agent-pick-link-0.1.2.vsix` を VS Code の **拡張機能: VSIX からのインストール…** でインストールし、再読み込みしてください。既存の設定・ワークスペース承認・専用ブラウザープロファイルを引き続き利用できます。外部 AI クライアントの MCP 接続も再起動してください。
+
+Codex 設定を変更すると、設定ファイルと同じ場所に `config.toml.agentpicklink-<ランダムID>.bak` を保存します。旧版ですでに失われた設定は自動復元できません。必要に応じて、以前のバックアップから復元してください。
+
+- `agent-pick-link-0.1.2.vsix` — VS Code 拡張機能。
+- `agent-pick-link-0.1.2-source.zip` — テスト・ビルドに必要なソース。
+- `SHA256SUMS.txt` — 上記ファイルの SHA-256 チェックサム。
+
+### 確認範囲
+
+公開 CI は Windows・macOS・Ubuntu 上で、型チェック、lint、単体・結合・回帰テスト、実ブラウザー上の模擬画面操作、スキーマ同期、VSIX の作成・展開と CLI / MCP の接続を確認します。
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向け、Ubuntu は実験的な検証対象です。CI の Windows 環境は Windows Server であり、Windows 11 実機での確認を代替しません。このリリースでは、実 M365 テナントの日本語・英語 UI、エージェント種別ごとの単発・継続会話、再ログイン、単一・複数ファイルの追加確認は未実施です。実際の VS Code 画面も CI の確認範囲に含みません。利用手順は [README](README.md) を参照してください。
+
+### English
+
+- Fixed Codex integration updates deleting unrelated settings such as TOML array tables. Updates preserve unrelated settings and save a backup before replacement.
+- Fixed response completion timing out when a question, response, or conversation history contains “生成を停止” or “Stop generating”.
+- Improved collection of attachments whose links appear in stages, including different file links with the same display name.
+- Fixed initialization failing when multiple MCP clients start simultaneously.
+- Added public CI on Windows, macOS, and Ubuntu, covering tests, real-browser interaction with local mock pages, VSIX packaging, and startup of the packaged CLI and MCP server.
+
+Install `agent-pick-link-0.1.2.vsix` using **Extensions: Install from VSIX…**, reload VS Code, and restart external clients' MCP connections. Existing settings, workspace approvals, and the dedicated browser profile can be reused. Source is available as `agent-pick-link-0.1.2-source.zip`, with checksums in `SHA256SUMS.txt`.
+
+Codex configuration updates save `config.toml.agentpicklink-<random-ID>.bak` alongside the original file. Settings already lost by an earlier version cannot be restored automatically; use an earlier backup if needed.
+
+This beta primarily targets Windows 11 with Microsoft Edge. macOS is intended for development and verification; Ubuntu remains experimental. CI uses Windows Server and local mock Microsoft 365 pages. It does not replace Windows 11 desktop testing, live-tenant checks, or testing in the actual VS Code interface. Additional live-tenant checks of Japanese/English interfaces, agent types, single/ongoing conversations, re-login, and single/multiple files have not been performed for this release. See the [English README](README.en.md) for setup.
+
 ## v0.1.1 Beta
 
 - SharePoint / OneDrive の個人向け・サイト向け共有リンクから、PDF などのファイルを認識する処理を修正しました。同じ表示名の異なるリンクも取得対象になります。

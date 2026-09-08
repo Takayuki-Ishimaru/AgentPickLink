@@ -13,6 +13,29 @@ const noopLocalStatePreparer = {
 };
 
 describe("local initialization locks", () => {
+  it("waits for another cold initializer while its profile preparation is in progress", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "apl-init-concurrent-"));
+    const paths = appPaths(path.join(base, "appdata"));
+    let active = 0;
+    let peak = 0;
+    const preparer = {
+      async prepareLocalState() {
+        peak = Math.max(peak, ++active);
+        await new Promise((resolve) => setTimeout(resolve, process.platform === "win32" ? 5_000 : 1_500));
+        active--;
+      }
+    };
+    const results = await Promise.allSettled([
+      initializeLocalState(paths, preparer),
+      initializeLocalState(paths, preparer)
+    ]);
+    expect(results).toEqual([
+      { status: "fulfilled", value: paths },
+      { status: "fulfilled", value: paths }
+    ]);
+    expect(peak).toBe(1);
+  });
+
   it("can initialize inside broker election without reacquiring startup.lock", async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), "apl-init-"));
     const paths = appPaths(path.join(base, "appdata"));

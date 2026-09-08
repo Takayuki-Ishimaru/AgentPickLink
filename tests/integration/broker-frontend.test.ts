@@ -1,3 +1,5 @@
+import { testIpcEndpoint } from "../helpers/platform.js";
+import { normalizeRoot } from "../../src/services/workspace-service.js";
 import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -464,7 +466,7 @@ async function setup(approved: boolean, idleExpirationMinutes = 30) {
   }
   const workspaceRoot = path.join(base, "workspace");
   await mkdir(workspaceRoot);
-  const normalizedWorkspaceRoot = await realpath(workspaceRoot);
+  const normalizedWorkspaceRoot = normalizeRoot(await realpath(workspaceRoot));
   const config = WorkspaceConfigSchema.parse({
     version: 1,
     agents: [{ alias: agent.alias, bindingFingerprint: fingerprint }]
@@ -486,7 +488,7 @@ async function setup(approved: boolean, idleExpirationMinutes = 30) {
   }
   const transport = new FakeTransport();
   const router = new TransportRouter().register("browser", transport);
-  const socket = path.join(base, "broker.sock");
+  const socket = testIpcEndpoint(base);
   const server = new BrokerServer({ paths, pipeName: socket, packageVersion: "test", router });
   const descriptor = await server.start();
   const client = new IpcClient(descriptor);
@@ -618,7 +620,8 @@ describe("broker resource maintenance", () => {
     };
 
     await expect(fixture.client.call("broker.shutdown", {})).resolves.toEqual({ stopping: true });
-    const deadline = Date.now() + 2_000;
+    // Publishing the failure rewrites a protected descriptor through real Windows ACLs.
+    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
     while ((await readDescriptorForTest(fixture.paths))?.state !== "stop-failed") {
       if (Date.now() >= deadline) throw new Error("Shutdown failure was not published");
       await new Promise((resolve) => setTimeout(resolve, 5));
