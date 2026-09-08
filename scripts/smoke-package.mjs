@@ -46,11 +46,12 @@ await access(path.join(packageRoot, "release-docs", "THIRD-PARTY-NOTICES.txt"));
 const temporary = await mkdtemp(path.join(os.tmpdir(), "apl-package-smoke-"));
 const appData = path.join(temporary, "unused-app-data");
 // Pass an explicit environment so local development switches and user state cannot leak in.
+// Keep Windows' standard process environment: PowerShell/CIM and ACL initialization need it too.
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key, value]) =>
       value !== undefined &&
-      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|PUBLIC|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|PSMODULEPATH)$/i.test(
+      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|SYSTEMDRIVE|COMPUTERNAME|USERNAME|USERDOMAIN|USERDOMAIN_ROAMINGPROFILE|HOMEDRIVE|HOMEPATH|LOGONSERVER|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|PUBLIC|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432|PSMODULEPATH)$/i.test(
         key
       )
   )
@@ -131,6 +132,8 @@ try {
       process.stdout.write(
         `MCP client ${index + 1} responded after ${Date.now() - startedAt}ms (isError=${result.isError === true})\n`
       );
+      if (result.isError)
+        process.stdout.write(`MCP startup error: ${JSON.stringify(result.structuredContent)}\n`);
       return result;
     })
   ).finally(() => clearInterval(startupDiagnostics));
