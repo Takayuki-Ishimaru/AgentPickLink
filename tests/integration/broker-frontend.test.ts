@@ -1,3 +1,4 @@
+import { testIpcEndpoint } from "../helpers/platform.js";
 import { normalizeRoot } from "../../src/services/workspace-service.js";
 import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -487,7 +488,7 @@ async function setup(approved: boolean, idleExpirationMinutes = 30) {
   }
   const transport = new FakeTransport();
   const router = new TransportRouter().register("browser", transport);
-  const socket = path.join(base, "broker.sock");
+  const socket = testIpcEndpoint(base);
   const server = new BrokerServer({ paths, pipeName: socket, packageVersion: "test", router });
   const descriptor = await server.start();
   const client = new IpcClient(descriptor);
