@@ -1,3 +1,4 @@
+import { testIpcEndpoint } from "../helpers/platform.js";
 import { mkdtemp } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import os from "node:os";
@@ -33,7 +34,7 @@ describe("broker startup coordination", () => {
     const paths = await initializeLocalState(appPaths(path.join(base, "appdata")), noopLocalStatePreparer);
     await writeDescriptor(paths, {
       pid: process.pid,
-      pipeName: path.join(base, "missing.sock"),
+      pipeName: testIpcEndpoint(base, "missing.sock"),
       protocolMajor: BROKER_PROTOCOL.major,
       protocolMinor: BROKER_PROTOCOL.minor,
       packageVersion: "test",
@@ -44,7 +45,7 @@ describe("broker startup coordination", () => {
     let starts = 0;
     const spawn = async () => {
       starts++;
-      const pipeName = path.join(base, "live.sock");
+      const pipeName = testIpcEndpoint(base, "live.sock");
       const authSecret = "n".repeat(43);
       const server = new IpcServer(
         pipeName,
@@ -84,7 +85,7 @@ describe("broker startup coordination", () => {
     await new Promise<void>((resolve, reject) => child.once("spawn", resolve).once("error", reject));
     await writeDescriptor(paths, {
       pid: child.pid!,
-      pipeName: path.join(base, "old.sock"),
+      pipeName: testIpcEndpoint(base, "old.sock"),
       protocolMajor: BROKER_PROTOCOL.major + 1,
       protocolMinor: 0,
       packageVersion: "old",
@@ -108,7 +109,7 @@ describe("broker startup coordination", () => {
     try {
       await writeDescriptor(paths, {
         pid: child.pid!,
-        pipeName: path.join(base, "not-yet-listening.sock"),
+        pipeName: testIpcEndpoint(base, "not-yet-listening.sock"),
         protocolMajor: BROKER_PROTOCOL.major,
         protocolMinor: BROKER_PROTOCOL.minor,
         packageVersion: "test",
@@ -137,7 +138,7 @@ describe("broker startup coordination", () => {
     try {
       await writeDescriptor(paths, {
         pid: oldOwner.pid!,
-        pipeName: path.join(base, "closing.sock"),
+        pipeName: testIpcEndpoint(base, "closing.sock"),
         protocolMajor: BROKER_PROTOCOL.major,
         protocolMinor: BROKER_PROTOCOL.minor,
         packageVersion: "test",
@@ -152,7 +153,7 @@ describe("broker startup coordination", () => {
         paths,
         async () => {
           starts++;
-          const pipeName = path.join(base, "replacement.sock");
+          const pipeName = testIpcEndpoint(base, "replacement.sock");
           const authSecret = "d".repeat(43);
           const server = new IpcServer(
             pipeName,
@@ -189,7 +190,7 @@ describe("broker startup coordination", () => {
     const deadPid = 999_999; // not alive, and isPidAlive is stubbed below regardless
     await writeDescriptor(paths, {
       pid: deadPid,
-      pipeName: path.join(base, "dead.sock"),
+      pipeName: testIpcEndpoint(base, "dead.sock"),
       protocolMajor: BROKER_PROTOCOL.major,
       protocolMinor: BROKER_PROTOCOL.minor,
       packageVersion: "test",
@@ -199,7 +200,7 @@ describe("broker startup coordination", () => {
     });
     const winner = {
       pid: process.pid,
-      pipeName: path.join(base, "winner.sock"),
+      pipeName: testIpcEndpoint(base, "winner.sock"),
       protocolMajor: BROKER_PROTOCOL.major,
       protocolMinor: BROKER_PROTOCOL.minor,
       packageVersion: "test",

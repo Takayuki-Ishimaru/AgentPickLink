@@ -683,13 +683,15 @@ describe("AgentDiscovery", () => {
     // A route page rebuilds its rail after load; once that rail holds steady showing nothing the
     // landing page did not, waiting out the whole store budget (5 s per route in production)
     // would only add seconds to every run.
-    const started = Date.now();
-    const { discovery } = await makeDiscovery({
+    const { discovery, manager } = await makeDiscovery({
       sidebar: () => [{ id: "agent-requirements", name: "Requirements Agent" }],
       links: () => [{ href: "https://m365.example.test/chat/all", name: "すべてのエージェント" }],
       storeWaitMs: 5_000
     });
 
+    await manager.start();
+    // Start after profile/ACL setup; this assertion measures only discovery.
+    const started = Date.now();
     const result = await discovery.discover(20_000);
 
     expect(result.agents.map((agent) => agent.stableAgentId)).toEqual(["agent-requirements"]);

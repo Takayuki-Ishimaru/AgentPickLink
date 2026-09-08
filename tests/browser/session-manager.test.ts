@@ -341,7 +341,7 @@ describe("SessionManager", () => {
     const { sessions, manager } = await makeSessions(window, { pollIntervalMs: 1 });
 
     const login = sessions.interactiveLogin(30_000);
-    const deadline = Date.now() + 2_000;
+    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
     while (polls === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
     expect(polls).toBeGreaterThan(0);
 
@@ -374,7 +374,7 @@ describe("SessionManager", () => {
     const controller = new AbortController();
 
     const login = sessions.interactiveLogin(30_000, undefined, controller.signal);
-    const deadline = Date.now() + 2_000;
+    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
     while (polls === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
 
     controller.abort();

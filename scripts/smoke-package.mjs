@@ -54,6 +54,8 @@ const env = Object.fromEntries(
   )
 );
 env.M365_AGENT_APP_DATA = appData;
+// Exercise the Linux runtime explicitly; this does not change the supported-desktop policy.
+if (process.platform === "linux") env.M365_AGENT_ALLOW_UNSUPPORTED_OS = "1";
 const runCli = (...args) =>
   promisify(execFile)(process.execPath, [cli, ...args], {
     cwd: temporary,

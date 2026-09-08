@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -114,7 +115,7 @@ describe("frontend tool contract", () => {
     expect(result.content).toContainEqual(
       expect.objectContaining({
         type: "resource_link",
-        uri: "file:///tmp/agent-pick-link/report.pdf",
+        uri: pathToFileURL("/tmp/agent-pick-link/report.pdf").href,
         name: "report.pdf",
         mimeType: "application/pdf",
         size: 123

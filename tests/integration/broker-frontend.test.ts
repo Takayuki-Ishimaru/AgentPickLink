@@ -1,3 +1,4 @@
+import { normalizeRoot } from "../../src/services/workspace-service.js";
 import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -464,7 +465,7 @@ async function setup(approved: boolean, idleExpirationMinutes = 30) {
   }
   const workspaceRoot = path.join(base, "workspace");
   await mkdir(workspaceRoot);
-  const normalizedWorkspaceRoot = await realpath(workspaceRoot);
+  const normalizedWorkspaceRoot = normalizeRoot(await realpath(workspaceRoot));
   const config = WorkspaceConfigSchema.parse({
     version: 1,
     agents: [{ alias: agent.alias, bindingFingerprint: fingerprint }]

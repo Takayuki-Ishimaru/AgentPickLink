@@ -17,7 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - { os: windows-latest, shard: "1/4", partition: 1 }
+          - { os: windows-latest, shard: "2/4", partition: 2 }
+          - { os: windows-latest, shard: "3/4", partition: 3 }
+          - { os: windows-latest, shard: "4/4", partition: 4 }
+          - { os: macos-latest, shard: "1/1", partition: 1 }
+          - { os: ubuntu-latest, shard: "1/1", partition: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -78,14 +84,16 @@ jobs:
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm run lint
         working-directory: ${{ steps.source.outputs.path }}
-      - run: npm test -- --reporter=default --reporter=junit --outputFile=output/test-results.xml
+      - run: npm test -- --shard=${{ matrix.shard }} --reporter=default --reporter=junit --outputFile=output/test-results.xml
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm run schemas:check
         working-directory: ${{ steps.source.outputs.path }}
       - name: Package VSIX
+        if: matrix.partition == 1
         working-directory: ${{ steps.source.outputs.path }}
         run: npm run package:vsix
       - name: Smoke test extracted VSIX
+        if: matrix.partition == 1
         working-directory: ${{ steps.source.outputs.path }}
         run: |
           python -c 'import glob, zipfile; files = glob.glob("dist-vsix/*.vsix"); assert len(files) == 1; zipfile.ZipFile(files[0]).extractall("output/vsix-smoke")'
@@ -94,6 +102,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-${{ matrix.partition }}
           path: ${{ steps.source.outputs.path }}/output/test-results.xml
           if-no-files-found: warn

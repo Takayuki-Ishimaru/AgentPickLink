@@ -63,7 +63,7 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 
 ## 公開CIとリリース確認
 
-`.github/workflows/ci.yml` は push / pull request / 手動実行で、Windows・macOS・Ubuntuの各ランナー上で次を実行します。Node.jsは22系です。
+`.github/workflows/ci.yml` は push / pull request / 手動実行で、Windows・macOS・Ubuntuの各ランナー上で次を実行します。Node.jsは22系です。Windowsは実ACL処理の時間を確保したうえで、テストファイルを4ジョブに分割してすべて実行します。VSIXの検証はOSごとに1ジョブで行います。
 
 | 確認項目                                         | Windows | macOS    | Ubuntu |
 | ------------------------------------------------ | ------- | -------- | ------ |
@@ -75,6 +75,8 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 | 展開したCLI・MCPの接続、brokerの起動・終了       | 実行    | 実行     | 実行   |
 
 UbuntuはOSのサンドボックス設定に対応する公式Chromeを使用します（[Chromiumの説明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)）。ブラウザーの存在とサンドボックス付き起動を先に確認し、未導入によるDOMテストのスキップを防ぎます。各OSの実行ログにOS・CPUアーキテクチャ・Node.js・ブラウザーバージョンを出力し、テスト結果をActionsのartifactに保存します。
+
+Ubuntuのパッケージスモークは `M365_AGENT_ALLOW_UNSUPPORTED_OS=1` を明示して実行します。現行製品の標準サポート範囲（Windows、本体開発向けmacOS）は変更しません。
 
 これはOSごとの自動動作検証です。VS Code拡張機能ホストのテストはAPIモックを使用し、ブラウザーはローカルの模擬Microsoft 365画面を操作します。実際のVS Code画面、実M365テナント、MFA・条件付きアクセス・可視ウィンドウでの再ログインはこのCIでは確認しません。OS固有のテストは該当OSで実行し、対話ウィンドウを必要とするテストはCIでは対象外です。成功件数だけでなくスキップ件数も確認してください。ランナーのOSバージョンはGitHubの `*-latest` に従うため、すべてのOSバージョンやWindowsデスクトップ実機での確認を保証するものではありません。
 
