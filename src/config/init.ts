@@ -32,24 +32,32 @@ export async function initializeLocalState(paths: AppPaths, preparer: LocalState
   // Initialization and broker election are independent critical sections. A
   // spawned broker starts while its parent owns startup.lock, so reusing that
   // lock here would deadlock descriptor publication.
-  await withFileLock(path.join(paths.root, "init.lock"), async () => {
-    const existingConfig = await readText(paths.config);
-    const existingRegistry = await readText(paths.registry);
-    const existingApprovals = await readText(paths.approvals);
-    const config = await loadGlobalConfig(paths);
-    await assertSafeProfilePath(config.browser.profilePath);
-    await preparer.prepareLocalState(config.browser.profilePath);
-    const registry = await loadRegistry(paths);
-    const approvals = await loadApprovals(paths);
-    if (existingConfig === undefined) await saveGlobalConfig(paths, config);
-    if (existingRegistry === undefined) await saveRegistry(paths, registry);
-    if (existingApprovals === undefined) await saveApprovals(paths, approvals);
-    const existingFiles = [
-      existingConfig === undefined ? undefined : paths.config,
-      existingRegistry === undefined ? undefined : paths.registry,
-      existingApprovals === undefined ? undefined : paths.approvals
-    ].filter((file): file is string => file !== undefined);
-    await ensurePrivateFiles(existingFiles);
-  });
+  await withFileLock(
+    path.join(paths.root, "init.lock"),
+    async () => {
+      const existingConfig = await readText(paths.config);
+      const existingRegistry = await readText(paths.registry);
+      const existingApprovals = await readText(paths.approvals);
+      const config = await loadGlobalConfig(paths);
+      await assertSafeProfilePath(config.browser.profilePath);
+      await preparer.prepareLocalState(config.browser.profilePath);
+      const registry = await loadRegistry(paths);
+      const approvals = await loadApprovals(paths);
+      if (existingConfig === undefined) await saveGlobalConfig(paths, config);
+      if (existingRegistry === undefined) await saveRegistry(paths, registry);
+      if (existingApprovals === undefined) await saveApprovals(paths, approvals);
+      const existingFiles = [
+        existingConfig === undefined ? undefined : paths.config,
+        existingRegistry === undefined ? undefined : paths.registry,
+        existingApprovals === undefined ? undefined : paths.approvals
+      ].filter((file): file is string => file !== undefined);
+      await ensurePrivateFiles(existingFiles);
+    },
+    {
+      // Concurrent MCP clients and their broker share this initialization. Real profile/ACL
+      // preparation outlasts the generic short lock retry budget, especially on Windows.
+      timeoutMs: process.platform === "win32" ? 60_000 : 10_000
+    }
+  );
   return paths;
 }

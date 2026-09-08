@@ -2,10 +2,9 @@
 // Uses an isolated empty workspace and broker; never opens a browser or contacts Microsoft 365.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -46,13 +45,13 @@ await access(path.join(packageRoot, "release-docs", "THIRD-PARTY-NOTICES.txt"));
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), "apl-package-smoke-"));
 const appData = path.join(temporary, "unused-app-data");
-// Pass an explicit environment so local development switches and user state cannot leak in.
-// Keep Windows' standard process environment: PowerShell/CIM and ACL initialization need it too.
+// Keep the OS process environment required by native tools such as Windows PowerShell.
+// Isolate application state and remove development/runtime overrides from the test children.
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key, value]) =>
       value !== undefined &&
-      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|SYSTEMDRIVE|COMPUTERNAME|USERNAME|USERDOMAIN|USERDOMAIN_ROAMINGPROFILE|HOMEDRIVE|HOMEPATH|LOGONSERVER|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|PUBLIC|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432|PSMODULEPATH)$/i.test(
+      !/^(M365_|PLAYWRIGHT_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_RUN_AS_NODE$|VSCODE_INSPECTOR_OPTIONS$)/i.test(
         key
       )
   )
@@ -66,57 +65,6 @@ const runCli = (...args) =>
     env,
     timeout: 15_000
   });
-const traceFile = path.join(temporary, "startup-trace.jsonl");
-if (process.platform === "win32") {
-  const preload = path.join(temporary, "trace.mjs");
-  await writeFile(
-    preload,
-    `
-    import { subscribe } from 'node:diagnostics_channel';
-    import { appendFileSync } from 'node:fs';
-    import path from 'node:path';
-    const record = (entry) => appendFileSync(${JSON.stringify(traceFile)}, JSON.stringify({at: Date.now(), parent: process.pid, ...entry}) + '\\n');
-    subscribe('child_process', ({process: child}) => {
-      const started = Date.now();
-      child.once('spawn', () => {
-        const args = child.spawnargs.join(' ');
-        record({event: 'spawn', pid: child.pid, file: path.basename(child.spawnfile), operation: args.includes('Get-CimInstance') ? 'drive check' : args.includes('APL_ACL_STAGE') ? 'ACL' : 'other'});
-      });
-      child.once('exit', (code, signal) => record({event: 'exit', pid: child.pid, ms: Date.now() - started, code, signal}));
-    });
-  `
-  );
-  env.NODE_OPTIONS = "--import=" + pathToFileURL(preload).href;
-}
-if (process.platform === "win32") {
-  await Promise.all(
-    [process.env, env].flatMap((processEnv, envIndex) =>
-      [false, true].map(async (cim) => {
-        const started = Date.now();
-        const script =
-          "Write-Output 'APL_PS_STARTED';" +
-          (cim ? "Get-CimInstance Win32_LogicalDisk | Select-Object -ExpandProperty DriveType;" : "") +
-          "Write-Output 'APL_PS_DONE'";
-        const pending = promisify(execFile)(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", script],
-          { env: processEnv, cwd: temporary, windowsHide: true, timeout: 30000 }
-        );
-        pending.child.stdin?.end();
-        try {
-          const result = await pending;
-          process.stdout.write(
-            `PowerShell comparison env=${envIndex} cim=${cim}: ${Date.now() - started}ms ${JSON.stringify(result.stdout)}\n`
-          );
-        } catch (error) {
-          process.stdout.write(
-            `PowerShell comparison env=${envIndex} cim=${cim}: ${Date.now() - started}ms failed ${JSON.stringify(error.stdout)}\n`
-          );
-        }
-      })
-    )
-  );
-}
 let brokerStarted = false;
 let phase = "CLI version";
 const clients = [
@@ -167,13 +115,6 @@ try {
   brokerStarted = true;
   phase = "concurrent cold broker startup";
   const startedAt = Date.now();
-  const startupDiagnostics = setInterval(() => {
-    void readdir(appData, { recursive: true }).then(
-      (files) =>
-        process.stdout.write(`Startup after ${Date.now() - startedAt}ms: ${JSON.stringify(files)}\n`),
-      () => process.stdout.write(`Startup after ${Date.now() - startedAt}ms: no local state yet\n`)
-    );
-  }, 30_000);
   const listedResults = await Promise.all(
     // Windows startup includes multiple real PowerShell ACL operations before the broker handshake.
     clients.map(async (client, index) => {
@@ -188,7 +129,7 @@ try {
         process.stdout.write(`MCP startup error: ${JSON.stringify(result.structuredContent)}\n`);
       return result;
     })
-  ).finally(() => clearInterval(startupDiagnostics));
+  );
   process.stdout.write(`Concurrent cold broker startup: ${Date.now() - startedAt}ms\n`);
   for (const listed of listedResults) {
     assert.notEqual(listed.isError, true, JSON.stringify(listed));
@@ -204,8 +145,6 @@ try {
   assert.deepEqual(stderr, ["", ""], "Packaged MCP startup must not emit errors");
 } catch (error) {
   process.stderr.write(`Package smoke failed during ${phase}: ${JSON.stringify(stderr)}\n`);
-  const trace = await readFile(traceFile, "utf8").catch(() => "");
-  if (trace) process.stderr.write(`Startup subprocess trace:\n${trace}\n`);
   throw error;
 } finally {
   await Promise.all(clients.map(closeClient));

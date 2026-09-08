@@ -1,7 +1,9 @@
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { DomainError } from "../domain/errors.js";
-import { executePowerShell } from "./powershell.js";
+const execFileAsync = promisify(execFile);
 
 /** Reject profile locations that could redirect secret-equivalent browser state. */
 export async function assertSafeProfilePath(profilePath: string): Promise<void> {
@@ -42,7 +44,10 @@ async function assertLocalWindowsDrive(target: string): Promise<void> {
     "while($probe){if(Test-Path -LiteralPath $probe){$item=Get-Item -Force -LiteralPath $probe;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){exit 5}};$parent=Split-Path -Parent $probe;if(!$parent -or $parent -eq $probe){break};$probe=$parent}"
   ].join(";");
   try {
-    await executePowerShell(script, 30_000);
+    await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      timeout: 30_000
+    });
   } catch (error) {
     throw new DomainError(
       "BROWSER_PROFILE_INVALID",
