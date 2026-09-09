@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HostAllowlist } from "../../domain/host-pattern.js";
-import { attachmentMediaType, extensionForAttachmentMediaType } from "../../domain/attachment-media.js";
+import { isGenericAttachmentName, filenameFromAttachmentUrl } from "../../domain/attachment-filename.js";
+import {
+  attachmentMediaType,
+  canonicalAttachmentMediaType,
+  extensionForAttachmentMediaType
+} from "../../domain/attachment-media.js";
 import type { AgentAttachment } from "../../domain/response.js";
 import { RESPONSE_SELECTORS } from "./selectors/common.js";
 import type {
@@ -202,7 +207,7 @@ export class AttachmentSaver {
         }
         const { body, headers } = downloaded;
 
-        const name = uniqueFilename(downloadedFilename(candidate, headers), usedNames);
+        const name = uniqueFilename(downloadedFilename(candidate, headers, body, downloaded.url), usedNames);
         const localPath = path.resolve(destination, name);
         await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
         totalBytes += body.length;
@@ -256,6 +261,7 @@ async function ensureDirectoryNoSymlinks(base: string, ...segments: string[]): P
 type DownloadedAttachment = {
   body: Buffer;
   headers: Record<string, string>;
+  url: string;
 };
 
 async function fetchAttachment(
@@ -316,7 +322,7 @@ async function fetchAttachment(
       throw new AttachmentStageError("attachment-body-rejected", "quota-exceeded");
     if (isHtml(headers["content-type"], body) && !isExplicitAttachment(headers["content-disposition"]))
       throw new AttachmentStageError("attachment-body-rejected", "html-rejected");
-    return { body, headers };
+    return { body, headers, url: response.url?.() ?? currentUrl.toString() };
   }
 }
 
@@ -523,9 +529,10 @@ async function saveDownloadControl(
   const downloadPromise = page.waitForEvent("download", { timeout: Math.min(timeoutMs, 30_000) });
   const verifiedPageOrigin = secureHttpsOrigin(page.url());
   let expectedBlobUrl: string | undefined;
+  let contentType: string | undefined;
   try {
-    const activation = await page.evaluate<{ expectedBlobUrl?: string } | undefined>(
-      (args: { selector: string; index: number; expectedName: string; expectedUrl?: string }) => {
+    const activation = await page.evaluate<{ expectedBlobUrl?: string; contentType?: string } | undefined>(
+      async (args: { selector: string; index: number; expectedName: string; expectedUrl?: string }) => {
         const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
         const response = nodes[nodes.length - 1];
         if (!response) throw new Error("attachment-response-missing");
@@ -559,10 +566,26 @@ async function saveDownloadControl(
         // is chosen by the browser. Retain the name check for legacy candidates without a URL.
         if (href?.startsWith("blob:") && !args.expectedUrl && anchor?.download !== args.expectedName)
           throw new Error("attachment-download-anchor-name-mismatch");
+        // Blob downloads have no HTTP response headers in the broker. Read only the MIME of
+        // this exact, same-origin blob before its click handler can revoke it. Never fetch an
+        // HTTP URL here, and never execute or decode the downloaded content.
+        let contentType: string | undefined;
+        if (href?.startsWith("blob:") && typeof location !== "undefined" && location.protocol === "https:") {
+          try {
+            if (new URL(href.slice(5)).origin === location.origin) {
+              const response = await fetch(href);
+              contentType = response.headers.get("content-type") ?? undefined;
+              await response.body?.cancel();
+            }
+          } catch {
+            // CSP or a revoked blob may prevent inspection; the download still decides success.
+          }
+        }
         // Read the selected anchor before activation: a click handler may synchronously replace
         // href or remove the node, but the URL we validate must be the control we selected.
+        if (href && anchor?.href !== href) throw new Error("attachment-download-anchor-url-mismatch");
         control.click();
-        return href?.startsWith("blob:") ? { expectedBlobUrl: href } : undefined;
+        return href?.startsWith("blob:") ? { expectedBlobUrl: href, contentType } : undefined;
       },
       {
         selector: RESPONSE_SELECTORS.join(", "),
@@ -572,6 +595,7 @@ async function saveDownloadControl(
       }
     );
     expectedBlobUrl = activation?.expectedBlobUrl;
+    contentType = activation?.contentType;
   } catch (error) {
     void downloadPromise.catch(() => undefined);
     throw error;
@@ -586,7 +610,7 @@ async function saveDownloadControl(
     allowedHosts,
     maxAttachmentBytes,
     remainingTotalBytes,
-    { expectedBlobUrl, verifiedPageOrigin, currentPageOrigin }
+    { expectedBlobUrl, verifiedPageOrigin, currentPageOrigin, contentType }
   );
 }
 
@@ -791,7 +815,10 @@ async function trySaveSharePointPreview(
       allowedHosts
     );
   }
-  const name = uniqueFilename(sanitizeFilename(candidate.name), usedNames);
+  const name = uniqueFilename(
+    downloadedFilename(candidate, downloaded.headers, downloaded.body, downloaded.url),
+    usedNames
+  );
   const localPath = path.resolve(destination, name);
   await writeFile(localPath, downloaded.body, { flag: "wx", mode: 0o600 });
   return {
@@ -916,19 +943,27 @@ async function persistBrowserDownload(
     await download.cancel?.().catch(() => undefined);
     throw new Error("attachment-download-host-rejected");
   }
-  const suggestedName = sanitizeFilename(download.suggestedFilename());
+  const suggestedName = download.suggestedFilename().trim() || `attachment-${candidate.index}`;
   const temporaryPath = await download.path();
   if (!temporaryPath) throw new Error("attachment-download-path-missing");
   const body = await readFile(temporaryPath);
   if (body.length > maxAttachmentBytes || body.length > remainingTotalBytes)
     throw new Error("attachment-download-body-rejected");
-  const name = uniqueFilename(suggestedName, usedNames);
+  const name = uniqueFilename(
+    completeAttachmentFilename(
+      selectAttachmentFilename(candidate, suggestedName, sourceValue),
+      validation.contentType,
+      body,
+      suggestedName
+    ),
+    usedNames
+  );
   const localPath = path.resolve(destination, name);
   await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
   return {
     index: candidate.index,
     name,
-    mediaType: mediaTypeForName(name),
+    mediaType: normalizeMediaType(validation.contentType, name),
     sourceUrl: source.toString(),
     status: "saved",
     localPath,
@@ -939,6 +974,7 @@ async function persistBrowserDownload(
 }
 
 type BrowserDownloadValidation = {
+  contentType?: string;
   expectedBlobUrl?: string;
   verifiedPageOrigin?: string;
   currentPageOrigin?: string;
@@ -1003,7 +1039,7 @@ function safeSegment(value: string, fallback: string): string {
 
 export function sanitizeFilename(value: string): string {
   const leaf = path.basename(value.trim().replace(/\\/g, "/"));
-  let safe = Array.from(leaf.normalize("NFKC"))
+  let safe = Array.from(leaf)
     .map((character) =>
       (character.codePointAt(0) ?? 0) <= 0x1f || '<>:"/\\|?*'.includes(character) ? "_" : character
     )
@@ -1044,34 +1080,104 @@ function isExplicitAttachment(value: string | undefined): boolean {
   return /^\s*attachment(?:\s*;|$)/i.test(value ?? "");
 }
 
-function normalizeMediaType(contentType: string | undefined, name: string): string {
-  const value = contentType?.split(";", 1)[0]?.trim().toLocaleLowerCase();
-  return value && value !== "application/octet-stream" ? value : mediaTypeForName(name);
+function normalizeMediaType(contentType: string | undefined, name: string, body?: Buffer): string {
+  const value = canonicalAttachmentMediaType(contentType);
+  if (
+    value &&
+    !["application/octet-stream", "text/plain", "application/zip"].includes(value) &&
+    extensionForAttachmentMediaType(value) !== ".bin"
+  )
+    return value;
+  const inferred = attachmentMediaType(name, body);
+  return inferred !== "application/octet-stream" ? inferred : (value ?? "application/octet-stream");
 }
 
-function downloadedFilename(candidate: AttachmentCandidate, headers: Record<string, string>): string {
+function downloadedFilename(
+  candidate: AttachmentCandidate,
+  headers: Record<string, string>,
+  body: Buffer,
+  finalUrl?: string
+): string {
   const fromHeader = filenameFromContentDisposition(headers["content-disposition"]);
-  if (fromHeader) return fromHeader;
   const rawCandidateName = candidate.name.trim();
-  if (rawCandidateName) return sanitizeFilename(rawCandidateName);
+  if (fromHeader || rawCandidateName || finalUrl)
+    return completeAttachmentFilename(
+      selectAttachmentFilename(candidate, fromHeader, finalUrl),
+      headers["content-type"],
+      body,
+      fromHeader ?? rawCandidateName
+    );
   return sanitizeFilename(
-    `attachment-${candidate.index}${extensionForAttachmentMediaType(headers["content-type"])}`
+    `attachment-${candidate.index}${extensionForAttachmentMediaType(normalizeMediaType(headers["content-type"], "", body))}`
   );
+}
+
+/** A transport placeholder must not hide a filename supplied by the agent's selected file. */
+function selectAttachmentFilename(
+  candidate: AttachmentCandidate,
+  delivered?: string,
+  finalUrl?: string
+): string {
+  const sourceNames = [candidate.sourceFilename, candidate.name];
+  const names = [
+    delivered,
+    ...sourceNames,
+    filenameFromAttachmentUrl(finalUrl),
+    filenameFromAttachmentUrl(candidate.url)
+  ]
+    .filter((name): name is string => !!name?.trim())
+    .map(sanitizeFilename);
+  return (
+    names.find((name) => !isGenericAttachmentName(name)) ??
+    (delivered?.trim()
+      ? sanitizeFilename(delivered)
+      : candidate.name.trim()
+        ? sanitizeFilename(candidate.name)
+        : `attachment-${candidate.index}`)
+  );
+}
+
+/** Preserve existing extensions and intentionally extensionless text/unknown files. MIME is
+ * available for HTTP downloads; browser downloads use bounded signature inspection and the
+ * selected response file's name. Only the saved name changes, never the original bytes. */
+function completeAttachmentFilename(
+  value: string,
+  contentType: string | undefined,
+  body: Buffer,
+  fallbackName = ""
+): string {
+  const name = sanitizeFilename(value);
+  if (path.extname(name)) return name;
+  let mediaType = normalizeMediaType(contentType, name, body);
+  if (["application/octet-stream", "text/plain", "application/zip"].includes(mediaType)) {
+    const fromSourceName = attachmentMediaType(sanitizeFilename(fallbackName));
+    if (fromSourceName !== "application/octet-stream") mediaType = fromSourceName;
+  }
+  const extension = extensionForAttachmentMediaType(mediaType);
+  if (extension === ".bin" || (mediaType === "text/plain" && !/^attachment-\d+$/.test(name))) return name;
+  // Leave room for the suffix after the filename sanitizer's length limit.
+  return `${name.slice(0, 240 - extension.length)}${extension}`;
 }
 
 function filenameFromContentDisposition(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const encoded = value.match(/(?:^|;)\s*filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i)?.[1];
+  const encoded = value
+    .match(/(?:^|;)\s*filename\*\s*=\s*([^;]+)/i)?.[1]
+    ?.trim()
+    .replace(/^"|"$/g, "");
   const basic = value.match(/(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i);
-  let raw = encoded?.trim().replace(/^"|"$/g, "") ?? basic?.[1] ?? basic?.[2]?.trim();
-  if (!raw) return undefined;
+  let raw = basic?.[1] ?? basic?.[2]?.trim();
   if (encoded) {
     try {
-      raw = decodeURIComponent(raw);
+      const utf8 = encoded.match(/^UTF-8'[^']*'(.*)$/i)?.[1];
+      // Retain compatibility with servers sending bare percent-encoded names, but do not
+      // turn an unsupported charset/language declaration into part of the filename.
+      if (utf8 !== undefined || !encoded.includes("'")) raw = decodeURIComponent(utf8 ?? encoded);
     } catch {
-      return undefined;
+      // A valid basic filename is still usable if filename* is malformed.
     }
   }
+  if (!raw) return undefined;
   const name = sanitizeFilename(raw);
   return name;
 }

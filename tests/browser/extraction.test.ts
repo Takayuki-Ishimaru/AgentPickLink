@@ -139,6 +139,24 @@ describe("browser response extraction helpers", () => {
     ]);
   });
 
+  it("keeps original sharing-link names and distinct files with the same name", () => {
+    const host = new HostAllowlist(["tenant.sharepoint.com"]);
+    expect(
+      extractAttachmentCandidates(
+        [
+          { title: "四半期レポート", url: "https://tenant.sharepoint.com/:b:/p/person/opaque1" },
+          {
+            title: "Open file",
+            url: "https://tenant.sharepoint.com/:b:/p/person/opaque2?file=%E5%A3%B2%E4%B8%8A.pdf"
+          },
+          { title: "同じ名前.pdf", url: "https://tenant.sharepoint.com/a" },
+          { title: "同じ名前.pdf", url: "https://tenant.sharepoint.com/b" }
+        ],
+        host
+      ).map((file) => file.name)
+    ).toEqual(["四半期レポート", "売上.pdf", "同じ名前.pdf", "同じ名前.pdf"]);
+  });
+
   it("accepts arbitrary filename extensions on HTTPS attachment links", () => {
     const names = [
       "photo.jpeg",

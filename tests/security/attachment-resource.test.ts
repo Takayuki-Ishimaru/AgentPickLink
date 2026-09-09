@@ -6,6 +6,7 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FrontendBrokerPort } from "../../src/frontend/broker-port.js";
 import { createSdkServer } from "../../src/frontend/mcp-server.js";
+import { attachmentFixtures } from "../helpers/attachment-fixtures.js";
 
 const minimalBroker: FrontendBrokerPort = {
   list: async (_root, requestId) => ({
@@ -119,6 +120,16 @@ describe("attachment resource containment", () => {
   it("returns attachment bytes exactly and only decodes safe, valid UTF-8 text", async () => {
     const attachmentsDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-media-"));
     const fixtures = [
+      ...attachmentFixtures().map(({ body, mediaType }, index) => ({
+        name: `legacy-${index}`,
+        bytes: body,
+        expected: { mimeType: mediaType, blob: true }
+      })),
+      {
+        name: "attachment-1",
+        bytes: Buffer.from("%PDF-1.3\nlegacy extensionless PDF\0\xff"),
+        expected: { mimeType: "application/pdf", blob: true }
+      },
       {
         name: "image.png",
         bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]),

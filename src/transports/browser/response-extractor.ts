@@ -11,6 +11,11 @@ import {
 } from "./types.js";
 
 import { HostAllowlist } from "../../domain/host-pattern.js";
+import {
+  attachmentNameFromLabel,
+  filenameFromAttachmentUrl,
+  isGenericAttachmentName
+} from "../../domain/attachment-filename.js";
 
 export interface ResponseExtractorOptions {
   maxCodePoints?: number;
@@ -64,7 +69,36 @@ export class ResponseExtractor {
                 const downloadName = element.getAttribute("download")?.trim() || "";
                 let container: Element | null = element;
                 let title = "";
-                for (let depth = 0; container && container !== node && depth < 5; depth++) {
+                const filenameLabels: string[] = [];
+                for (let depth = 0; container && container !== attachmentRoot && depth < 5; depth++) {
+                  // Stop before a shared container can contribute a neighbouring file's name.
+                  if (
+                    container !== element &&
+                    Array.from(container.querySelectorAll('a[download], button, [role="button"]')).filter(
+                      (control) =>
+                        control.matches("a[download]") ||
+                        /download|ダウンロード/i.test(
+                          [
+                            control.getAttribute("aria-label"),
+                            control.getAttribute("title"),
+                            control.textContent
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                        )
+                    ).length > 1
+                  )
+                    break;
+                  for (const label of [
+                    container.getAttribute("title"),
+                    container.getAttribute("aria-label"),
+                    ...Array.from(container.querySelectorAll("span"))
+                      .slice(0, 20)
+                      .map((child) => child.textContent),
+                    container.textContent
+                  ]) {
+                    if (label?.trim()) filenameLabels.push(label.trim());
+                  }
                   const text = (container.textContent || "").replace(/\s+/g, " ").trim();
                   if (text && text.length <= 255 && text.length > title.length) title = text;
                   container = container.parentElement;
@@ -72,6 +106,7 @@ export class ResponseExtractor {
                 return {
                   title: downloadName || title || `attachment-${downloadControlIndex + 1}`,
                   downloadFilename: downloadName || undefined,
+                  filenameLabels,
                   downloadUrl: element.matches("a[download]")
                     ? (element as HTMLAnchorElement).href
                     : undefined,
@@ -189,7 +224,17 @@ export function extractAttachmentCandidates(
   const seen = new Set<string>();
   const seenNames = new Map<string, number>();
   const addCandidate = (nameKey: string, next: AttachmentCandidate) => {
-    const existingIndex = seenNames.get(nameKey);
+    let existingIndex = seenNames.get(nameKey);
+    const sameName = existingIndex === undefined ? undefined : out[existingIndex];
+    if (
+      sameName?.url &&
+      next.url &&
+      sameName.url !== next.url &&
+      candidatePriority(sameName) === candidatePriority(next)
+    ) {
+      nameKey += `\0${next.url}`;
+      existingIndex = seenNames.get(nameKey);
+    }
     if (existingIndex !== undefined) {
       const existing = out[existingIndex]!;
       if (candidatePriority(next) >= candidatePriority(existing)) return;
@@ -218,9 +263,16 @@ export function extractAttachmentCandidates(
         : (explicitName ?? title);
     const normalizedName = name.toLocaleLowerCase();
     if (Number.isInteger(candidate.downloadControlIndex)) {
-      addCandidate(normalizedName, {
+      const labels = Array.isArray(candidate.filenameLabels) ? candidate.filenameLabels : [];
+      const sourceNames = labels
+        .filter((label): label is string => typeof label === "string")
+        .map(attachmentNameFromLabel);
+      const sourceFilename =
+        sourceNames.find((label) => label && /\.[^\s.]+$/.test(label)) ?? sourceNames.find(Boolean);
+      addCandidate((sourceFilename ?? name).toLocaleLowerCase(), {
         index: 0,
         name,
+        ...(sourceFilename && sourceFilename !== name ? { sourceFilename } : {}),
         downloadControlIndex: candidate.downloadControlIndex as number,
         ...(typeof candidate.downloadUrl === "string" ? { url: candidate.downloadUrl } : {})
       });
@@ -257,7 +309,11 @@ export function extractAttachmentCandidates(
     seen.add(normalized);
     addCandidate(explicitName ? normalizedName : normalized, {
       index: 0,
-      name: explicitName ?? `attachment-${out.length + 1}`,
+      name:
+        explicitName ??
+        filenameFromAttachmentUrl(normalized) ??
+        (isGenericAttachmentName(title) ? undefined : attachmentNameFromLabel(title)) ??
+        `attachment-${out.length + 1}`,
       url: normalized
     });
   }

@@ -1,5 +1,43 @@
 # リリースノート
 
+## v0.1.3 Beta — 2026-09-09
+
+- 添付ファイルを保存する際、Microsoft 365 が提供する元のファイル名を優先するよう改善しました。日本語・空白・丸数字を保持し、同名の別ファイルは連番を付けて保存します。
+- PDF・Office 文書・画像・音声・動画・圧縮ファイルが、拡張子なしの名前で保存される問題を修正しました。取得元の情報と対応する形式の識別情報を使って、欠けた拡張子を補います。
+- 旧版で拡張子なしのまま保存したファイルも、MCP 経由で読み出す際に形式を識別する処理を改善しました。
+- AI クライアント向けに、保存した PDF の読み出しと表示確認の案内を改善しました。
+
+### 更新方法・配布物
+
+`agent-pick-link-0.1.3.vsix` を VS Code の **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。既存の設定・ワークスペース承認・専用ブラウザープロファイルを引き続き利用できます。
+
+- `agent-pick-link-0.1.3.vsix` — VS Code 拡張機能。
+- `agent-pick-link-0.1.3-source.zip` — テスト・ビルドに必要なソース。
+- `SHA256SUMS.txt` — 上記ファイルの SHA-256 チェックサム。
+
+### ファイルの扱い・対応範囲
+
+保存済みファイルの名前や内容は自動変更しません。新しく保存するファイルも、元の名前を取得できない場合は代替名を使用します。パス要素や OS で使えない文字は取り除きます。既存の拡張子や、README などの意図的な拡張子なしテキストは保持します。
+
+形式の識別は、文書の内容・表示・再生の正しさを保証しません。対応する文書リーダーや表示ツールは別途必要です。詳しくは [トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向け、Ubuntu は実験的な検証対象です。公開 CI はローカルの模擬画面を使用し、実 Microsoft 365 テナントや実際の VS Code 画面の確認は含みません。このリリースでの実テナントの追加確認は未実施です。利用手順は [README](README.md)、自動テストの範囲は [検証範囲](RELEASE-CHECKLIST.md) を参照してください。
+
+### English
+
+- Improved attachment naming to prefer the original filename supplied by Microsoft 365. Japanese characters, spaces, and circled numbers are preserved; different files with the same name receive a numeric suffix.
+- Fixed PDF, Office, image, audio, video, and archive attachments being saved without an extension. Missing extensions are filled using source metadata and supported file-format signatures.
+- Improved media-type detection when reading files saved without an extension by an earlier version through MCP.
+- Improved guidance for AI clients on reading saved PDFs and checking their rendering.
+
+Install `agent-pick-link-0.1.3.vsix` using **Extensions: Install from VSIX…**, reload VS Code, and restart external clients' MCP connections. Existing settings, workspace approvals, and the dedicated browser profile can be reused. Source is available as `agent-pick-link-0.1.3-source.zip`, with checksums in `SHA256SUMS.txt`.
+
+Previously saved files are not renamed or modified automatically. New downloads use a fallback name only when the original name is unavailable. Path components and characters that cannot be used in filenames are removed. Existing extensions and intentionally extensionless text files such as README are preserved.
+
+Format detection does not validate document content, rendering, or playback. Compatible readers and rendering tools are still required separately.
+
+This beta primarily targets Windows 11 with Microsoft Edge. macOS is intended for development and verification; Ubuntu remains experimental. Public CI uses local mock pages and does not cover a live Microsoft 365 tenant or the actual VS Code interface. Additional live-tenant checks have not been performed for this release. See the [English README](README.en.md) for setup.
+
 ## v0.1.2 Beta
 
 - Codex 連携の設定更新で、配列テーブルなどの無関係な設定が消える問題を修正しました。変更前のバックアップを保存し、対象外の設定を保持します。

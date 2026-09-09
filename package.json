@@ -2,7 +2,7 @@
   "name": "agent-pick-link",
   "displayName": "AgentPickLink for M365",
   "publisher": "agentpicklink",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Policy-enforced local MCP bridge for consulting approved Microsoft 365 agents from VS Code",
   "icon": "media/icon.png",
   "galleryBanner": {

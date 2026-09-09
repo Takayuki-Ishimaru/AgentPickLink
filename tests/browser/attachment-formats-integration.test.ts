@@ -13,6 +13,7 @@ import { attachmentMediaType } from "../../src/domain/attachment-media.js";
 import { AttachmentSaver } from "../../src/transports/browser/attachment-saver.js";
 import { ResponseExtractor } from "../../src/transports/browser/response-extractor.js";
 import type { PageLike } from "../../src/transports/browser/types.js";
+import { attachmentFixtures } from "../helpers/attachment-fixtures.js";
 
 const executable = [
   process.env.M365_AGENT_TEST_BROWSER,
@@ -25,8 +26,216 @@ const executable = [
 ].find((candidate): candidate is string => !!candidate && existsSync(candidate));
 
 describe.skipIf(!executable)("arbitrary response attachments through a real browser", () => {
+  it("saves each file under its nearby M365 filename while keeping download-control identity", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-agent-filenames-"));
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const context = await browser.newContext({ acceptDownloads: true });
+      const page = await context.newPage();
+      await page.route("https://attachments.example.test/**", (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: '<div data-message-author-role="assistant"><h2>別の資料.pdf</h2></div>'
+        })
+      );
+      await page.goto("https://attachments.example.test/chat");
+      await page.evaluate(() => {
+        const root = document.querySelector('[data-message-author-role="assistant"]')!;
+        for (const [index, name] of ["売上 報告書①.pdf", "売上 報告書①.pdf", ""].entries()) {
+          const card = document.createElement("div");
+          const label = document.createElement("span");
+          label.textContent = name;
+          const link = document.createElement("a");
+          link.download = `attachment-${index + 1}`;
+          link.textContent = "Download";
+          link.href = URL.createObjectURL(new Blob([`%PDF-1.3\nfile ${index}`], { type: "application/pdf" }));
+          card.append(label, link);
+          root.append(card);
+        }
+      });
+      const pageLike = page as unknown as PageLike;
+      const extracted = await new ResponseExtractor().extract(pageLike, { assistantCount: 0 });
+      expect(extracted.attachmentCandidates).toHaveLength(3);
+      expect(extracted.attachmentCandidates?.slice(0, 2)).toMatchObject([
+        { name: "attachment-1", sourceFilename: "売上 報告書①.pdf" },
+        { name: "attachment-2", sourceFilename: "売上 報告書①.pdf" }
+      ]);
+      const saved = await new AttachmentSaver({ enabled: true, directory }).save(
+        pageLike,
+        extracted.attachmentCandidates!,
+        { workspaceKey: "workspace", requestId: "original-names" }
+      );
+      expect(saved.map((file) => file.name)).toEqual([
+        "売上 報告書①.pdf",
+        "売上 報告書①-2.pdf",
+        "attachment-3.pdf"
+      ]);
+      for (const [index, file] of saved.entries()) {
+        expect(file.status).toBe("saved");
+        expect(await readFile(file.localPath!, "utf8")).toBe(`%PDF-1.3\nfile ${index}`);
+      }
+    } finally {
+      await browser.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("recovers extensionless binary formats from generic blobs and reads their original bytes through MCP", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-generic-format-flow-"));
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const unused = async (): Promise<never> => {
+      throw new Error("unused broker operation");
+    };
+    const server = await createSdkServer({ list: unused, ask: unused, session: unused }, () => directory, {
+      attachmentsDirectory: directory
+    });
+    const client = new Client({ name: "extensionless-roundtrip", version: "1" });
+    try {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const context = await browser.newContext({ acceptDownloads: true });
+      const page = await context.newPage();
+      await page.route("https://attachments.example.test/**", (route) =>
+        route.fulfill({ contentType: "text/html", body: '<div data-message-author-role="assistant"></div>' })
+      );
+      await page.goto("https://attachments.example.test/chat");
+      const fixtures: { extension: string; mediaType: string; body: Buffer; blobType?: string }[] = [
+        ...attachmentFixtures(),
+        {
+          extension: "csv",
+          mediaType: "text/csv",
+          blobType: "text/csv; charset=utf-16le",
+          body: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("項目,値\r\n東京,42", "utf16le")])
+        },
+        {
+          extension: "tsv",
+          mediaType: "text/tab-separated-values",
+          blobType: "text/tab-separated-values",
+          body: Buffer.from("項目\t値\n東京\t42")
+        },
+        {
+          extension: "md",
+          mediaType: "text/markdown",
+          blobType: "text/x-markdown",
+          body: Buffer.from("# 日本語")
+        },
+        {
+          extension: "json",
+          mediaType: "application/json",
+          blobType: "application/json",
+          body: Buffer.from('{"日本語":42}')
+        },
+        {
+          extension: "xml",
+          mediaType: "application/xml",
+          blobType: "text/xml",
+          body: Buffer.from("<result>日本語</result>")
+        },
+        {
+          extension: "yaml",
+          mediaType: "application/yaml",
+          blobType: "application/x-yaml",
+          body: Buffer.from("日本語: 42")
+        },
+        {
+          extension: "svg",
+          mediaType: "image/svg+xml",
+          blobType: "image/svg+xml",
+          body: Buffer.from("<svg><script>globalThis.attachmentExecuted=true</script></svg>")
+        },
+        {
+          extension: "html",
+          mediaType: "text/html",
+          blobType: "text/html",
+          body: Buffer.from("<!doctype html><script>globalThis.attachmentExecuted=true</script>")
+        }
+      ];
+      // Respect the product's default ten-file limit rather than loosening it for the test.
+      for (let start = 0; start < fixtures.length; start += 10) {
+        const files = fixtures.slice(start, start + 10);
+        await page.evaluate(
+          (items) => {
+            const reply = document.querySelector('[data-message-author-role="assistant"]')!;
+            for (const old of reply.querySelectorAll("a")) URL.revokeObjectURL(old.href);
+            reply.replaceChildren();
+            for (const [index, item] of items.entries()) {
+              const anchor = document.createElement("a");
+              anchor.download = `attachment-${index + 1}`;
+              anchor.textContent = anchor.download;
+              anchor.href = URL.createObjectURL(new Blob([new Uint8Array(item.bytes)], { type: item.type }));
+              reply.append(anchor);
+            }
+          },
+          files.map((file) => ({ bytes: [...file.body], type: file.blobType ?? "application/octet-stream" }))
+        );
+        const pageLike = page as unknown as PageLike;
+        const extracted = await new ResponseExtractor().extract(pageLike, { assistantCount: 0 });
+        const saved = await new AttachmentSaver({ enabled: true, directory, timeoutMs: 5_000 }).save(
+          pageLike,
+          extracted.attachmentCandidates!,
+          { workspaceKey: "workspace", requestId: `batch-${start}` }
+        );
+        expect(saved).toHaveLength(files.length);
+        for (const [index, file] of files.entries()) {
+          expect(saved[index]).toMatchObject({
+            status: "saved",
+            name:
+              file.extension === "yaml"
+                ? expect.stringMatching(new RegExp(`^attachment-${index + 1}\\.ya?ml$`))
+                : `attachment-${index + 1}.${file.extension}`,
+            mediaType: file.mediaType,
+            sha256: createHash("sha256").update(file.body).digest("hex")
+          });
+          const resource = await client.readResource({ uri: pathToFileURL(saved[index]!.localPath!).href });
+          const content = resource.contents[0]!;
+          expect(content.mimeType).toBe(file.mediaType);
+          expect(
+            "blob" in content
+              ? Buffer.from(content.blob as string, "base64")
+              : Buffer.from(content.text as string, "utf8")
+          ).toEqual(file.body);
+          expect(await readFile(saved[index]!.localPath!)).toEqual(file.body);
+        }
+      }
+      // MIME inspection awaits a Blob response. Re-check the anchor afterward so a page cannot
+      // retarget it to active content during that await and cause an unintended click.
+      const beforeRetarget = await new ResponseExtractor().extract(page as unknown as PageLike, {
+        assistantCount: 0
+      });
+      let downloads = 0;
+      page.on("download", () => downloads++);
+      await page.evaluate(() => {
+        const originalFetch = window.fetch;
+        window.fetch = async (...args) => {
+          const response = await originalFetch(...args);
+          document.querySelector("a")!.href = "javascript:globalThis.attachmentExecuted=true";
+          return response;
+        };
+      });
+      const refused = await new AttachmentSaver({ enabled: true, directory, timeoutMs: 500 }).save(
+        page as unknown as PageLike,
+        [beforeRetarget.attachmentCandidates![0]!],
+        { workspaceKey: "workspace", requestId: "retarget" }
+      );
+      expect(refused[0]?.status).toBe("not-saved");
+      expect(downloads).toBe(0);
+      expect(await page.evaluate(() => Reflect.get(globalThis, "attachmentExecuted"))).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+      await browser.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("extracts and saves explicit files without changing names or bytes or executing their content", async () => {
-    const files = [
+    const files: { name: string; body: Buffer; savedName?: string }[] = [
+      {
+        name: "attachment-1",
+        body: Buffer.from("%PDF-1.3\nsynthetic extensionless PDF\0\xff"),
+        savedName: "attachment-1.pdf"
+      },
       {
         name: "pixel.png",
         body: Buffer.from(
@@ -118,11 +327,11 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
       expect(saved).toHaveLength(files.length);
       for (const [index, file] of files.entries()) {
         expect(saved[index]).toMatchObject({
-          name: file.name,
+          name: file.savedName ?? file.name,
           status: "saved",
           sizeBytes: file.body.length,
           sha256: createHash("sha256").update(file.body).digest("hex"),
-          mediaType: attachmentMediaType(file.name)
+          mediaType: attachmentMediaType(file.savedName ?? file.name)
         });
         expect(await readFile(saved[index]!.localPath!)).toEqual(file.body);
       }
@@ -168,7 +377,7 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
               ? Buffer.from(content.blob as string, "base64")
               : Buffer.from(content.text as string, "utf8");
           expect(bytes).toEqual(file.body);
-          expect(content.mimeType).toBe(attachmentMediaType(file.name));
+          expect(content.mimeType).toBe(attachmentMediaType(file.savedName ?? file.name));
         }
         // Replacing a same-name anchor after extraction must not activate a different blob.
         let downloadCount = 0;

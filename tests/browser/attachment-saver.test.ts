@@ -8,6 +8,7 @@ import {
   sharePointViewerDownloadUrl
 } from "../../src/transports/browser/attachment-saver.js";
 import type { PageLike } from "../../src/transports/browser/types.js";
+import { attachmentFixtures } from "../helpers/attachment-fixtures.js";
 
 /** Which of the saver's page scripts a fake `evaluate` was handed, by a marker in its source. */
 function evaluateStep(fn: unknown): "reveal" | "open-card" | "download-control" {
@@ -18,6 +19,276 @@ function evaluateStep(fn: unknown): "reveal" | "open-card" | "download-control" 
 }
 
 describe("response attachment saving", () => {
+  it.each([
+    { delivered: "attachment-1.pdf", original: "売上 報告書①.pdf", expected: "売上 報告書①.pdf" },
+    { delivered: "download.pdf", original: "四半期レポート", expected: "四半期レポート.pdf" },
+    {
+      delivered: "12345678-1234-1234-1234-1234567890ab.pdf",
+      original: "営業計画.pdf",
+      expected: "営業計画.pdf"
+    },
+    { delivered: "agent-final.pdf", original: "UI-label.pdf", expected: "agent-final.pdf" },
+    { delivered: "", original: "成果物.pdf", expected: "成果物.pdf" },
+    {
+      delivered: "attachment-1.pdf",
+      original: "attachment-1",
+      url: "https://tenant.sharepoint.com/files/%E5%96%B6%E6%A5%AD%E8%A8%88%E7%94%BB.pdf",
+      expected: "営業計画.pdf"
+    },
+    {
+      delivered: "download.pdf",
+      original: "attachment-1",
+      url: "https://tenant.sharepoint.com/download.aspx?file=%E5%96%B6%E6%A5%AD%E8%A8%88%E7%94%BB.pdf",
+      expected: "営業計画.pdf"
+    },
+    { delivered: "attachment-1.pdf", original: "attachment-1", expected: "attachment-1.pdf" }
+  ])("uses the original name instead of a transport placeholder: $expected", async (fixture) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-original-name-"));
+    const body = Buffer.from("%PDF-1.3\noriginal bytes");
+    const temporaryPath = path.join(directory, "browser.tmp");
+    await writeFile(temporaryPath, body);
+    const url = fixture.url ?? "https://tenant.sharepoint.com/download/opaque";
+    try {
+      for (const mode of ["http", "browser"] as const) {
+        const page: PageLike = {
+          url: () => "https://m365.example.test/chat",
+          evaluate: async () => undefined as never,
+          waitForEvent: async () => ({
+            url: () => url,
+            suggestedFilename: () => fixture.delivered,
+            path: async () => temporaryPath,
+            failure: async () => null
+          }),
+          context: () => ({
+            request: {
+              get: async () => ({
+                ok: () => true,
+                status: () => 200,
+                headers: () => ({
+                  "content-type": "application/pdf",
+                  "content-disposition": `attachment; filename*=UTF-8'ja'${encodeURIComponent(fixture.delivered)}`
+                }),
+                body: async () => body,
+                url: () => url
+              })
+            }
+          })
+        };
+        const [saved] = await new AttachmentSaver({
+          enabled: true,
+          directory,
+          allowedHosts: ["tenant.sharepoint.com"]
+        }).save(
+          page,
+          [
+            {
+              index: 1,
+              name: fixture.original,
+              ...(mode === "browser" ? { downloadControlIndex: 0 } : { url })
+            }
+          ],
+          { workspaceKey: "workspace", requestId: mode }
+        );
+        expect(saved).toMatchObject({ status: "saved", name: fixture.expected });
+        expect(await readFile(saved!.localPath!)).toEqual(body);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(attachmentFixtures())(
+    "recovers $extension over HTTP and browser downloads with no MIME or filename extension",
+    async ({ body, extension, mediaType }) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "apl-format-saving-"));
+      const temporaryPath = path.join(directory, "download.tmp");
+      await writeFile(temporaryPath, body);
+      try {
+        for (const mode of ["http", "browser"] as const) {
+          const page: PageLike = {
+            url: () => "https://m365.example.test/chat",
+            evaluate: async () => undefined as never,
+            waitForEvent: async () => ({
+              url: () => "https://tenant.sharepoint.com/download/opaque",
+              suggestedFilename: () => "attachment-1",
+              path: async () => temporaryPath,
+              failure: async () => null
+            }),
+            context: () => ({
+              request: {
+                get: async () => ({
+                  ok: () => true,
+                  status: () => 200,
+                  headers: () => ({ "content-type": "application/octet-stream" }),
+                  body: async () => body
+                })
+              }
+            })
+          };
+          const [saved] = await new AttachmentSaver({
+            enabled: true,
+            directory,
+            allowedHosts: ["tenant.sharepoint.com"]
+          }).save(
+            page,
+            [
+              {
+                index: 1,
+                name: "attachment-1",
+                ...(mode === "http"
+                  ? { url: "https://tenant.sharepoint.com/download/opaque" }
+                  : { downloadControlIndex: 0 })
+              }
+            ],
+            { workspaceKey: "workspace", requestId: mode }
+          );
+          expect(saved).toMatchObject({
+            status: "saved",
+            name: `attachment-1.${extension}`,
+            mediaType,
+            sha256: createHash("sha256").update(body).digest("hex")
+          });
+          expect(await readFile(saved!.localPath!)).toEqual(body);
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(["doc", "xls", "ppt", "csv", "tsv", "md", "json", "xml", "svg", "html", "yaml"])(
+    "uses the selected attachment's %s filename when the browser only suggests a generic name",
+    async (extension) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "apl-format-hint-"));
+      const temporaryPath = path.join(directory, "download.tmp");
+      const body = Buffer.from("untyped fixture bytes");
+      await writeFile(temporaryPath, body);
+      try {
+        const page: PageLike = {
+          url: () => "https://m365.example.test/chat",
+          evaluate: async () => undefined as never,
+          waitForEvent: async () => ({
+            url: () => "https://tenant.sharepoint.com/download/opaque",
+            suggestedFilename: () => "download",
+            path: async () => temporaryPath,
+            failure: async () => null
+          })
+        };
+        const [saved] = await new AttachmentSaver({
+          enabled: true,
+          directory,
+          allowedHosts: ["tenant.sharepoint.com"]
+        }).save(page, [{ index: 1, name: `report.${extension}`, downloadControlIndex: 0 }], {
+          workspaceKey: "workspace",
+          requestId: "hint"
+        });
+        expect(saved).toMatchObject({ status: "saved", name: `report.${extension}` });
+        expect(await readFile(saved!.localPath!)).toEqual(body);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    { name: "attachment-1", type: "application/vnd.ms-excel", body: "legacy", expected: "attachment-1.xls" },
+    { name: "attachment-1", type: "application/msword", body: "legacy", expected: "attachment-1.doc" },
+    {
+      name: "attachment-1",
+      type: "application/vnd.ms-powerpoint",
+      body: "legacy",
+      expected: "attachment-1.ppt"
+    },
+    { name: "attachment-1", type: "text/csv; charset=utf-16le", body: "a,b", expected: "attachment-1.csv" },
+    { name: "attachment-1", type: "text/tab-separated-values", body: "a\tb", expected: "attachment-1.tsv" },
+    { name: "attachment-1", type: "application/json", body: "{}", expected: "attachment-1.json" },
+    { name: "attachment-1", type: "text/x-markdown", body: "# title", expected: "attachment-1.md" },
+    { name: "attachment-1", type: "application/x-yaml", body: "value: 1", expected: "attachment-1.yaml" },
+    { name: "attachment-1", type: "text/xml", body: "<result/>", expected: "attachment-1.xml" },
+    { name: "attachment-1", type: "image/svg+xml", body: "<svg/>", expected: "attachment-1.svg" },
+    {
+      name: "attachment-1",
+      type: "text/html",
+      header: "download",
+      body: "<!doctype html><html/>",
+      expected: "download.html"
+    },
+    { name: "attachment-1", type: "application/pdf", expected: "attachment-1.pdf" },
+    { name: "attachment-1", type: " Application/PDF ; charset=binary", expected: "attachment-1.pdf" },
+    { name: "attachment-1", type: "application/octet-stream", expected: "attachment-1.pdf" },
+    { name: "attachment-1", type: undefined, expected: "attachment-1.pdf" },
+    { name: "", type: undefined, expected: "attachment-1.pdf" },
+    { name: "回答", type: "application/pdf", header: "回答", expected: "回答.pdf" },
+    { name: "attachment-1", type: "application/pdf", header: "report.PDF", expected: "report.PDF" },
+    { name: "original.custom", type: "application/pdf", expected: "original.custom" },
+    { name: "attachment-1", type: "application/pdf", header: "../../CON", expected: "_CON.pdf" },
+    { name: "a".repeat(240), type: "application/pdf", expected: "a".repeat(236) + ".pdf" },
+    {
+      name: "attachment-1",
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      body: "PK fixture",
+      expected: "attachment-1.docx"
+    },
+    { name: "attachment-1", type: "image/png", body: "fixture", expected: "attachment-1.png" },
+    { name: "attachment-1", type: "text/plain", body: "text", expected: "attachment-1.txt" },
+    { name: "README", type: "text/plain", header: "README", body: "text", expected: "README" },
+    { name: "opaque", type: "application/octet-stream", body: "unknown", expected: "opaque" },
+    { name: "opaque", type: "application/x-custom", body: "unknown", expected: "opaque" },
+    { name: "opaque", type: undefined, body: "%PDF-not-a-header", expected: "opaque" }
+  ])("completes missing extensions without changing bytes: $expected ($type)", async (fixture) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-missing-extension-"));
+    const body = Buffer.from(fixture.body ?? "%PDF-1.3\nsynthetic PDF bytes\0\xff");
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      context: () => ({
+        request: {
+          get: async () => ({
+            ok: () => true,
+            status: () => 200,
+            headers: () => ({
+              ...(fixture.type ? { "Content-Type": fixture.type } : {}),
+              ...(fixture.header
+                ? {
+                    "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fixture.header)}`
+                  }
+                : {})
+            }),
+            body: async () => body
+          })
+        }
+      })
+    };
+    try {
+      const saved = await new AttachmentSaver({
+        enabled: true,
+        allowedHosts: ["tenant.sharepoint.com"]
+      }).save(
+        page,
+        [1, 2].map((index) => ({
+          index,
+          name: fixture.name,
+          url: `https://tenant.sharepoint.com/:b:/p/person/opaque-${index}`
+        })),
+        { workspaceKey: "workspace", workspaceRoot: directory, requestId: "request" }
+      );
+      expect(saved[0]).toMatchObject({
+        status: "saved",
+        name: fixture.expected,
+        localPath: path.join(directory, "APL_downloads", "workspace", "request", fixture.expected),
+        sizeBytes: body.length,
+        sha256: createHash("sha256").update(body).digest("hex")
+      });
+      expect(saved[1]?.status).toBe("saved");
+      expect(saved[1]?.name).not.toBe(saved[0]?.name);
+      if (fixture.name && fixture.expected.endsWith(".pdf"))
+        expect(saved[1]?.name).toBe(fixture.expected.replace(/\.pdf$/, "-2.pdf"));
+      for (const attachment of saved) expect(await readFile(attachment.localPath!)).toEqual(body);
+      if (fixture.expected.endsWith(".pdf")) expect(saved[0]?.mediaType).toBe("application/pdf");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("saves multiple authenticated response files and returns verifiable metadata", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
     const bodies = new Map([

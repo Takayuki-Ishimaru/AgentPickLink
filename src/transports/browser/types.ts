@@ -150,6 +150,8 @@ export interface ExtractedResponse {
 export interface AttachmentCandidate {
   index: number;
   name: string;
+  /** Original name found next to the selected control; `name` still identifies that control. */
+  sourceFilename?: string;
   url?: string;
   downloadControlIndex?: number;
   fileCardIndex?: number;

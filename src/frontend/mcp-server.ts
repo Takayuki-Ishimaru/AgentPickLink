@@ -280,10 +280,6 @@ function createProgressForwarder(mcpReq: ProgressCapableRequest): {
 
 const ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024; // 100 MiB
 
-function mimeTypeForAttachment(filePath: string): string {
-  return attachmentMediaType(filePath);
-}
-
 /** Not found and "outside the directory" deliberately throw the identical generic error: the
  * attachments resource must never let a client distinguish "no such file" from "that path
  * exists but is out of bounds," which would otherwise leak information about the local
@@ -336,8 +332,8 @@ async function readAttachmentResource(
 
   if (entryStat.size > maxBytes) throw new Error("Attachment is too large to read.");
 
-  const mimeType = mimeTypeForAttachment(requestedPath);
   const buffer = await readFile(requestedPath);
+  const mimeType = attachmentMediaType(requestedPath, buffer);
   if (isTextLikeMediaType(mimeType)) {
     const text = decodeUtf8Exact(buffer);
     if (text !== undefined) return { contents: [{ uri: uri.href, mimeType, text }] };
