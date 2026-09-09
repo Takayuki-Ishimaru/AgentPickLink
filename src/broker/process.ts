@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   const server = new BrokerServer({
     paths,
     pipeName: userScopedPipeName(profileId),
-    packageVersion: "0.1.2",
+    packageVersion: "0.1.3",
     router,
     build
   });

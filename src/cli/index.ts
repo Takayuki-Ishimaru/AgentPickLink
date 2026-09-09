@@ -8,7 +8,7 @@ import { runCommand, type CliApi, type CliContext } from "./api.js";
 
 export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   const program = new Command();
-  program.name("m365-agent").description("AgentPickLink for M365").version("0.1.2");
+  program.name("m365-agent").description("AgentPickLink for M365").version("0.1.3");
   program
     .option("--json", "emit machine-readable JSON")
     .option("--yes", "confirm explicitly requested operations");
