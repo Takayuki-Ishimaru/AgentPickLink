@@ -183,7 +183,10 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
             name:
               file.extension === "yaml"
                 ? expect.stringMatching(new RegExp(`^attachment-${index + 1}\\.ya?ml$`))
-                : `attachment-${index + 1}.${file.extension}`,
+                : file.extension === "html"
+                  ? // Edge on Windows may supply .htm; retain either valid browser-provided suffix.
+                    expect.stringMatching(new RegExp(`^attachment-${index + 1}\\.html?$`))
+                  : `attachment-${index + 1}.${file.extension}`,
             mediaType: file.mediaType,
             sha256: createHash("sha256").update(file.body).digest("hex")
           });
