@@ -282,7 +282,7 @@ describe("supported topology (win32/darwin without an override; everything else 
       caught = error;
     }
     expect(caught).toBeInstanceOf(DomainError);
-    expect((caught as DomainError).code).toBe("REMOTE_HOST_UNSUPPORTED");
+    expect((caught as DomainError).code).toBe("PLATFORM_UNSUPPORTED");
     expect(() =>
       assertSupportedTopology({ ...nonTestEnv, M365_AGENT_ALLOW_UNSUPPORTED_OS: "1" })
     ).not.toThrow();
