@@ -277,6 +277,7 @@
     advancedExpanded: false,
     advanced: {},
     optionsExpanded: false,
+    completionExpanded: false,
     selectionDirty: false
   };
 
@@ -328,13 +329,13 @@
   }
 
   // Ticking an agent must not rebuild the whole panel: render() recreates the agent list, which
-  // resets its scroll position. Only the two nodes that depend on the selection -- the count in
-  // the heading and the Save button's enabled state -- are refreshed in place.
+  // resets its scroll position. Refresh the heading, Save button and completion rows in place.
   function syncSelection() {
     var count = document.getElementById("agent-count");
     if (count) count.textContent = selectionSummary();
     var save = document.getElementById("save-button");
     if (save) save.disabled = !canSave();
+    syncCompletion();
   }
 
   function edit(key) {
@@ -409,14 +410,40 @@
     );
   }
 
+  function selectionCompletion() {
+    var ja = state.locale === "ja";
+    return local.selected.size
+      ? String(local.selected.size) + (ja ? " 件を選択" : " selected")
+      : ja
+        ? "未確認"
+        : "Not checked";
+  }
+
+  function clientCompletion() {
+    var ja = state.locale === "ja";
+    if (local.integrations) return ja ? "未保存の変更あり" : "Unsaved changes";
+    if (state.clientApplication === "complete") return ja ? "確認済み" : "Confirmed";
+    if (state.clientApplication === "partial")
+      return ja ? "一部未完了。警告を確認" : "Incomplete; check warnings";
+    if (state.clientApplication === "not-selected") return ja ? "連携の選択なし" : "No integrations selected";
+    return ja ? "未確認" : "Not checked";
+  }
+
+  function syncCompletion() {
+    var selection = document.getElementById("completion-selection");
+    if (selection) selection.textContent = selectionCompletion();
+    var clients = document.getElementById("completion-clients");
+    if (clients) clients.textContent = clientCompletion();
+  }
+
   function completionSection() {
     var ja = state.locale === "ja";
     var status = state.status;
     var completed = ja ? "確認済み" : "Confirmed";
     var pending = ja ? "未確認" : "Not checked";
     var rows = [];
-    function row(label, result) {
-      rows.push(h("dt", { text: label }), h("dd", { text: result }));
+    function row(label, result, id) {
+      rows.push(h("dt", { text: label }), h("dd", { text: result, id: id }));
     }
     row(
       ja ? "サインイン" : "Sign-in",
@@ -424,32 +451,23 @@
         ? completed
         : pending
     );
-    row(
-      ja ? "エージェント選択" : "Agent selection",
-      local.selected.size ? String(local.selected.size) + (ja ? " 件を選択" : " selected") : pending
-    );
+    row(ja ? "エージェント選択" : "Agent selection", selectionCompletion(), "completion-selection");
     row(
       ja ? "このワークスペースの承認" : "Workspace approval",
       status && status.workspace.approvalStatus === "approved" ? completed : pending
     );
     row(
       ja ? "選んだクライアントへの反映" : "Selected client configuration",
-      state.clientApplication === "complete" && !local.integrations
-        ? completed
-        : state.clientApplication === "partial"
-          ? ja
-            ? "一部未完了。警告を確認"
-            : "Incomplete; check warnings"
-          : state.clientApplication === "not-selected"
-            ? ja
-              ? "連携の選択なし"
-              : "No integrations selected"
-            : pending
+      clientCompletion(),
+      "completion-clients"
     );
     row(ja ? "MCP 接続確認" : "MCP connection", ja ? "クライアント側で確認が必要" : "Check in your client");
     return h(
       "details",
-      { class: "completion-section" },
+      {
+        class: "completion-section",
+        open: local.completionExpanded
+      },
       h("summary", { text: ja ? "セットアップの完了条件" : "Setup completion checks" }),
       h("dl", { class: "technical-status" }, rows),
       h("p", {
@@ -934,6 +952,7 @@
           onchange: function (event) {
             local.integrations = Object.assign({}, integrationFlags());
             local.integrations[name] = event.target.checked;
+            syncCompletion();
           }
         }),
         h("span", { text: label })
@@ -1169,6 +1188,8 @@
   /* ---------------------------------------------------------------- render */
 
   function render() {
+    var completionBefore = document.querySelector(".completion-section");
+    if (completionBefore) local.completionExpanded = completionBefore.open;
     var active = document.activeElement;
     var focusId = active && active.id ? active.id : null;
     var caret = focusId && "selectionStart" in active ? active.selectionStart : null;
@@ -1220,6 +1241,7 @@
         return candidate.key;
       })
       .join("\u0000");
+    var wasDone = state.phase === "done";
     state = next;
     if (next.phase === "idle" && !next.status) local.selectionDirty = false;
     if (signature !== local.signature) {
@@ -1241,7 +1263,8 @@
         if (!keys[key]) delete local.edits[key];
       });
     }
-    if (next.phase === "done") {
+    // Repeated status events for an already completed save must not erase later edits.
+    if (next.phase === "done" && !wasDone) {
       local.selectionDirty = false;
       local.selected = new Set(next.selectedKeys || []);
       local.downloadHosts = undefined;

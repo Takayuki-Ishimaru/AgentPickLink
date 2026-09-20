@@ -6,13 +6,14 @@ import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   identityFor,
+  pruneVersions,
   readInstallJson,
   useVersion,
   validateInstallation,
   writeInstallJson,
   writeLaunchers
 } from "../../src/services/install-home.js";
-import { runSelfUninstall } from "../../src/cli/commands/self.js";
+import { runSelfPrune, runSelfUninstall } from "../../src/cli/commands/self.js";
 import { stopOwnedInstallBroker, validatePurgeData } from "../../src/services/uninstall-safety.js";
 import { makeCommandDeps, makeTempPaths } from "../cli/helpers.js";
 import type { IpcClient } from "../../src/ipc/client.js";
@@ -69,6 +70,101 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   await walk(root);
   return result;
 }
+
+it.each([
+  "unknown-directory",
+  "missing-current",
+  "launcher-mismatch",
+  "record-mismatch",
+  "corrupt-manifest",
+  "missing-manifest",
+  "foreign-manifest",
+  "corrupt-old-package",
+  "foreign-old-package",
+  "linked-old-package",
+  "linked-app",
+  "linked-current"
+])("prune rejects %s without changing any files, even with --yes", async (mode) => {
+  const { home, root, deps, version } = await fixture();
+  const old = path.join(home, "app", "0.1.0");
+  await fs.cp(path.join(home, "app", version), old, { recursive: true });
+  await fs.writeFile(
+    path.join(old, "package.json"),
+    JSON.stringify({ name: "agent-pick-link", version: "0.1.0", type: "module" })
+  );
+  if (mode === "unknown-directory") {
+    await fs.mkdir(path.join(home, "app", "customer-backup"));
+    await fs.writeFile(path.join(home, "app", "customer-backup", "sentinel.txt"), "keep");
+  }
+  if (mode === "missing-current") await fs.writeFile(path.join(home, "bin", "current-version"), "9.9.9\n");
+  if (mode === "launcher-mismatch") await fs.writeFile(path.join(home, "bin", "current-version"), "0.1.0\n");
+  if (mode === "record-mismatch")
+    await writeInstallJson(home, { ...(await readInstallJson(home))!, version: "0.1.0" });
+  if (mode === "corrupt-manifest") await fs.writeFile(path.join(home, "install.json"), "{broken");
+  if (mode === "missing-manifest") await fs.unlink(path.join(home, "install.json"));
+  if (mode === "foreign-manifest")
+    await writeInstallJson(home, {
+      ...(await readInstallJson(home))!,
+      identity: identityFor({ home: path.join(root, "other"), platform: deps.platform })
+    });
+  if (mode === "corrupt-old-package") await fs.writeFile(path.join(old, "package.json"), "{broken");
+  if (mode === "foreign-old-package")
+    await fs.writeFile(
+      path.join(old, "package.json"),
+      JSON.stringify({ name: "other", version: "0.1.0", type: "module" })
+    );
+  if (mode === "linked-old-package" || mode === "linked-app") {
+    const target = mode === "linked-app" ? path.join(home, "app") : old;
+    const external = path.join(root, "external");
+    await fs.rename(target, external);
+    await fs.symlink(external, target, process.platform === "win32" ? "junction" : "dir");
+  }
+  if (mode === "linked-current") {
+    const target = path.join(home, "bin", "current-version");
+    await fs.rename(target, path.join(root, "current-version"));
+    await fs.symlink(path.join(root, "current-version"), target);
+  }
+  const before = await snapshot(root);
+  await expect(runSelfPrune(deps, { home, yes: true })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  expect(await snapshot(root)).toEqual(before);
+  // The service entry point must enforce the same checks as the CLI.
+  await expect(pruneVersions({ home, keep: version })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  expect(await snapshot(root)).toEqual(before);
+});
+
+it("prune revalidates the deletion plan after confirmation", async () => {
+  const { home, deps, version } = await fixture();
+  const old = path.join(home, "app", "0.1.0");
+  await fs.cp(path.join(home, "app", version), old, { recursive: true });
+  await fs.writeFile(
+    path.join(old, "package.json"),
+    JSON.stringify({ name: "agent-pick-link", version: "0.1.0", type: "module" })
+  );
+  let before: Record<string, string>;
+  deps.prompter = {
+    interactive: true,
+    question: async () => "",
+    confirm: async () => {
+      await fs.mkdir(path.join(home, "app", "customer-backup"));
+      await fs.writeFile(path.join(home, "app", "customer-backup", "sentinel.txt"), "keep");
+      before = await snapshot(home);
+      return true;
+    }
+  };
+  await expect(runSelfPrune(deps, { home })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  expect(await snapshot(home)).toEqual(before!);
+});
+
+it("prune supports an older installation without a current-version sidecar", async () => {
+  const { home, deps, version } = await fixture();
+  await fs.unlink(path.join(home, "bin", "current-version"));
+  await expect(runSelfPrune(deps, { home, yes: true })).resolves.toMatchObject({
+    removed: [],
+    kept: version
+  });
+  const { stdout } = await promisify(execFile)(process.execPath, [path.join(home, "bin", "apl.js")]);
+  expect(stdout).toBe("launched");
+});
 
 it.each(["missing", "corrupt", "copied", "foreign-bin", "wrong-package", "linked-app"])(
   "refuses %s ownership evidence without changing any existing bytes",

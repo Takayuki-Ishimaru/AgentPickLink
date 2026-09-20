@@ -535,8 +535,29 @@ describe("listVersions / useVersion / pruneVersions", () => {
 
   it("pruneVersions deletes every version other than the one kept", async () => {
     await withTempDir(async (home) => {
-      for (const version of ["1.0.0", "2.0.0", "3.0.0"])
-        await fs.mkdir(path.join(home, "app", version), { recursive: true });
+      for (const version of ["1.0.0", "2.0.0", "3.0.0"]) {
+        await fs.mkdir(path.join(home, "app", version, "dist", "cli"), { recursive: true });
+        await fs.writeFile(
+          path.join(home, "app", version, "package.json"),
+          JSON.stringify({ name: "agent-pick-link", version, type: "module" })
+        );
+        await fs.writeFile(
+          path.join(home, "app", version, "dist", "cli", "index.js"),
+          "export function runCli() {}"
+        );
+      }
+      await writeLaunchers({ home, version: "2.0.0", platform: process.platform });
+      const identity = identityFor({ home, platform: process.platform });
+      await writeInstallJson(home, {
+        version: "2.0.0",
+        installedBy: "archive",
+        runtime: { path: identity.command, source: "bundled" },
+        identity,
+        clients: [],
+        workspaces: [],
+        platform: process.platform,
+        updatedAt: new Date().toISOString()
+      });
       const removed = await pruneVersions({ home, keep: "2.0.0" });
       expect(removed.sort()).toEqual(["1.0.0", "3.0.0"]);
       expect(await listVersions(home)).toEqual(["2.0.0"]);

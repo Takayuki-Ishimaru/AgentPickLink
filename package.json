@@ -2,7 +2,7 @@
   "name": "agent-pick-link",
   "displayName": "AgentPickLink for M365",
   "publisher": "agentpicklink",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Policy-enforced local MCP bridge for consulting approved Microsoft 365 agents from VS Code",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -174,7 +174,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke:package": "node scripts/smoke-package.mjs",
-    "package:portable": "node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.1.tgz --platform host --out output/portable",
+    "package:portable": "node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.2.tgz --platform host --out output/portable",
     "oss:generate": "node scripts/generate-oss-notices.mjs"
   },
   "dependencies": {

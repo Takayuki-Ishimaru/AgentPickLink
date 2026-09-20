@@ -28,6 +28,7 @@ import {
   identityFor,
   integrationVariablesFor,
   listVersions,
+  planVersionPrune,
   pruneVersions,
   readInstallJson,
   resolveInstallHome,
@@ -207,16 +208,7 @@ export async function runSelfPrune(
   const home = resolveHome(deps, options.home);
   const release = await lockfile.lock(home, { realpath: true, retries: 0 });
   try {
-    const installJson = await readInstallJson(home).catch(() => undefined);
-    if (!installJson)
-      throw new DomainError("INVALID_ARGUMENT", `No AgentPickLink install found under ${home}.`, false, {
-        remediation: "Run m365-agent install first."
-      });
-    // P1-7: keep whatever bin/apl.js actually references (the current-version sidecar), not
-    // install.json.version blindly -- the two can disagree if a future writer updates one without
-    // the other.
-    const keep = (await currentVersion(home, installJson)) ?? installJson.version;
-    const candidates = (await listVersions(home)).filter((version) => version !== keep);
+    const { keep, versions: candidates } = await planVersionPrune(home, deps.platform);
     if (
       candidates.length &&
       !(await withYes(deps.prompter, !!options.yes).confirm(
@@ -227,7 +219,12 @@ export async function runSelfPrune(
       ))
     )
       return { removed: [], kept: keep, home, confirmed: false };
-    const removed = await pruneVersions({ home, keep });
+    const removed = await pruneVersions({
+      home,
+      keep,
+      platform: deps.platform,
+      expectedVersions: candidates
+    });
     return { removed, kept: keep, home };
   } finally {
     await release();

@@ -433,7 +433,7 @@ describe("doctor", () => {
     const paths = await makeTempPaths();
     const broker = makeFakeBrokerClient({
       "broker.health": { instanceId: "x" },
-      "agent.validate": { ok: true }
+      "agent.validate": { valid: true }
     });
     const { deps } = makeCommandDeps({ paths, connectExistingBroker: async () => broker as never });
 
@@ -450,7 +450,7 @@ describe("doctor", () => {
     const broker = makeFakeBrokerClient({
       "broker.health": { instanceId: "x" },
       "browser.authState": { state: "authenticated" },
-      "agent.validate": { ok: true }
+      "agent.validate": { valid: true }
     });
     const { deps } = makeCommandDeps({ paths, connectExistingBroker: async () => broker as never });
 

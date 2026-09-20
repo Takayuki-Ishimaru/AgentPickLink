@@ -399,9 +399,9 @@ export async function readCurrentVersion(home: string): Promise<string | undefin
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
-/** The sidecar wins over `installJson?.version` whenever both are available -- see
- * `readCurrentVersion`'s doc comment. Used by `self prune`/`self use`/`self status` so all three
- * agree with `bin/apl.js` even when `install.json` itself has drifted. */
+/** Read the sidecar in preference to the manifest for status and version switching.
+ * This is not ownership evidence: pruning also verifies the launcher and requires both
+ * version records to agree before deleting any package. */
 export async function currentVersion(
   home: string,
   installJson?: Pick<InstallJson, "version">
@@ -608,13 +608,44 @@ export async function useVersion(opts: UseVersionOptions): Promise<void> {
   });
 }
 
-export type PruneVersionsOptions = { home: string; keep: string };
+export type PruneVersionsOptions = {
+  home: string;
+  keep: string;
+  platform?: NodeJS.Platform;
+  /** If supplied, refuse a different deletion set after confirmation. */
+  expectedVersions?: string[];
+};
 
-/** Deletes every `app/<version>` other than `keep`. Returns the versions removed. */
+/** Validate the entire plan before deleting anything, including entries listVersions omits. */
+export async function planVersionPrune(home: string, platform: NodeJS.Platform) {
+  const installed = await validateInstallation(home, platform);
+  const keep = await currentVersion(home, installed);
+  if (keep !== installed.version)
+    throw new DomainError(
+      "INVALID_ARGUMENT",
+      "Installation version records disagree. Nothing was removed.",
+      false,
+      {
+        remediation: "Reinstall to repair the installation before pruning. --yes only skips confirmation."
+      }
+    );
+  await validateStagedVersion(home, keep);
+  return { keep, versions: (await listVersions(home)).filter((version) => version !== keep) };
+}
+
+/** Deletes only validated packages after checking ownership and the retained launcher target. */
 export async function pruneVersions(opts: PruneVersionsOptions): Promise<string[]> {
+  const plan = await planVersionPrune(opts.home, opts.platform ?? process.platform);
+  if (
+    plan.keep !== opts.keep ||
+    (opts.expectedVersions && JSON.stringify(plan.versions) !== JSON.stringify(opts.expectedVersions))
+  )
+    throw new DomainError(
+      "INVALID_ARGUMENT",
+      "The prune plan changed. Nothing was removed. Run self prune again."
+    );
   const removed: string[] = [];
-  for (const version of await listVersions(opts.home)) {
-    if (version === opts.keep) continue;
+  for (const version of plan.versions) {
     await fs.rm(path.join(opts.home, "app", version), { recursive: true, force: true });
     removed.push(version);
   }

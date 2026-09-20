@@ -172,7 +172,7 @@ describe("self prune", () => {
     ).resolves.toBeTruthy();
   });
 
-  it("keeps the version the bin/current-version sidecar names, even when install.json disagrees (§P1-7)", async () => {
+  it("refuses disagreeing version records without removing either version", async () => {
     const home = await makeHome();
     const paths = await makeTempPaths();
     const { deps } = makeCommandDeps({ paths });
@@ -193,16 +193,15 @@ describe("self prune", () => {
     await mkdir(path.join(home, "bin"), { recursive: true });
     await writeFile(path.join(home, "bin", "current-version"), "2.0.0\n", "utf8");
 
-    const result = await runSelfPrune(deps, { home, yes: true });
-
-    expect(result.removed).toEqual(["1.0.0"]);
-    expect(result.kept).toBe("2.0.0");
+    await expect(runSelfPrune(deps, { home, yes: true })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT"
+    });
     await expect(
       readFile(path.join(home, "app", "2.0.0", "dist", "broker", "process.js"), "utf8")
     ).resolves.toBeTruthy();
     await expect(
       readFile(path.join(home, "app", "1.0.0", "dist", "broker", "process.js"), "utf8")
-    ).rejects.toThrow();
+    ).resolves.toBeTruthy();
   });
 });
 

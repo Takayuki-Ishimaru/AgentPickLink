@@ -1,5 +1,54 @@
 # リリースノート
 
+## v0.2.2 Beta
+
+### 主な変更
+
+- **旧版整理の削除判定を強化。** `self prune` は保持版の実在・パッケージ同一性、ランチャー、版記録、削除対象を検証します。未知のファイルやディレクトリー、壊れた情報、リンク、不整合があれば、全体を無変更で拒否します。`--yes` でも検証し、操作確認後にも再検証します。
+- **任意診断を総合判定へ反映。** `doctor --auth` はサインイン要求、対話認証、アクセス拒否を要対応、`unknown` を未確認として `ok: false`・終了コード `1` にします。`--agent` の無効・未確認・エラー結果も反映し、未指定の検査は失敗扱いしません。
+- **完了条件欄を即時更新。** エージェント選択件数とクライアント連携の未保存状態を、画面全体を再描画せずに更新します。検索・スクロール位置を維持し、完了条件欄の開閉状態も再描画時に保持します。
+
+保存完了の状態通知が再送された場合も、その後に行った未保存の変更を保持します。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.2.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+`self prune` が版情報の不整合や未知の項目を検出した場合は、`--home` と対象フォルダーを確認してください。必要なファイルは別の場所へ保管し、インストール情報が壊れている場合は同じ場所へ再インストールして修復します。`--yes` は操作確認だけを省略します。
+
+### 配布物
+
+- `agent-pick-link-0.2.2.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.2-win-x64.zip` / `AgentPickLink-0.2.2-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.2-darwin-arm64.tgz` / `AgentPickLink-0.2.2-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.2-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.2-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+この版では Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。セットアップの保存完了や `doctor` の正常判定は、実際の回答・生成ファイル取得を保証するものではありません。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Safer old-version cleanup.** `self prune` verifies installation ownership, the retained package, launcher and version records, and every deletion target. Unknown entries, damaged metadata, links or inconsistent records stop cleanup before any package is deleted. Checks run even with `--yes` and are repeated after confirmation.
+- **Complete optional diagnostics.** `doctor --auth` reports sign-in requirements, interactive authentication, access denial and inconclusive states in its overall result. Failed or inconclusive `--agent` results are included too. These findings produce `ok: false` and exit `1`; unrequested checks do not cause a failure.
+- **Up-to-date setup completion checks.** Agent counts and unsaved integration changes update immediately without rebuilding the panel. Search, scrolling and the expanded completion section are preserved. Repeated save-completion notifications retain subsequent unsaved edits.
+
+To update, install `agent-pick-link-0.2.2.vsix`, reload VS Code, and restart external clients' MCP connections. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals and the dedicated browser profile can be reused.
+
+If cleanup reports inconsistent metadata or unknown entries, check the selected installation directory, preserve any needed files separately, and reinstall to the same location to repair damaged metadata. `--yes` only skips confirmation.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Edge is the primary target; macOS is for development and verification. Linux is for development/CI only. Additional Windows desktop, live-tenant and actual VS Code interface checks have not been performed for this version. Setup completion and a healthy doctor result do not verify live answers or generated files. See the [English README](README.en.md) and [validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.1 Beta
 
 ### 主な変更

@@ -4,7 +4,7 @@
 
 This page is for IT/security administrators evaluating or deploying AgentPickLink's **extension-less
 install path**: a portable archive that a user downloads from the GitHub Release, extracts, and runs once
-(`apl-setup <workspace>`) instead of installing the VS Code extension. It describes v0.2.1.
+(`apl-setup <workspace>`) instead of installing the VS Code extension. It describes v0.2.2.
 Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and
 Linux is for development/CI only. Check execution controls such as SmartScreen and AppLocker / WDAC,
 and tenant restrictions, in your deployment environment. See the
@@ -71,11 +71,13 @@ explicit local approval, recorded separately, is still required before any agent
 
 ## Network behavior
 
-The CLI makes no network calls of its own beyond what signing in to Microsoft 365 and talking to agents
-inherently requires, with exactly one opt-in exception: `apl doctor --check-updates`, which checks the
-public GitHub Releases API and is never invoked automatically or from `serve`. Offline and air-gapped
-machines are supported: the archive contains the runtime and every dependency, so `apl-setup` runs entirely
-from local disk.
+Portable archives include the runtime and dependencies, so installation needs no additional downloads.
+Signing in to Microsoft 365, discovering agents, asking questions and retrieving files require access to
+the relevant services. `apl doctor` does not contact the release API.
+
+The VS Code extension checks the public GitHub Releases API at startup when `agentpicklink.checkForUpdates`
+is enabled. The default is `true`; administrators or users can disable it in settings. Updates are never
+installed automatically.
 
 ## Runtime provenance and integrity
 

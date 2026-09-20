@@ -437,6 +437,21 @@ export function doctorFindings(report: Record<string, unknown>): string[] {
   const object = (value: unknown): Record<string, unknown> =>
     value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const findings: string[] = [];
+  // These fields exist only when the corresponding optional probe was requested.
+  // An inconclusive probe is not evidence of health; absent probes stay neutral.
+  if (Object.hasOwn(report, "authentication")) {
+    const auth = object(report.authentication);
+    if (auth.code) findings.push("authentication.error");
+    else if (["sign-in-required", "interactive-auth", "access-denied"].includes(String(auth.state)))
+      findings.push(`authentication.${String(auth.state)}`);
+    else if (auth.state !== "authenticated") findings.push("authentication.unknown");
+  }
+  if (Object.hasOwn(report, "agent")) {
+    const agent = object(report.agent);
+    if (agent.code) findings.push("agent.error");
+    else if (agent.valid === false) findings.push("agent.invalid");
+    else if (agent.valid !== true) findings.push("agent.unknown");
+  }
   for (const [name, fields] of Object.entries({
     topology: ["supported"],
     node: ["supported"],

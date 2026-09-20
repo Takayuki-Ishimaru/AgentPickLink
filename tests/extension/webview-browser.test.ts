@@ -211,4 +211,62 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     expect(await page.getByRole("searchbox").inputValue()).toBe("エージェント 1");
     expect(await page.getByRole("searchbox").evaluate((node) => node === document.activeElement)).toBe(true);
   });
+
+  it("updates completion, count and save availability for 0 → 1 → 2 → 0 without replacing the list", async () => {
+    await page.locator('[id="select-agent-0"]').uncheck();
+    await page.locator(".completion-section summary").click();
+    await page.getByRole("searchbox").fill("エージェント");
+    const list = await page.locator("#agent-list").elementHandle();
+    await page.locator("#agent-list").evaluate((node) => {
+      node.scrollTop = 180;
+    });
+    const scroll = await page.locator("#agent-list").evaluate((node) => node.scrollTop);
+    for (const count of [0, 1, 2, 0]) {
+      // Dispatch the same change event without scrolling checkboxes into view.
+      await page.evaluate((count) => {
+        for (let i = 0; i < 2; i++) {
+          const checkbox = document.getElementById(`select-agent-${i}`) as HTMLInputElement;
+          checkbox.checked = i < count;
+          checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }, count);
+      expect(await page.locator("#agent-count").innerText()).toBe(`エージェント (${count} 選択中)`);
+      expect(await page.locator("#completion-selection").innerText()).toBe(
+        count ? `${count} 件を選択` : "未確認"
+      );
+      expect(await page.locator("#save-button").isEnabled()).toBe(count > 0);
+      expect(await list!.evaluate((node) => node === document.getElementById("agent-list"))).toBe(true);
+      expect(await page.locator("#agent-list").evaluate((node) => node.scrollTop)).toBe(scroll);
+      expect(
+        await page.locator(".completion-section").evaluate((node) => (node as HTMLDetailsElement).open)
+      ).toBe(true);
+      expect(await page.getByRole("searchbox").inputValue()).toBe("エージェント");
+      expect(await page.getByRole("searchbox").evaluate((node) => node === document.activeElement)).toBe(
+        true
+      );
+    }
+  });
+
+  it.each(["complete", "partial", "not-selected"] as const)(
+    "replaces stale %s client completion with unsaved status immediately and until save completes",
+    async (clientApplication) => {
+      await post({ ...state, phase: "done", clientApplication });
+      await page.locator(".completion-section summary").click();
+      await page.getByText("連携とファイルの設定", { exact: true }).click();
+      await page.locator("#integration-codex").check();
+      expect(await page.locator("#completion-clients").innerText()).toBe("未保存の変更あり");
+      await post({ ...state, phase: "done", clientApplication });
+      expect(await page.locator("#completion-clients").innerText()).toBe("未保存の変更あり");
+      await page.locator("#save-button").click();
+      await post({ ...state, phase: "saving", clientApplication });
+      expect(await page.locator("#completion-clients").innerText()).toBe("未保存の変更あり");
+      await post({
+        ...state,
+        phase: "done",
+        clientApplication: "complete",
+        integrations: { ...state.integrations, codex: true }
+      });
+      expect(await page.locator("#completion-clients").innerText()).toBe("確認済み");
+    }
+  );
 });
