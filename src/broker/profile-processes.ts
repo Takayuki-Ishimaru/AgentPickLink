@@ -145,6 +145,20 @@ function normalizeProfilePathForMatch(
   return normalizeForMatch(resolved, isWindows);
 }
 
+/** Keep the path passed to the browser as well as its resolved Windows long form.
+ * Resolving only the match target otherwise loses processes launched with an 8.3 argument. */
+function profilePathMatchTargets(
+  profileDir: string,
+  resolveProfilePath?: (profilePath: string) => string
+): string[] {
+  return [
+    ...new Set([
+      normalizeProfilePathForMatch(profileDir, resolveProfilePath),
+      normalizeProfilePathForMatch(profileDir, (value) => value)
+    ])
+  ];
+}
+
 /** Trims a single layer of surrounding quotes, unifies slash direction on Windows only (backslash
  * is a legal POSIX filename character, never a separator, so POSIX values are left alone), strips
  * a trailing separator, and case-folds on Windows only. Shared by the profile path itself
@@ -255,10 +269,10 @@ export async function listProfileBrowserProcesses(
       queue.push(child.pid);
     }
   }
-  const needle = normalizeProfilePathForMatch(profileDir, options.resolveProfilePath);
+  const needles = profilePathMatchTargets(profileDir, options.resolveProfilePath);
   for (const proc of all) {
     if (matched.has(proc.pid)) continue;
-    if (commandNamesProfile(proc.command, needle)) matched.set(proc.pid, proc);
+    if (needles.some((needle) => commandNamesProfile(proc.command, needle))) matched.set(proc.pid, proc);
   }
   return [...matched.values()];
 }
@@ -313,8 +327,10 @@ export async function killProfileBrowsers(
   } = {}
 ): Promise<number> {
   const kill = options.killProcessTree ?? defaultKillProcessTree;
-  const needle = normalizeProfilePathForMatch(profileDir, options.resolveProfilePath);
-  const targets = processes.filter((proc) => commandNamesProfile(proc.command, needle));
+  const needles = profilePathMatchTargets(profileDir, options.resolveProfilePath);
+  const targets = processes.filter((proc) =>
+    needles.some((needle) => commandNamesProfile(proc.command, needle))
+  );
   await Promise.all(targets.map((proc) => kill(proc.pid).catch(() => undefined)));
   return targets.length;
 }

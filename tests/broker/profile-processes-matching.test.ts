@@ -160,6 +160,37 @@ describe("listProfileBrowserProcesses normalization (Windows)", () => {
     });
   });
 
+  it("retains short-form command matches after resolving the profile to its long form", async () => {
+    await withPlatform("win32", async () => {
+      const shortProfile = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\apl-profile";
+      const longProfile = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\apl-profile";
+      const processes = [shortProfile, longProfile, `${shortProfile}-backup`, `${longProfile}-backup`].map(
+        (profile, index) => ({
+          pid: 51_000 + index,
+          ppid: 1,
+          command: `msedge.exe --user-data-dir="${profile}"`
+        })
+      );
+      const exec = async () => ({
+        stdout: JSON.stringify(
+          processes.map((p) => ({ ProcessId: p.pid, ParentProcessId: p.ppid, CommandLine: p.command }))
+        )
+      });
+      const resolveProfilePath = (candidate: string) =>
+        candidate === shortProfile ? longProfile : candidate;
+      const matches = await listProfileBrowserProcesses(shortProfile, { exec, resolveProfilePath });
+      expect(matches.map((p) => p.pid)).toEqual([51_000, 51_001]);
+      const killed: number[] = [];
+      await killProfileBrowsers(shortProfile, processes, {
+        resolveProfilePath,
+        killProcessTree: async (pid) => {
+          killed.push(pid);
+        }
+      });
+      expect(killed).toEqual([51_000, 51_001]);
+    });
+  });
+
   it("without 8.3 resolution, a short-form profile path does not match a long-form command line", async () => {
     await withPlatform("win32", async () => {
       const shortProfile = "C:\\Users\\ABCDEF~1\\AppData\\Local\\Temp\\apl-profile";
