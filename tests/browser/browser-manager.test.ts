@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { lstat, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserManager } from "../../src/transports/browser/browser-manager.js";
 import type { BrowserContextLike, PageLike } from "../../src/transports/browser/types.js";
 import { fakeProcessListing, formatProcessListing } from "../helpers/platform.js";
@@ -956,21 +956,29 @@ describe("BrowserManager", () => {
   it("keeps profile-lock retries inside the configured startup budget", async () => {
     const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-profile-"));
     let attempts = 0;
-    const manager = new BrowserManager({
-      profilePath,
-      startupTimeoutMs: 50,
-      launcher: {
-        launchPersistentContext: async () => {
-          attempts++;
-          throw new Error("Failed to launch: user data directory is already in use (SingletonLock)");
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const manager = new BrowserManager({
+        profilePath,
+        startupTimeoutMs: 50,
+        launcher: {
+          launchPersistentContext: async () => {
+            attempts++;
+            // Exhaust the shared budget deterministically. Real timers can wake just before
+            // their deadline, legitimately leaving time for another short launch attempt.
+            now += 50;
+            throw new Error("Failed to launch: user data directory is already in use (SingletonLock)");
+          }
         }
-      }
-    });
+      });
 
-    await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_PROFILE_LOCKED" });
-    // The second retry delay is longer than the remaining startup budget, so it must not start a
-    // fresh full timeout window (or turn a live external owner into a multi-minute wait).
-    expect(attempts).toBe(1);
+      await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_PROFILE_LOCKED" });
+      // A profile-lock retry must not receive a fresh startup timeout after the budget expires.
+      expect(attempts).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("reports a missing context, an invalid page key, and an unavailable page with domain codes", async () => {
