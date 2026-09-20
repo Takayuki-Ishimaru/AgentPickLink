@@ -145,9 +145,39 @@ export async function waitForDescriptorGone(
   return !descriptor || (instanceId !== undefined && descriptor.instanceId !== instanceId);
 }
 
+/** Where `spawnBundledBroker()` should launch the broker from. */
+export type BrokerSpawnTarget = { entry: string; node: string };
+
+/** Process-local override for every broker `spawnBundledBroker()` launches from here on
+ * (docs/validation-log-2026-09-14-windows-round3.md S2, ISSUE-11): `install` sets this right after
+ * staging a version and writing its launchers/install.json, so a broker it needs to drive its own
+ * `SetupController`/`restartPreExistingBroker` runs the *machine install's*
+ * `<home>/app/<version>/dist/broker/process.js` with `<home>/bin/node(.exe)` -- never this running
+ * process's own tree (a portable extraction folder, or a source checkout one directory removed
+ * from the one just staged). Deliberately not an environment variable: `spawnBundledBroker`'s
+ * child inherits `process.env` verbatim, so an env var would also leak into every *other* child
+ * this same `install` run spawns (client detection, the verify step's `mcpHandshake`, ...), which
+ * must keep running from their own configured targets, not this one's. Process-local and never
+ * persisted; pass `undefined` to restore the default (`import.meta.url`-relative) behaviour. */
+let brokerSpawnTarget: BrokerSpawnTarget | undefined;
+
+export function setBrokerSpawnTarget(target: BrokerSpawnTarget | undefined): void {
+  brokerSpawnTarget = target;
+}
+
+/** Test-only seam: replaces the underlying `child_process.spawn` call so a test can inspect
+ * exactly what `spawnBundledBroker()` would launch (command, entry, args) without starting a real
+ * broker process. Pass `undefined` to restore the real `spawn`. */
+export function setBrokerSpawnRunner(runner: typeof spawn | undefined): void {
+  spawnRunner = runner ?? spawn;
+}
+
+let spawnRunner: typeof spawn = spawn;
+
 export async function spawnBundledBroker(): Promise<void> {
-  const entry = fileURLToPath(new URL("./process.js", import.meta.url));
-  const child = spawn(process.execPath, [entry], {
+  const entry = brokerSpawnTarget?.entry ?? fileURLToPath(new URL("./process.js", import.meta.url));
+  const node = brokerSpawnTarget?.node ?? process.execPath;
+  const child = spawnRunner(node, [entry], {
     detached: true,
     windowsHide: true,
     stdio: "ignore",
@@ -201,7 +231,12 @@ export async function terminateDescriptorBroker(
   return { stopped: true, pid: descriptor.pid };
 }
 
-async function isExpectedBrokerProcess(pid: number): Promise<boolean> {
+/** Confirms `pid` is actually an AgentPickLink broker process (its command line resolves to
+ * `broker/process.js`) before anything acts on that assumption -- used both by
+ * `terminateDescriptorBroker` above and by `broker-staleness.ts`'s decisive restart, which force-
+ * kills an old broker only after this returns true. `false` on any probe failure (fails closed:
+ * "not confirmed" is never treated as "confirmed"). */
+export async function isExpectedBrokerProcess(pid: number): Promise<boolean> {
   try {
     const command =
       process.platform === "win32"

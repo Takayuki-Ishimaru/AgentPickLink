@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { AppPaths } from "../config/paths.js";
 import { loadApprovals } from "../config/approvals.js";
 import { loadGlobalConfig } from "../config/global-config.js";
@@ -37,6 +39,58 @@ import { readDescriptor, removeDescriptorIfOwned, writeDescriptor } from "./brok
 /** How often the broker re-runs the attachment retention/quota pass (see cleanupAttachments). */
 const ATTACHMENT_CLEANUP_INTERVAL_MS = 6 * 60 * 60_000;
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Best-effort discovery of the automation browser's own OS pid, recorded as
+ * `BrokerDescriptor.browserPid` (src/ipc/protocol.ts) so a restarter that later has to force-kill
+ * this broker (docs/validation-log-2026-09-14-windows-round3.md S2) can also clean up the browser
+ * process it owned. Playwright always launches the browser as a *direct child* of the process that
+ * called `launchPersistentContext()` -- this broker -- so a live direct child whose name/command
+ * line looks like a Chromium-family browser is almost certainly it. Advisory only: a restarter that
+ * later force-kills this pid independently re-verifies liveness and ownership
+ * (`defaultIsProfileOwnerProcess` in browser-manager.ts) before doing so, so a miss here
+ * (`undefined`) is always safe -- one fewer cleanup hint, never a wrong kill.
+ */
+async function findChildBrowserPid(parentPid: number): Promise<number | undefined> {
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | Select-Object ProcessId,Name | ConvertTo-Json -Compress`
+        ],
+        { windowsHide: true }
+      );
+      const parsed: unknown = JSON.parse(stdout || "[]");
+      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const { ProcessId, Name } = row as { ProcessId?: number; Name?: string };
+        if (typeof ProcessId === "number" && typeof Name === "string" && /chrom|edge/i.test(Name))
+          return ProcessId;
+      }
+      return undefined;
+    }
+    const { stdout } = await execFileAsync("ps", ["-A", "-o", "pid=,ppid=,command="], {
+      windowsHide: true
+    });
+    for (const line of stdout.split("\n")) {
+      const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const [, pidText, ppidText, command] = match;
+      if (Number(ppidText) !== parentPid) continue;
+      if (/chrom|edge/i.test(command)) return Number(pidText);
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type BrokerDependencies = {
   paths: AppPaths;
   pipeName: string;
@@ -44,6 +98,11 @@ export type BrokerDependencies = {
   router: TransportRouter;
   /** The entry file this broker runs from and its mtime (see BrokerDescriptor.build). */
   build?: BrokerBuild;
+  /** item 1: the same broker-wide log sink (src/observability/broker-log.ts) the composition root
+   * wires into the browser transport, used here only for BrokerServer's own lifecycle lines
+   * (start/stop/shutdown) -- never prompt/response content. Absent in tests that construct a
+   * BrokerServer directly without a broker composition root. */
+  log?: (line: string) => void;
 };
 
 /**
@@ -200,6 +259,7 @@ export class BrokerServer {
     }
     this.idleTimer = setInterval(() => void this.maintainResources(), Math.min(60_000, this.idleShutdownMs));
     this.idleTimer.unref();
+    this.deps.log?.(`broker: started pid=${process.pid} pipe=${this.deps.pipeName}`);
     return this.descriptor;
   }
 
@@ -242,6 +302,7 @@ export class BrokerServer {
   }
 
   private async finishStop(): Promise<void> {
+    this.deps.log?.("broker: stopping");
     this.stopping = true;
     if (this.idleTimer) clearInterval(this.idleTimer);
     if (this.attachmentsTimer) clearInterval(this.attachmentsTimer);
@@ -249,7 +310,13 @@ export class BrokerServer {
     if (this.descriptor) {
       // Publish the stopping state before closing the listener. New clients then wait for the
       // descriptor to disappear instead of handshaking with an endpoint that is mid-shutdown.
+      // Refreshed here (not only opportunistically on broker.health -- see there) because this is
+      // exactly the moment a restarter's decisive force-kill (docs/validation-log-2026-09-14-
+      // windows-round3.md S2) needs the freshest possible browserPid: right before this broker's
+      // own disposeAllChecked() below either closes the browser or, if that hangs, force-kills it.
+      const browserPid = await findChildBrowserPid(process.pid).catch(() => undefined);
       this.descriptor.state = "stopping";
+      if (browserPid !== undefined) this.descriptor.browserPid = browserPid;
       const current = await readDescriptor(this.deps.paths).catch(() => undefined);
       if (current?.instanceId === this.instanceId)
         await writeDescriptor(this.deps.paths, this.descriptor).catch(() => undefined);
@@ -278,9 +345,26 @@ export class BrokerServer {
     await this.server?.close().catch(() => undefined);
     await removeDescriptorIfOwned(this.deps.paths, this.instanceId);
     this.server = undefined;
+    this.deps.log?.("broker: stopped");
+  }
+
+  /** See `findChildBrowserPid`'s doc comment. Best-effort: a failed probe or write never affects
+   * the caller (`broker.health` itself, or `finishStop()`'s own separate refresh). */
+  private async refreshBrowserPidHint(): Promise<void> {
+    if (!this.descriptor) return;
+    const browserPid = await findChildBrowserPid(process.pid).catch(() => undefined);
+    if (browserPid === this.descriptor.browserPid) return;
+    this.descriptor =
+      browserPid !== undefined
+        ? { ...this.descriptor, browserPid }
+        : { ...this.descriptor, browserPid: undefined };
+    const current = await readDescriptor(this.deps.paths).catch(() => undefined);
+    if (current?.instanceId === this.instanceId)
+      await writeDescriptor(this.deps.paths, this.descriptor).catch(() => undefined);
   }
 
   private async markStopFailed(): Promise<void> {
+    this.deps.log?.("broker: stop failed; will retry on the next shutdown request");
     if (!this.descriptor) return;
     this.descriptor.state = "stop-failed";
     const current = await readDescriptor(this.deps.paths).catch(() => undefined);
@@ -364,6 +448,11 @@ export class BrokerServer {
   ): Promise<unknown> {
     switch (method) {
       case "broker.health":
+        // Opportunistic refresh of the descriptor's browserPid (see findChildBrowserPid's doc
+        // comment): broker.health is polled every 20-30s by the extension/CLI/doctor regardless of
+        // real activity, which keeps this reasonably fresh without adding a probe to every
+        // browser.*/agent.* call on the hot path.
+        await this.refreshBrowserPidHint();
         return {
           ...(await this.healthService().broker()),
           ...(this.deps.build ? { build: this.deps.build } : {}),
@@ -372,6 +461,7 @@ export class BrokerServer {
           incidents: this.incidents.list()
         };
       case "broker.shutdown": {
+        this.deps.log?.("broker: shutdown requested");
         const timer = setTimeout(() => {
           void this.stop().catch((error) => {
             this.recordIncident(
@@ -414,7 +504,10 @@ export class BrokerServer {
             "AGENT_ENTRYPOINT_UNSUPPORTED",
             "This transport cannot inspect authentication state."
           );
-        const result = await transport.authenticationState();
+        // ISSUE-2026-09-14-05: forwards this request's own notify sink so the silent probe's
+        // login-reason progress event (see SessionManager.reportAuthProbeReason) reaches whichever
+        // caller asked for progress -- every other method already receives `notify` unconditionally.
+        const result = await transport.authenticationState(notify);
         this.setAuthState(result.state);
         return result;
       }

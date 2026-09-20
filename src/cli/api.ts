@@ -1,11 +1,16 @@
 import type { AgentView, ToolError } from "../frontend/schemas.js";
 import type { AgentCandidate } from "../services/setup-service.js";
+import type { InstallCommandOptions, InstallReport } from "./commands/install.js";
 
 export type CliResult<T = unknown> = T | ToolError;
 export type CliContext = {
   workspaceRoot: string;
   json: boolean;
   yes: boolean;
+  /** ISSUE-09 (docs/validation-log-2026-09-14-windows.md): global `--verbose` -- echoes
+   * metadata-only diagnostic lines (a broker-release wait, a restart-and-retry outcome) to stderr,
+   * prefixed `[log]`, in addition to them always being appended to the app-data log file. */
+  verbose: boolean;
   out: (text: string) => void;
   error: (text: string) => void;
   /** Implemented by the application composition root; commands stay browser-free. */
@@ -40,6 +45,19 @@ export interface CliApi {
   workspaceApprovalStatus(): Promise<CliResult<Record<string, unknown>>>;
   workspaceRevoke(): Promise<CliResult<Record<string, unknown>>>;
   serve(): Promise<void>;
+  /** WP-B: the command behind the portable archive's `apl-setup` launcher. Never returns a
+   * `ToolError` for a handled outcome (staging failure, an unconfirmed plan, a failed verify are
+   * all reported through `InstallReport.exitCode`); a thrown `ToolError` here means argument
+   * validation or elevation failed before the plan could even be built. */
+  install(options: InstallCommandOptions): Promise<CliResult<InstallReport>>;
+  self(
+    action: "status" | "use" | "prune" | "uninstall",
+    options?: { version?: string; home?: string; purgeData?: boolean; yes?: boolean; verbose?: boolean }
+  ): Promise<CliResult<Record<string, unknown>>>;
+  integrations(
+    action: "write" | "status" | "remove" | "snippet",
+    options?: { client?: string; workspace?: string; force?: boolean; home?: string }
+  ): Promise<CliResult<Record<string, unknown>>>;
 }
 
 export function isCliError(value: unknown): value is ToolError {

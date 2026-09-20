@@ -81,6 +81,12 @@ export interface BrowserTransportOptions {
   /** Development relaxations this broker was started with (see src/broker/process.ts). Reported
    * through healthCheck() so the panel/CLI can say the broker is not in its production shape. */
   devMode?: { insecureLoopback: boolean; devAppUrl: boolean };
+  /** Metadata-only log sink (see src/observability/broker-log.ts's `BrokerLogger`), wired by the
+   * broker's composition root (src/broker/process.ts) into both `BrowserManager` (its own
+   * `log()`/`onLog` lines: staleness/profile-process lines, redacted launch call logs, force-kill
+   * decisions) and `SessionManager` (silent auth-probe reason lines -- see ISSUE-2026-09-14-05).
+   * Absent in tests that never exercise a broker composition root. */
+  log?: (line: string) => void;
   attachmentsPath?: string;
   downloadHosts?: string[];
   maxAttachments?: number;
@@ -168,7 +174,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
         args: options.args,
         viewport: options.viewport,
         locale: options.locale,
-        timezoneId: options.timezoneId
+        timezoneId: options.timezoneId,
+        onLog: options.log
       });
     // A crash and a deliberate reset for an interactive sign-in both invalidate every page this
     // transport handed out, so open conversations must fail with BROWSER_CRASHED afterwards.
@@ -189,7 +196,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
       authHosts: this.signInHosts,
       neutralAppUrl: this.neutralAppUrl,
       navigationTimeoutMs: this.navigationTimeoutMs,
-      authLandingTimeoutMs: options.authLandingTimeoutMs
+      authLandingTimeoutMs: options.authLandingTimeoutMs,
+      log: options.log
     });
     this.discovery = new AgentDiscovery({
       manager: this.manager,
@@ -500,10 +508,10 @@ export class BrowserTransport implements InteractiveAgentTransport {
     return { cancelled };
   }
 
-  async authenticationState(): Promise<{ state: string }> {
+  async authenticationState(onProgress?: ProgressSink): Promise<{ state: string }> {
     try {
       if (!this.sessions.configured) return { state: "unknown" };
-      const { state } = await this.sessions.probe();
+      const { state } = await this.sessions.probe({ onProgress });
       return { state };
     } catch (error) {
       throw mapTransportError(error);
@@ -804,6 +812,12 @@ function mapTransportError(error: unknown): DomainError {
       remediation: error.remediation,
       submissionState: error.details?.submissionState as "not-sent" | "sent" | "unknown" | undefined,
       partialResponse: error.details?.partialResponse as never,
+      // item 1: forwarded across IPC (see domain/errors.ts's ApplicationError and
+      // ipc/protocol.ts's IpcResponse error shape) so the CLI/extension can append the redacted
+      // Playwright call log to cli.log -- the frontend's MCP tool surface strips both fields again
+      // before an AI client ever sees a result (src/frontend/tool-results.ts's `failure()`).
+      ...(error.details?.callLog ? { callLog: error.details.callLog as string[] } : {}),
+      ...(error.details?.timedOut !== undefined ? { timedOut: error.details.timedOut as boolean } : {}),
       ...(retry.retryAfterMs === undefined ? {} : { retryAfterMs: retry.retryAfterMs })
     });
     attachDiagnosticsFromDetails(domainError, error.details);

@@ -2,7 +2,7 @@
   "name": "agent-pick-link",
   "displayName": "AgentPickLink for M365",
   "publisher": "agentpicklink",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Policy-enforced local MCP bridge for consulting approved Microsoft 365 agents from VS Code",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -23,10 +23,10 @@
     "m365-agent": "./dist/cli/index.js"
   },
   "files": [
+    "node_modules/**",
     "dist/**/*.js",
     "dist/**/*.cjs",
     "media",
-    "node_modules",
     "schemas",
     "examples",
     "release-docs",
@@ -104,6 +104,11 @@
         "command": "agentpicklink.openPanel",
         "category": "AgentPickLink",
         "title": "パネルを開く / Open panel"
+      },
+      {
+        "command": "agentpicklink.installMachine",
+        "category": "AgentPickLink",
+        "title": "機械インストールを更新 / Update machine installation"
       }
     ],
     "configuration": {
@@ -169,6 +174,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke:package": "node scripts/smoke-package.mjs",
+    "package:portable": "node scripts/assemble-portable.mjs --package output/release-v0.2.0/source --platform host --out output/portable",
     "oss:generate": "node scripts/generate-oss-notices.mjs"
   },
   "dependencies": {
@@ -181,6 +187,16 @@
     "yaml": "^2.8.1",
     "zod": "^4.5.4"
   },
+  "bundleDependencies": [
+    "@modelcontextprotocol/core",
+    "@modelcontextprotocol/server",
+    "commander",
+    "playwright-core",
+    "proper-lockfile",
+    "toml-eslint-parser",
+    "yaml",
+    "zod"
+  ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/client": "^2.0.0",

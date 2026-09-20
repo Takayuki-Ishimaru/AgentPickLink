@@ -1,4 +1,4 @@
-import { lstat, readdir, readlink, rm, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, readlink, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { assertSafeProfilePath } from "../../config/profile-safety.js";
@@ -97,6 +97,39 @@ export class ProfileManager {
       );
     }
     await rm(this.profilePath, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+/**
+ * docs/validation-log-2026-09-17-windows-round6.md: while starting, Edge resolves the per-user
+ * "Local AppData" known folder (`%USERPROFILE%\AppData\Local` unless redirected). When that folder
+ * does not exist yet -- a freshly created or redirected profile, Windows Sandbox, an isolated test
+ * HOME -- the lookup fails ("Unable to get local app data path"), Edge then refuses remote
+ * debugging ("requires a non-default data directory") and the launch hangs until the startup
+ * timeout. Edge creates the folder as a side effect, so only the *first* launch fails. Creating it
+ * up front lets that first launch succeed.
+ *
+ * Windows-only and best-effort: a no-op wherever the folder already exists (every ordinary
+ * profile), never throws. Resolves to the created path, or undefined when nothing was created.
+ */
+export async function ensureWindowsLocalAppData(
+  options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv } = {}
+): Promise<string | undefined> {
+  if ((options.platform ?? process.platform) !== "win32") return undefined;
+  const userProfile = (options.env ?? process.env).USERPROFILE;
+  if (!userProfile || !path.win32.isAbsolute(userProfile)) return undefined;
+  const target = path.join(userProfile, "AppData", "Local");
+  try {
+    await stat(target);
+    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return undefined;
+  }
+  try {
+    await mkdir(target, { recursive: true });
+    return target;
+  } catch {
+    return undefined;
   }
 }
 

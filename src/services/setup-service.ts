@@ -4,6 +4,7 @@ import path from "node:path";
 import type { IpcClient } from "../ipc/client.js";
 import type { ProgressEvent, ProgressSink } from "../domain/progress.js";
 import { DomainError } from "../domain/errors.js";
+import { summarizeDiscoveryCompleteness } from "../domain/discovery-warnings.js";
 import {
   AliasSchema,
   deriveBindingFingerprint,
@@ -364,7 +365,16 @@ export class SetupService {
       const client = await this.deps.connect();
       try {
         progress.emitConnecting("Checking sign-in status");
-        const current = (await client.call("browser.authState", {})) as { state: string };
+        // ISSUE-2026-09-14-05: forwards onProgress so the broker's login-reason line (why the
+        // silent probe decided sign-in is/isn't required) reaches the caller's own progress sink,
+        // the same way browser.login already does below.
+        const current = (await client.call(
+          "browser.authState",
+          {},
+          undefined,
+          undefined,
+          opts.onProgress ? { onProgress: progress.forward } : undefined
+        )) as { state: string };
         if (current.state === "authenticated") return { state: current.state };
         if (!opts.interactive) throw new DomainError("AUTH_REQUIRED", "Microsoft 365 sign-in is required.");
         this.cancelRequested = false;
@@ -444,6 +454,19 @@ export class SetupService {
      * `DiscoveryResult.suggestedDownloadHosts`), forwarded unchanged for the panel to offer as a
      * pre-fill (G4) -- never applied to config here. Omitted when there is nothing to suggest. */
     suggestedDownloadHosts?: string[];
+    /** True when the store pass could not resolve every candidate it saw this run -- it ran out of
+     * its own budget with cards still unprocessed, a card's click/dialog never yielded an id, or a
+     * scan/expansion step failed outright (see `summarizeDiscoveryCompleteness`). The roster may be
+     * shorter than the account's real one; re-running discovery can turn up more. Derived only from
+     * `warnings`, so it costs nothing extra to compute and never itself becomes a new failure mode.
+     * Omitted (not `false`) on a run that completed cleanly. */
+    partial?: true;
+    /** How many store candidates this run could not resolve (see `partial`). Omitted along with it. */
+    failedCount?: number;
+    /** Whether `failedCount` is `summarizeDiscoveryCompleteness`'s exact `none + errors` tally
+     * (`true`) rather than a floor standing in for an unknown number of losses (`false`). Omitted
+     * along with `partial`/`failedCount`. */
+    failedCountKnown?: boolean;
   }> {
     const operation = { id: randomUUID(), cancelled: false };
     this.discoveryOperation = operation;
@@ -513,11 +536,19 @@ export class SetupService {
         .filter((_, index) => !matchedIndexes.has(index))
         .map((agent) => this.toRegistryCandidate(agent, assignedAliases, assignmentStatusByAlias));
 
+      const completeness = summarizeDiscoveryCompleteness(result.warnings);
       return {
         candidates: [...discoveredCandidates, ...unmatchedRegistryCandidates],
         warnings: result.warnings,
         ...(result.suggestedDownloadHosts && result.suggestedDownloadHosts.length > 0
           ? { suggestedDownloadHosts: result.suggestedDownloadHosts }
+          : {}),
+        ...(completeness.partial
+          ? {
+              partial: true as const,
+              failedCount: completeness.failedCount,
+              failedCountKnown: completeness.failedCountKnown
+            }
           : {})
       };
     } finally {
@@ -896,8 +927,8 @@ export class SetupService {
    * restart the broker and tell the user. When nothing is installed, fail with BROWSER_START_FAILED
    * and a remediation that names what to install -- before a confusing launch error can happen.
    */
-  async ensureBrowserChannel(): Promise<EnsureBrowserChannelResult> {
-    const config = await loadGlobalConfig(this.deps.paths);
+  async ensureBrowserChannel(options: { readOnly?: boolean } = {}): Promise<EnsureBrowserChannelResult> {
+    const config = await loadGlobalConfig(this.deps.paths, options);
     const detect =
       this.deps.detectBrowser ??
       ((channel: string) =>
@@ -921,6 +952,13 @@ export class SetupService {
             "Install Microsoft Edge (or Google Chrome), then run the setup again. The browser channel can be changed in the AgentPickLink panel's Advanced settings."
         }
       );
+    if (options.readOnly)
+      return {
+        changed: false,
+        channel: replacement,
+        previous: config.browser.channel,
+        restartRequired: false
+      };
     const result = await this.updateConfig({ channel: replacement });
     return {
       changed: true,

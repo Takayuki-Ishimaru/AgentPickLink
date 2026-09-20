@@ -6,6 +6,7 @@ import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js"
 import type { BrowserManager } from "../../src/transports/browser/browser-manager.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
 import type { PageLike } from "../../src/transports/browser/types.js";
+import { summarizeDiscoveryCompleteness } from "../../src/domain/discovery-warnings.js";
 
 const executable = [
   process.env.M365_AGENT_TEST_BROWSER,
@@ -216,17 +217,20 @@ describe.skipIf(!executable)("agent description discovery through a real browser
           navigator: new AgentNavigator(policy),
           appHosts: ["127.0.0.1"],
           neutralAppUrl: `${origin}/chat`,
-          navigationTimeoutMs: 1_000,
+          navigationTimeoutMs: 3_000,
+          descriptionWaitMs: 1_000,
           renderTimeoutMs: 500,
           rowsSettleMs: 20,
           storeWaitMs: 100,
-          storeItemWaitMs: 500
+          storeItemWaitMs: 3_000
         });
+        // Use the production card-click budget: 500ms can expire during navigation even
+        // when the click succeeds. Keep the description inspection at one second.
         // Keep enough total budget for the real browser to start alongside the other
         // integration fixtures. The description retry itself remains bounded by the
         // implementation's per-card wait and the assertions below still require exactly
         // one optional revisit.
-        const result = await discovery.discover(10_000);
+        const result = await discovery.discover(20_000);
         expect(result.agents.map(({ displayName, description }) => ({ displayName, description }))).toEqual([
           { displayName: "No Details Agent", description: recover ? "短い説明です。" : undefined },
           { displayName: "Requirements Agent", description: "短い説明です。" }
@@ -243,6 +247,353 @@ describe.skipIf(!executable)("agent description discovery through a real browser
         await browser.close();
       }
     },
-    process.platform === "win32" ? 60_000 : 15_000
+    process.platform === "win32" ? 60_000 : 30_000
   );
+});
+
+/**
+ * Real-tenant discovery (Issue-09, docs/validation-log-2026-09-13-windows.md) returned 6 candidates
+ * on one run and 10 with a `store-expansion-failed` warning on the very next run against the same
+ * account. These fixtures reproduce, one at a time and without any real tenant, the concrete ways a
+ * store card can silently drop out of one run and not another: a dialog that only opens on a second
+ * click, a card that does not exist in the DOM until its list has actually scrolled to it, a card
+ * that a rail re-render invalidates between marking and clicking, and a card whose dialog legitimately
+ * offers nothing to click (which must stay a clean non-match, not a retried failure). The last test
+ * checks the actual regression: the same account's two discoveries must return the same list, in the
+ * same order.
+ */
+describe.skipIf(!executable)("store catalogue resilience through a real browser", () => {
+  function discoveryFor(page: PageLike, origin: string) {
+    const policy = new NavigationPolicy({ appHosts: ["127.0.0.1"], allowInsecureLoopback: true });
+    return new AgentDiscovery({
+      manager: {
+        createConversationPage: async () => ({ page }),
+        closePage: async () => page.close?.()
+      } as unknown as BrowserManager,
+      policy,
+      navigator: new AgentNavigator(policy),
+      appHosts: ["127.0.0.1"],
+      neutralAppUrl: `${origin}/chat`,
+      rowsSettleMs: 20,
+      storeWaitMs: 1_000,
+      storeItemWaitMs: 500,
+      descriptionWaitMs: 500
+    });
+  }
+
+  it("retries a store card whose dialog only opens on a second click, resolves it, and counts the retry as recovered (not partial)", async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          body = `<main>Microsoft 365 Copilot<div role="list">
+            <button onclick="handleClick()">Second Click Agent</button>
+          </div></main>
+          <script>
+            let clicked = false;
+            function handleClick() {
+              if (!clicked) { clicked = true; return; }
+              location.href = '/chat/agent/second-click';
+            }
+          </script>`;
+        } else if (pathname === "/chat/agent/second-click") {
+          body = "<main>Microsoft 365 Copilot<h1>Second Click Agent</h1></main>";
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents.some((agent) => agent.stableAgentId === "second-click")).toBe(true);
+      const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+      expect(catalogue).toContain(
+        "nav=1 dialog=0 open=0 forbidden-only=0 skipped=0 none=0 errors=0 off-host=0 more=0 retried=1" +
+          " recovered=1"
+      );
+      // A retry that recovered the card is not a loss: no trailing " partial", no expansion tag.
+      expect(catalogue?.endsWith(" partial")).toBe(false);
+      expect(result.warnings.some((line) => line.startsWith("store-expansion-failed"))).toBe(false);
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  it("scrolls a store list to the card that exists only once it has actually scrolled into view", async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          // A tall spacer keeps the list genuinely scrollable; the card itself is appended to the
+          // DOM only on the list's first real scroll event, the way a virtualized tenant list
+          // renders a row solely once it has scrolled into view (see MOCK_LAZY_AGENT for the same
+          // idea on the sidebar rail).
+          body = `<main>Microsoft 365 Copilot<div role="list" id="cards" style="display:block;max-height:60px;overflow-y:auto;">
+            <div style="height:240px;"></div>
+          </div></main>
+          <script>
+            const list = document.getElementById('cards');
+            let revealed = false;
+            list.addEventListener('scroll', () => {
+              if (revealed) return;
+              revealed = true;
+              const button = document.createElement('button');
+              button.style.display = 'block';
+              button.style.height = '30px';
+              button.textContent = 'Below Fold Agent';
+              button.onclick = () => { location.href = '/chat/agent/below-fold'; };
+              list.appendChild(button);
+            });
+          </script>`;
+        } else if (pathname === "/chat/agent/below-fold") {
+          body = "<main>Microsoft 365 Copilot<h1>Below Fold Agent</h1></main>";
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents.some((agent) => agent.stableAgentId === "below-fold")).toBe(true);
+      expect(result.warnings.find((line) => line.startsWith("store-catalog:"))).toMatch(/\bscroll=[1-9]\d*/);
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  it("never resolves a card whose details dialog offers nothing but forbidden controls", async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const actions: string[] = [];
+      await page.exposeFunction("recordAction", (action: string) => actions.push(action));
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          body = `<main>Microsoft 365 Copilot<div role="list">
+            <button onclick="document.getElementById('dialog').hidden=false">Forbidden Only Agent</button>
+          </div>
+          <div role="dialog" id="dialog" aria-label="Forbidden Only Agent" hidden>
+            <button onclick="recordAction('add'); document.getElementById('dialog').hidden=true">追加</button>
+            <button onclick="recordAction('close'); document.getElementById('dialog').hidden=true">閉じる</button>
+          </div></main>`;
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents).toEqual([]);
+      expect(actions).not.toContain("add");
+      const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+      expect(catalogue).toContain("forbidden-only=1");
+      // A legitimate "nothing to click here" outcome is not a failure: it must never cost a retry.
+      expect(catalogue).toContain("retried=0");
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  it("recovers a card whose click target a rail re-render replaces between marking and clicking", async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          // The observer rebuilds the list's own children -- with the same visible content and
+          // click handler, but new DOM node identities -- the instant discovery's own marker
+          // attribute appears, reproducing a framework re-render that lands between the card being
+          // marked and the follow-up click that was meant to land on it.
+          body = `<main>Microsoft 365 Copilot<div role="list" id="cards">
+            <button onclick="location.href='/chat/agent/rerender-target'">Rerender Agent</button>
+          </div></main>
+          <script>
+            const list = document.getElementById('cards');
+            const cleanHtml = list.innerHTML;
+            let rebuilt = false;
+            const observer = new MutationObserver((mutations) => {
+              if (rebuilt) return;
+              for (const mutation of mutations) {
+                if (mutation.type === 'attributes' && mutation.attributeName === 'data-agentpicklink-card') {
+                  rebuilt = true;
+                  list.innerHTML = cleanHtml;
+                  break;
+                }
+              }
+            });
+            observer.observe(list, { attributes: true, subtree: true });
+          </script>`;
+        } else if (pathname === "/chat/agent/rerender-target") {
+          body = "<main>Microsoft 365 Copilot<h1>Rerender Agent</h1></main>";
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents.some((agent) => agent.stableAgentId === "rerender-target")).toBe(true);
+      expect(result.warnings.find((line) => line.startsWith("store-catalog:"))).toContain("retried=1");
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  /**
+   * ISSUE-2026-09-14-01 (docs/validation-log-2026-09-14-windows.md, T3): a real tenant's "load more"
+   * click timed out at the true end of a 210-item catalogue (`items=210 nav=10 skipped=200 more=2`,
+   * unchanged across two runs) and was reported as `store-expansion-failed`, marking the run
+   * `partial: true` even though `errors=0 none=0` -- no candidate was actually lost. These three
+   * fixtures isolate `expandStore`'s post-timeout re-inspection: a control that stays visible and
+   * enabled but yields nothing is the end of the list (no tag, no partial); a control whose timeout
+   * coincides with items genuinely still arriving is a real failure (tag, partial, an unknown-count
+   * `failedCount` of 1); and, separately, a card (not the "load more" control) that never resolves
+   * even after its one bounded retry is a real, *known* loss (`none=1`).
+   */
+  it('an end-of-list "load more" that stays visible and enabled but yields nothing is not a failure', async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          // The blocker sits exactly over "Show more" (never over the list) so only that control's
+          // click ever times out -- the actual end-of-list symptom (a real M365 tenant's own
+          // reason for the click never landing is unconfirmed; this reproduces the observable
+          // TimeoutError without depending on a real tenant's specific mechanism). Nothing is ever
+          // added to the list, so item counts never move.
+          body = `<main>Microsoft 365 Copilot<div role="list" id="cards">
+            <button onclick="location.href='/chat/agent/only-agent'">Only Agent</button>
+          </div>
+          <div style="position:relative;display:inline-block;">
+            <button>Show more</button>
+            <div style="position:absolute;inset:0;"></div>
+          </div></main>`;
+        } else if (pathname === "/chat/agent/only-agent") {
+          body = "<main>Microsoft 365 Copilot<h1>Only Agent</h1></main>";
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents.some((agent) => agent.stableAgentId === "only-agent")).toBe(true);
+      const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+      expect(catalogue).toContain("none=0 errors=0");
+      expect(catalogue?.endsWith(" partial")).toBe(false);
+      expect(result.warnings.some((line) => line.startsWith("store-expansion-failed"))).toBe(false);
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  it('a "load more" timeout while items are still arriving is a real, unknown-count failure', async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          // Same blocked "Show more" as above, but a second card is appended in the background
+          // shortly after the click is attempted -- simulating content that was genuinely still
+          // loading -- so the post-timeout re-inspection must see the catalogue grow and report it,
+          // instead of mistaking it for the end of the list.
+          body = `<main>Microsoft 365 Copilot<div role="list" id="cards">
+            <button onclick="location.href='/chat/agent/first-agent'">First Agent</button>
+          </div>
+          <div style="position:relative;display:inline-block;">
+            <button>Show more</button>
+            <div style="position:absolute;inset:0;"></div>
+          </div></main>
+          <script>
+            setTimeout(function () {
+              var list = document.getElementById('cards');
+              var button = document.createElement('button');
+              button.textContent = 'Second Agent';
+              button.onclick = function () { location.href = '/chat/agent/second-agent'; };
+              list.appendChild(button);
+            }, 150);
+          </script>`;
+        } else if (pathname === "/chat/agent/first-agent") {
+          body = "<main>Microsoft 365 Copilot<h1>First Agent</h1></main>";
+        } else if (pathname === "/chat/agent/second-agent") {
+          body = "<main>Microsoft 365 Copilot<h1>Second Agent</h1></main>";
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents.some((agent) => agent.stableAgentId === "first-agent")).toBe(true);
+      expect(result.agents.some((agent) => agent.stableAgentId === "second-agent")).toBe(true);
+      const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+      expect(catalogue).toContain("none=0 errors=0");
+      expect(catalogue?.endsWith(" partial")).toBe(true);
+      expect(result.warnings.some((line) => line.startsWith("store-expansion-failed:"))).toBe(true);
+      const completeness = summarizeDiscoveryCompleteness(result.warnings);
+      expect(completeness).toEqual({ partial: true, failedCount: 1, failedCountKnown: false });
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
+
+  it("a card that never resolves even after its one bounded retry is a real, known loss (none=1)", async () => {
+    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    try {
+      const page = await browser.newPage();
+      const origin = "http://127.0.0.1:9";
+      await page.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
+        if (pathname === "/chat/agentstore") {
+          // No onclick at all: the click itself never throws, but it never navigates and never
+          // opens a dialog either, so both the first attempt and its one retry time out unresolved.
+          body = `<main>Microsoft 365 Copilot<div role="list">
+            <button>Stuck Agent</button>
+          </div></main>`;
+        }
+        await route.fulfill({ contentType: "text/html; charset=utf-8", body });
+      });
+      const discovery = discoveryFor(page as unknown as PageLike, origin);
+
+      const result = await discovery.discover(15_000);
+
+      expect(result.agents).toEqual([]);
+      const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+      expect(catalogue).toContain("none=1 errors=0");
+      expect(catalogue).toContain("retried=1 recovered=0");
+      expect(catalogue?.endsWith(" partial")).toBe(false);
+      const completeness = summarizeDiscoveryCompleteness(result.warnings);
+      expect(completeness).toEqual({ partial: true, failedCount: 1, failedCountKnown: true });
+      expect(page.isClosed()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20_000);
 });

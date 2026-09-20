@@ -1,4 +1,4 @@
-import { AuthDetector } from "./auth-detector.js";
+import { AuthDetector, type AuthVerdict } from "./auth-detector.js";
 import { NavigationPolicy } from "./navigation-policy.js";
 import {
   BrowserTransportError,
@@ -280,18 +280,31 @@ export class AgentNavigator {
   async settleAuthState(
     page: PageLike,
     deadlineMs: number,
-    options: { pollMs?: number; onPoll?: () => void } = {}
+    options: {
+      pollMs?: number;
+      onPoll?: () => void;
+      /** ISSUE-2026-09-14-05: invoked with every detector verdict this wait observes (never a URL
+       * or page text -- see `AuthDetector.detectVerdict`), so a caller can report *why* the wait
+       * finally settled where it did. Best-effort: a throwing callback is swallowed. */
+      onVerdict?: (verdict: AuthVerdict) => void;
+    } = {}
   ): Promise<AuthState> {
     const pollMs = options.pollMs ?? 500;
     for (;;) {
       await this.awaitAppLanding(page, deadlineMs);
-      let state: AuthState;
+      let verdict: AuthVerdict;
       try {
-        state = await this.auth.detect(page);
+        verdict = await this.auth.detectVerdict(page);
       } catch {
         // A navigation in flight is a keep-waiting state, never a result.
-        state = "unknown";
+        verdict = { state: "unknown", rule: "detect-error" };
       }
+      try {
+        options.onVerdict?.(verdict);
+      } catch {
+        /* diagnostics are best-effort only */
+      }
+      const state = verdict.state;
       if (state === "authenticated" || state === "access-denied") return state;
       if (Date.now() >= deadlineMs) return state;
       options.onPoll?.();

@@ -9,8 +9,25 @@ import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
-assert.ok(process.argv[2], "Usage: npm run smoke:package -- <extracted-or-installed-package-directory>");
-const packageRoot = path.resolve(process.argv[2]);
+// --node <path> (or env SMOKE_NODE) launches the CLI/broker with that Node binary instead of
+// process.execPath -- used by scripts/assemble-portable.mjs to smoke-test a portable archive with its
+// own bundled runtime rather than whatever Node happens to run this script.
+let packageArg;
+let nodeOverride = process.env.SMOKE_NODE;
+const rest = process.argv.slice(2);
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--node") {
+    nodeOverride = rest[++i];
+  } else if (packageArg === undefined) {
+    packageArg = rest[i];
+  }
+}
+assert.ok(
+  packageArg,
+  "Usage: npm run smoke:package -- <extracted-or-installed-package-directory> [--node <path>]"
+);
+const packageRoot = path.resolve(packageArg);
+const nodeBinary = nodeOverride ? path.resolve(nodeOverride) : process.execPath;
 const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 const cli = path.resolve(packageRoot, manifest.bin["m365-agent"]);
 for (const file of [manifest.main, manifest.icon, "media/setup.js", "media/setup.css"]) {
@@ -57,10 +74,15 @@ const env = Object.fromEntries(
   )
 );
 env.M365_AGENT_APP_DATA = appData;
+env.M365_AGENT_INSTALL_ROOT = path.join(temporary, "install");
+env.HOME = path.join(temporary, "user");
+env.USERPROFILE = env.HOME;
+env.APPDATA = path.join(temporary, "roaming");
+env.LOCALAPPDATA = path.join(temporary, "local");
 // Exercise the Linux runtime explicitly; this does not change the supported-desktop policy.
 if (process.platform === "linux") env.M365_AGENT_ALLOW_UNSUPPORTED_OS = "1";
 const runCli = (...args) =>
-  promisify(execFile)(process.execPath, [cli, ...args], {
+  promisify(execFile)(nodeBinary, [cli, ...args], {
     cwd: temporary,
     env,
     timeout: 15_000
@@ -74,7 +96,7 @@ const clients = [
 const transports = clients.map(
   () =>
     new StdioClientTransport({
-      command: process.execPath,
+      command: nodeBinary,
       args: [cli, "serve"],
       cwd: temporary,
       env,
@@ -158,4 +180,7 @@ try {
   }
   await rm(temporary, { recursive: true, force: true });
 }
-process.stdout.write(`Package smoke passed: ${manifest.name}@${manifest.version} on ${process.version}\n`);
+const runtimeVersion = nodeOverride
+  ? (await promisify(execFile)(nodeBinary, ["--version"])).stdout.trim()
+  : process.version;
+process.stdout.write(`Package smoke passed: ${manifest.name}@${manifest.version} on ${runtimeVersion}\n`);

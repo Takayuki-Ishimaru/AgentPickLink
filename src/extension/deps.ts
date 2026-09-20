@@ -9,6 +9,7 @@
  * The defaults are the production wiring; nothing here changes behaviour at run time.
  */
 import { connectOrStartBroker } from "../broker/broker-lifecycle.js";
+import type { SetupServiceLike } from "../services/setup-controller.js";
 import { SetupService } from "../services/setup-service.js";
 import { createSetupDeps, readBrokerHealth, spawnBroker, type BrokerHealthSnapshot } from "./broker.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -18,26 +19,10 @@ import { startUpdateCheck } from "./update-checker.js";
 /** Windows needs tens of seconds to apply the private ACLs before the descriptor appears. */
 const BROKER_START_TIMEOUT_MS = 60_000;
 
-/**
- * The slice of `SetupService` the panel calls. Declared structurally so a test can hand
- * `SetupViewProvider` a fake without constructing the real service (which would need file stores
- * and a live broker).
- */
-export type SetupServiceLike = Pick<
-  SetupService,
-  | "status"
-  | "ensureSignedIn"
-  | "ensureBrowserChannel"
-  | "cancelSignIn"
-  | "cancelDiscovery"
-  | "discover"
-  | "apply"
-  | "removeAgent"
-  | "revokeWorkspace"
-  | "signOut"
-  | "restartBroker"
-  | "updateConfig"
->;
+/** The slice of `SetupService` the panel calls; declared with the controller that calls it
+ * (`src/services/setup-controller.ts`) and re-exported here, the path the extension's tests and
+ * wiring have always imported it from. */
+export type { SetupServiceLike };
 
 /** The minimum an auto-start needs to hand back: the connection is closed again immediately. */
 export type ClosableClient = { close: () => void };

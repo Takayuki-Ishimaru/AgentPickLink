@@ -5,6 +5,17 @@ import { printResult, type CliApi, type CliContext } from "../../src/cli/api.js"
 import { runServe } from "../../src/cli/commands/serve.js";
 import { makeCommandDeps, makeFakeBrokerClient, makeTempPaths } from "./helpers.js";
 
+// §4.7 C13: `runServe`'s real `LazyBrokerPort` runs `defaultBrokerStalenessCheck` (src/frontend/
+// lazy-broker-port.ts) before its first real broker connect, and that check reads the *real*
+// machine's `appPaths()`/broker descriptor (not `deps.paths`, which the rest of this file already
+// fakes) -- unlike every other broker interaction here, it is not reachable through `CommandDeps`.
+// Mock the broker-lifecycle module directly so a `port.list()` call below can never open a real
+// IPC connection, no matter what happens to be running on the machine these tests execute on.
+vi.mock("../../src/broker/broker-lifecycle.js", () => ({
+  connectExistingBroker: vi.fn().mockResolvedValue(undefined),
+  connectOrStartBroker: vi.fn()
+}));
+
 const api = (overrides: Partial<CliApi> = {}): CliApi => {
   const done = async () => ({ ok: true });
   return {

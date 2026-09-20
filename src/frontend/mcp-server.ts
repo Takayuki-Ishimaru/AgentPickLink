@@ -1,6 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PACKAGE_VERSION } from "../config/package-version.js";
 import { attachmentMediaType } from "../domain/attachment-media.js";
 import { FILE_GENERATION_INSTRUCTIONS } from "./file-generation-guidance.js";
 import { createToolHandlers, TOOL_DESCRIPTIONS, type ToolCallResult } from "./tools.js";
@@ -352,7 +353,7 @@ export async function createSdkServer(
     {
       name: "agent-pick-link",
       title: "AgentPickLink for M365",
-      version: "0.1.3"
+      version: PACKAGE_VERSION
     },
     { instructions: FILE_GENERATION_INSTRUCTIONS }
   );

@@ -101,7 +101,36 @@ export function migrateGlobalConfig(raw: unknown): unknown {
       ...(browser && browser.headless === false ? { browser: { ...browser, headless: true } } : {})
     };
   }
-  return migrated;
+  return migrateClientsKeys(migrated);
+}
+
+/**
+ * docs/extension-less-onboarding.md §4.4: renames the pre-4.4 `clients:` keys to the ones the
+ * strict schema now expects -- `vscode` (the workspace `.vscode/mcp.json` writer) -> `vscodeWorkspace`,
+ * `claude` (the project `.mcp.json` writer) -> `claudeProject`. `vscodeUser`/`codex` keep their
+ * names; `claudeUser` simply did not exist before. Not gated behind a version marker (unlike the
+ * migrations above): it is a pure key rename that must run every time an old key is present,
+ * regardless of how many times this function has already run, and it must never invent a value for
+ * a key that was never written (a config.yaml with no `clients` block at all is left alone -- the
+ * schema's own defaults, all `false`, apply). Runs unconditionally alongside every other config
+ * load rather than only when a version field is absent, because -- unlike the download/headless
+ * defaults above -- there is no new *behavior* being opted into here, only old field names being
+ * read under their new spelling.
+ */
+function migrateClientsKeys(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.clients)) return value;
+  const clients = value.clients;
+  if (!("vscode" in clients) && !("claude" in clients)) return value;
+  const migratedClients: Record<string, unknown> = { ...clients };
+  if ("vscode" in migratedClients) {
+    if (!("vscodeWorkspace" in migratedClients)) migratedClients.vscodeWorkspace = migratedClients.vscode;
+    delete migratedClients.vscode;
+  }
+  if ("claude" in migratedClients) {
+    if (!("claudeProject" in migratedClients)) migratedClients.claudeProject = migratedClients.claude;
+    delete migratedClients.claude;
+  }
+  return { ...value, clients: migratedClients };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

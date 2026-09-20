@@ -19,6 +19,15 @@ export type BrokerDescriptor = {
   /** Identifies the code the broker was started from (entry file + its mtime), so a client
    * bundled with a newer build (e.g. after a VSIX update) can tell the running broker is stale. */
   build?: BrokerBuild;
+  /** Best-effort OS pid of the automation browser process this broker last launched (or
+   * relaunched), refreshed opportunistically (see BrokerServer's `broker.health` handling and its
+   * shutdown transition to `state: "stopping"`). Advisory only: a restarter that stops a wedged or
+   * unresponsive broker (`src/services/broker-staleness.ts`'s `waitForBrokerFullyReleased`) uses
+   * this to also clean up the browser process that broker owned, independently re-verifying the
+   * pid is alive and actually tied to the dedicated profile before ever force-killing it. Absent
+   * whenever no browser has launched yet, or this broker predates the field.
+   * (docs/validation-log-2026-09-14-windows-round3.md S2) */
+  browserPid?: number;
 };
 export type BrokerBuild = { entry: string; mtimeMs: number };
 export type BrokerHello = {
@@ -46,5 +55,11 @@ export type IpcResponse =
         submissionState?: "not-sent" | "sent" | "unknown";
         partialResponse?: unknown;
         retryAfterMs?: number;
+        /** item 1: see domain/errors.ts's `ApplicationError.callLog`/`.timedOut` -- forwarded
+         * across this same wire shape so the CLI/extension can append the call log to their own
+         * log file. Never surfaced by the frontend's MCP tool result (stripped in
+         * src/frontend/tool-results.ts's `failure()`). */
+        callLog?: string[];
+        timedOut?: boolean;
       };
     };

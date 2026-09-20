@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { ProgressSink } from "../../domain/progress.js";
 import { AgentNavigator, attachHosts } from "./agent-navigator.js";
-import { AuthDetector } from "./auth-detector.js";
+import { AuthDetector, type AuthVerdict } from "./auth-detector.js";
 import { BrowserManager, signInCancelled } from "./browser-manager.js";
 import { neutralLandingUrl } from "./landing.js";
 import { NavigationPolicy } from "./navigation-policy.js";
@@ -29,6 +29,12 @@ export interface SessionManagerOptions {
   pollIntervalMs?: number;
   /** Minimum spacing between `login-waiting` progress events. */
   progressIntervalMs?: number;
+  /** ISSUE-2026-09-14-05: metadata-only log sink (see src/observability/broker-log.ts), wired by
+   * `BrowserTransport` from the broker's composition root. Used only to record why the silent
+   * auth probe (`probe()`/`runProbe()`) settled where it did -- verdict kind, landing state,
+   * detector rule, elapsed ms; never a URL or page text. Absent in tests that construct a
+   * SessionManager directly. */
+  log?: (line: string) => void;
 }
 
 /** Prefix only: every actual probe run uses its own suffixed page key. Routine concurrent status
@@ -43,6 +49,23 @@ interface ProbeOutcome {
   state: AuthState;
   checkedAt: string;
   settledOn: "app" | "auth";
+}
+
+/** ISSUE-2026-09-14-05: the metadata this module logs (and reports as progress) to explain why a
+ * silent auth probe settled on a given verdict -- never a URL or page text. `rule` is either an
+ * `AuthDetectionRule` tag (see auth-detector.ts) when the detector actually ran, or
+ * `"landing-timeout-on-auth-host"` when the probe never left the authentication host before its
+ * deadline (the detector was never consulted in that case -- `AgentNavigator.awaitAppLanding`
+ * decided on host alone). */
+type AuthProbeReason = {
+  verdict: AuthState;
+  landingState: "app" | "auth";
+  rule: string;
+  elapsedMs: number;
+};
+
+function formatAuthProbeReason(reason: AuthProbeReason): string {
+  return `verdict=${reason.verdict} landing=${reason.landingState} rule=${reason.rule} elapsedMs=${reason.elapsedMs}`;
 }
 
 /**
@@ -69,6 +92,7 @@ export class SessionManager {
   private readonly verificationTimeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly progressIntervalMs: number;
+  private readonly log?: (line: string) => void;
   /** Status reads are often triggered together by the panel, CLI and MCP health checks. They all
    * answer the same question, so share one short-lived page instead of creating one per caller. */
   private probeInFlight?: Promise<{ state: AuthState; checkedAt: string }>;
@@ -84,6 +108,7 @@ export class SessionManager {
     this.verificationTimeoutMs = options.verificationTimeoutMs ?? this.navigationTimeoutMs;
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.progressIntervalMs = options.progressIntervalMs ?? 2_000;
+    this.log = options.log;
     this.detector = new AuthDetector({ signInHosts: options.authHosts ?? [] });
   }
 
@@ -97,19 +122,26 @@ export class SessionManager {
     return neutralLandingUrl(this.appHosts, this.neutralAppUrl);
   }
 
-  /** Hidden-context authentication probe on a short-lived, dedicated page. */
-  async probe(options: { timeoutMs?: number } = {}): Promise<{ state: AuthState; checkedAt: string }> {
+  /** Hidden-context authentication probe on a short-lived, dedicated page. `onProgress`
+   * (ISSUE-2026-09-14-05) is forwarded only for a caller-supplied `timeoutMs`: the routine,
+   * coalesced status-check flight below is shared by whichever caller happens to start it, so it
+   * cannot fairly hand every joiner's own progress sink the same single run's events. */
+  async probe(
+    options: { timeoutMs?: number; onProgress?: ProgressSink } = {}
+  ): Promise<{ state: AuthState; checkedAt: string }> {
     // A caller that supplied a distinct deadline needs that exact budget and therefore does not
     // join the routine status-check flight.
     if (options.timeoutMs !== undefined) {
-      const { state, checkedAt } = await this.runProbe(options.timeoutMs);
+      const { state, checkedAt } = await this.runProbe(options.timeoutMs, undefined, options.onProgress);
       return { state, checkedAt };
     }
     if (this.probeInFlight) return this.probeInFlight;
-    const flight = this.runProbe(this.authLandingTimeoutMs).then(({ state, checkedAt }) => ({
-      state,
-      checkedAt
-    }));
+    const flight = this.runProbe(this.authLandingTimeoutMs, undefined, options.onProgress).then(
+      ({ state, checkedAt }) => ({
+        state,
+        checkedAt
+      })
+    );
     this.probeInFlight = flight;
     try {
       return await flight;
@@ -118,17 +150,32 @@ export class SessionManager {
     }
   }
 
-  private async runProbe(timeoutMs: number, onPoll?: () => void): Promise<ProbeOutcome> {
+  private async runProbe(
+    timeoutMs: number,
+    onPoll?: () => void,
+    onProgress?: ProgressSink
+  ): Promise<ProbeOutcome> {
+    const startedAt = Date.now();
     const target = this.landingUrl();
     this.policy.validate(target, "app");
     const pageKey = `${AUTH_PROBE_PAGE_KEY}-${randomBytes(6).toString("hex")}`;
     const handle = await this.manager.createConversationPage(pageKey);
     const page = handle.page;
     const stopWatching = this.navigator.watch(page, "app-or-auth");
+    // ISSUE-2026-09-14-05: the detector rule behind whichever verdict `settle()` finally returns
+    // below -- captured via `onVerdict` rather than re-derived, so the logged reason always
+    // matches the exact check that produced the returned state.
+    let lastRule = "no-verdict";
     try {
       await page.goto?.(target, { waitUntil: "domcontentloaded", timeout: this.navigationTimeoutMs });
       this.navigator.assertNavigationSafe(page, "app-or-auth");
-      const state = await this.settle(page, Date.now() + timeoutMs, onPoll);
+      const state = await this.settle(page, Date.now() + timeoutMs, onPoll, (verdict) => {
+        lastRule = verdict.rule;
+      });
+      this.reportAuthProbeReason(
+        { verdict: state, landingState: "app", rule: lastRule, elapsedMs: Date.now() - startedAt },
+        onProgress
+      );
       return { state, checkedAt: new Date().toISOString(), settledOn: "app" };
     } catch (error) {
       // "Sign-in is required" is a probe *result*, not a probe failure. An unlisted identity
@@ -137,8 +184,18 @@ export class SessionManager {
         error instanceof BrowserTransportError &&
         error.code === "AUTH_REQUIRED" &&
         !error.details?.unlistedAuthHost
-      )
+      ) {
+        this.reportAuthProbeReason(
+          {
+            verdict: "sign-in-required",
+            landingState: "auth",
+            rule: "landing-timeout-on-auth-host",
+            elapsedMs: Date.now() - startedAt
+          },
+          onProgress
+        );
         return { state: "sign-in-required", checkedAt: new Date().toISOString(), settledOn: "auth" };
+      }
       throw error;
     } finally {
       stopWatching();
@@ -146,11 +203,40 @@ export class SessionManager {
     }
   }
 
+  /**
+   * ISSUE-2026-09-14-05: reports why the silent auth probe settled where it did -- metadata only
+   * (verdict kind, landing state, detector rule, elapsed ms; never a URL or page text). Logged
+   * directly to the broker log (see `log` above) and, when the caller supplied one, forwarded as a
+   * `verifying`-phase progress event whose `message` is prefixed `login-reason:` so it reaches
+   * `cli.log`/the panel's log via the existing progress/notify path (`SetupController.progressSink()`
+   * -> `host.log()`, `src/services/setup-service.ts`'s `ensureSignedIn()` -> the caller's
+   * `onProgress`). Never throws.
+   */
+  private reportAuthProbeReason(reason: AuthProbeReason, onProgress?: ProgressSink): void {
+    const detail = formatAuthProbeReason(reason);
+    this.log?.(`auth-probe: ${detail}`);
+    if (!onProgress) return;
+    try {
+      onProgress({ phase: "verifying", message: `login-reason: ${detail}`, elapsedMs: reason.elapsedMs });
+    } catch {
+      /* progress delivery is best-effort */
+    }
+  }
+
   /** The shared "keep judging until the application has rendered" wait (see
    * `AgentNavigator.settleAuthState`): the application host answers with its shell long before the
    * chat structure the detector requires exists, so a single judgement on arrival is wrong. */
-  private settle(page: PageLike, deadlineMs: number, onPoll?: () => void): Promise<AuthState> {
-    return this.navigator.settleAuthState(page, deadlineMs, { pollMs: this.pollIntervalMs, onPoll });
+  private settle(
+    page: PageLike,
+    deadlineMs: number,
+    onPoll?: () => void,
+    onVerdict?: (verdict: AuthVerdict) => void
+  ): Promise<AuthState> {
+    return this.navigator.settleAuthState(page, deadlineMs, {
+      pollMs: this.pollIntervalMs,
+      onPoll,
+      onVerdict
+    });
   }
 
   /**

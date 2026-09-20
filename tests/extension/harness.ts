@@ -41,6 +41,12 @@ export type RuntimeHarness = {
   context: ReturnType<typeof createExtensionContext>;
   /** A throwaway `$HOME`, so the Codex integration can never touch the real one. */
   home: string;
+  /** The throwaway `<home>` of docs/extension-less-onboarding.md §3.2 -- where `install.json` is
+   * read from. Pinned through `M365_AGENT_INSTALL_ROOT` rather than through the instance-level
+   * `homeDirectory()` override, because `activate()` builds its *own* `ExtensionRuntime` that no
+   * test can shadow, and §4.7 C13 makes activation read `install.json` before its first broker
+   * decision -- which must never mean the developer's real machine install. */
+  installHome: string;
   /** A throwaway workspace folder, already registered with the vscode mock. */
   workspaceRoot: string;
   extensionRoot: string;
@@ -57,6 +63,7 @@ export async function createRuntimeHarness(
 ): Promise<RuntimeHarness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "apl-ext-"));
   const home = path.join(base, "home");
+  const installHome = path.join(base, "install-home");
   const workspaceRoot = path.join(base, "workspace");
   const extensionRoot = path.join(base, "extension");
   await fs.mkdir(home, { recursive: true });
@@ -69,6 +76,7 @@ export async function createRuntimeHarness(
     Object.entries(process.env).filter(([key]) => key.startsWith("M365_AGENT_"))
   );
   process.env.M365_AGENT_APP_DATA = path.join(base, "appdata");
+  process.env.M365_AGENT_INSTALL_ROOT = installHome;
 
   if (options.language) vscodeMock.language = options.language;
   setWorkspaceRoot(options.workspace === false ? undefined : workspaceRoot);
@@ -84,6 +92,7 @@ export async function createRuntimeHarness(
     runtime,
     context,
     home,
+    installHome,
     workspaceRoot,
     extensionRoot,
     dispose: async () => {
@@ -236,7 +245,16 @@ export class FakeSetupService implements SetupServiceLike {
 
   cancelResult = { cancelled: true };
 
-  discovery: { candidates: AgentCandidate[]; warnings: string[]; suggestedDownloadHosts?: string[] } = {
+  discovery: {
+    candidates: AgentCandidate[];
+    warnings: string[];
+    suggestedDownloadHosts?: string[];
+    /** WP-D: mirrors `SetupService.discover()`'s `partial`/`failedCount` (see
+     * domain/discovery-warnings.ts's summarizeDiscoveryCompleteness) so a test can drive a partial
+     * discovery run without constructing real store-catalog warning text. */
+    partial?: true;
+    failedCount?: number;
+  } = {
     candidates: [],
     warnings: []
   };
@@ -297,9 +315,13 @@ export class FakeSetupService implements SetupServiceLike {
     return Promise.resolve(this.cancelResult);
   }
 
-  discover(
-    onProgress?: ProgressSink
-  ): Promise<{ candidates: AgentCandidate[]; warnings: string[]; suggestedDownloadHosts?: string[] }> {
+  discover(onProgress?: ProgressSink): Promise<{
+    candidates: AgentCandidate[];
+    warnings: string[];
+    suggestedDownloadHosts?: string[];
+    partial?: true;
+    failedCount?: number;
+  }> {
     this.calls.push("discover");
     this.emit(onProgress);
     if (this.discoverError) FakeSetupService.reject(this.discoverError);

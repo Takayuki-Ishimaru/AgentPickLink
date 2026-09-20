@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { AuthDetector } from "../../src/transports/browser/auth-detector.js";
@@ -15,6 +15,24 @@ const SIGN_IN_BODY = "サインイン";
 const APP_BODY = "Microsoft 365 Copilot 新しいチャット";
 
 describe("SessionManager", () => {
+  // Every test in this file runs on fake timers: several depend on an exact `Date.now() + timeoutMs`
+  // budget surviving until a specific poll (the sign-in window closing, a persistence check with a
+  // real verification deadline, `interactiveLogin`'s own 5 s/30 s deadlines, `runProbe`'s
+  // `verificationTimeoutMs`), and under real timers a loaded CI scheduler can silently erode that
+  // budget before the fixture-driven poll the test means to observe -- see the Windows CPU-load
+  // failures this replaced (docs/validation-log-2026-09-14-windows-round3.md, S1). `page.waitForTimeout`
+  // below advances the fake clock by exactly the requested `ms` on every call, so production code's
+  // own `Date.now()` deadlines only ever move in the fixed steps the fixture drives, never by
+  // whatever wall-clock time a slow machine happens to spend in between. `makeSessions`'s own
+  // `mkdtemp` and the fixture's plain promise resolutions never depend on a timer, so turning fake
+  // timers on before it runs is safe.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("probes the hidden context on a short-lived page and closes it again", async () => {
     const window = fakeWindow({ url: APP, body: APP_BODY, structure: true });
     const { sessions, manager } = await makeSessions(window);
@@ -46,6 +64,67 @@ describe("SessionManager", () => {
     const window = fakeWindow({ url: APP, body: SIGN_IN_BODY, structure: false });
     const { sessions, manager } = await makeSessions(window);
     await expect(sessions.probe()).resolves.toMatchObject({ state: "sign-in-required" });
+    await manager.close();
+  });
+
+  // ISSUE-2026-09-14-05: the silent sign-in check (SetupService.ensureSignedIn -> browser.authState
+  // -> SessionManager.probe()/runProbe() -> AgentNavigator.settleAuthState -> AuthDetector) must log
+  // *why* it decided sign-in is required -- verdict kind, landing state, detector rule, elapsed ms --
+  // both to the broker log directly and, when a caller asked for progress, as a `login-reason:`
+  // line via the existing progress/notify path.
+  it("logs the reason when the silent probe finds a non-persisted (signed-out) session", async () => {
+    const window = fakeWindow({ url: APP, body: SIGN_IN_BODY, structure: false });
+    const logs: string[] = [];
+    const { sessions, manager } = await makeSessions(window, { log: (line) => logs.push(line) });
+
+    const events: ProgressEvent[] = [];
+    await expect(sessions.probe({ onProgress: (event) => events.push(event) })).resolves.toMatchObject({
+      state: "sign-in-required"
+    });
+
+    // Logged directly to the broker log (never a URL or page text -- the fake page's own "body"
+    // marker text, SIGN_IN_BODY, must never appear).
+    const reasonLine = logs.find((line) => line.startsWith("auth-probe: "));
+    expect(reasonLine).toBeDefined();
+    expect(reasonLine).toContain("verdict=sign-in-required");
+    expect(reasonLine).toContain("landing=app");
+    expect(reasonLine).toContain("rule=sign-in-marker-or-path");
+    expect(reasonLine).toMatch(/elapsedMs=\d+/);
+    expect(reasonLine).not.toContain(SIGN_IN_BODY);
+    expect(reasonLine).not.toContain(APP);
+
+    // Forwarded as a login-reason: progress event via the existing progress/notify path, carrying
+    // the same metadata.
+    const reasonEvent = events.find((event) => event.message?.startsWith("login-reason: "));
+    expect(reasonEvent).toBeDefined();
+    expect(reasonEvent?.message).toContain("verdict=sign-in-required");
+    expect(reasonEvent?.message).toContain("rule=sign-in-marker-or-path");
+    expect(typeof reasonEvent?.elapsedMs).toBe("number");
+
+    await manager.close();
+  });
+
+  it("logs a landing-timeout reason when the probe never leaves the authentication host", async () => {
+    const window = fakeWindow({
+      url: APP,
+      redirectTo: "https://login.example.test/oauth2/authorize",
+      body: SIGN_IN_BODY,
+      structure: false
+    });
+    const logs: string[] = [];
+    const { sessions, manager } = await makeSessions(window, {
+      log: (line) => logs.push(line),
+      authLandingTimeoutMs: 5
+    });
+
+    await expect(sessions.probe()).resolves.toMatchObject({ state: "sign-in-required" });
+
+    const reasonLine = logs.find((line) => line.startsWith("auth-probe: "));
+    expect(reasonLine).toBeDefined();
+    expect(reasonLine).toContain("verdict=sign-in-required");
+    expect(reasonLine).toContain("landing=auth");
+    expect(reasonLine).toContain("rule=landing-timeout-on-auth-host");
+
     await manager.close();
   });
 
@@ -212,6 +291,12 @@ describe("SessionManager", () => {
     });
     const { sessions } = await makeSessions(window, { pollIntervalMs: 1, verificationTimeoutMs: 50 });
 
+    // The 50 ms verification budget below is compared against `Date.now()` inside `interactiveLogin`,
+    // captured only after the headed-window flow and the hidden-context relaunch have both run. Fake
+    // timers (file-wide, see the top of this describe block) make `Date.now()` advance only through
+    // this fixture's own `waitForTimeout`, in exact `pollIntervalMs` steps, so the 50 ms budget always
+    // covers exactly the number of polls the production code asks for -- no real setup work in
+    // between can silently consume it and eat the very poll this test wants to observe.
     await expect(sessions.interactiveLogin(5_000)).rejects.toMatchObject({
       code: "AUTH_FAILED",
       message: expect.stringContaining("requested sign-in again after the window was closed"),
@@ -313,6 +398,11 @@ describe("SessionManager", () => {
       }
     });
     const { sessions } = await makeSessions(window, { pollIntervalMs: 1 });
+    // `interactiveLogin`'s poll loop only notices the closed window on its *second* iteration
+    // (the first `onPoll` above sets `state.closed` after the first check already ran). File-wide
+    // fake timers make the interval between iterations an exact, deterministic 1 ms of virtual time,
+    // so no real scheduling delay in the setup between capturing the 5 s deadline and reaching that
+    // second iteration can burn enough of the budget that the loop times out instead.
     await expect(sessions.interactiveLogin(5_000)).rejects.toMatchObject({
       code: "AUTH_FAILED",
       message: "The sign-in window was closed before sign-in completed."
@@ -331,8 +421,10 @@ describe("SessionManager", () => {
       url: APP,
       body: SIGN_IN_BODY,
       structure: false,
-      // A real page yields to the event loop between polls; this fixture must too, or the poll
-      // loop would starve the timers this test waits on.
+      // A real page yields to the event loop between polls; this fixture must too. Under fake
+      // timers this registers a fake timer of its own -- distinct from the `pollIntervalMs` step
+      // `page.waitForTimeout` advances afterwards -- so nothing but an explicit
+      // `vi.advanceTimersByTimeAsync` below ever resolves it.
       onPoll: async () => {
         polls++;
         await new Promise((resolve) => setTimeout(resolve, 1));
@@ -341,9 +433,20 @@ describe("SessionManager", () => {
     const { sessions, manager } = await makeSessions(window, { pollIntervalMs: 1 });
 
     const login = sessions.interactiveLogin(30_000);
-    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
-    while (polls === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
-    expect(polls).toBeGreaterThan(0);
+    // Reaching the first poll still crosses real, unfaked I/O (the profile directory setup inside
+    // `BrowserManager.launchContext`), so nudge the fake clock from a real, safe interval outside
+    // this chain -- `vi.waitFor` does exactly that -- instead of guessing how many ticks it needs.
+    // This resolves the moment the first poll starts, without ever resolving the fixture's own
+    // pending wait above, which is exactly the "mid-poll" moment this test means to cancel.
+    // That profile setup goes through `ensurePrivateDirectories` (profile-manager.ts), which on
+    // Windows shells out to PowerShell for ACL work instead of a plain `chmod` -- the same reason
+    // vitest.config.ts raises `testTimeout` to 60s on win32. `vi.waitFor`'s own timeout is real wall
+    // clock, independent of that test-level budget and of the fake timers above, so it needs the
+    // same platform allowance or it can time out here before the ACL work ever finishes.
+    await vi.waitFor(() => expect(polls).toBeGreaterThan(0), {
+      interval: 5,
+      timeout: process.platform === "win32" ? 60_000 : 4_000
+    });
 
     expect(manager.cancelInteractiveLogin()).toBe(true);
     await expect(login).rejects.toMatchObject({
@@ -351,9 +454,11 @@ describe("SessionManager", () => {
       message: "The sign-in was cancelled."
     });
 
-    // The poll loop really stopped instead of running on in the background until the timeout.
+    // The poll loop really stopped instead of running on in the background until the timeout:
+    // advancing time lets the still-pending poll above settle and the loop reach its next
+    // iteration, where it now finds itself cancelled -- no further poll should follow.
     const seen = polls;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await vi.advanceTimersByTimeAsync(25);
     expect(polls).toBe(seen);
     // The sign-in verification probe never ran: a cancelled sign-in is not a sign-in.
     expect(window.state.gotos.filter((target) => target === APP)).toHaveLength(1);
@@ -374,8 +479,13 @@ describe("SessionManager", () => {
     const controller = new AbortController();
 
     const login = sessions.interactiveLogin(30_000, undefined, controller.signal);
-    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
-    while (polls === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
+    // See the analogous cancellation test above: `vi.waitFor` nudges the fake clock from a real,
+    // safe interval until the setup (which crosses real I/O) reaches the first poll, and needs the
+    // same win32 allowance for the same real, unfaked PowerShell ACL work.
+    await vi.waitFor(() => expect(polls).toBeGreaterThan(0), {
+      interval: 5,
+      timeout: process.platform === "win32" ? 60_000 : 4_000
+    });
 
     controller.abort();
     await expect(login).rejects.toMatchObject({
@@ -402,7 +512,9 @@ describe("SessionManager", () => {
     });
     const { sessions } = await makeSessions(window, { pollIntervalMs: 1 });
     const first = sessions.interactiveLogin(50);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The concurrency guard is set synchronously before `runInteractiveLogin` ever awaits anything,
+    // so this only needs to flush pending microtasks, not wait on any clock.
+    await vi.advanceTimersByTimeAsync(0);
     await expect(sessions.interactiveLogin(50)).rejects.toMatchObject({ code: "CONCURRENT_REQUEST" });
     release?.();
     await expect(first).rejects.toMatchObject({ code: "AUTH_FAILED" });
@@ -445,8 +557,13 @@ function fakeWindow(options: {
     },
     evaluate: async (fn: unknown) =>
       (String(fn).includes("document.body") ? state.body : state.structure) as never,
-    waitForTimeout: async () => {
+    waitForTimeout: async (ms: number) => {
       await options.onPoll?.(state);
+      // When a test has opted into fake timers (see the two `vi.useFakeTimers()` call sites
+      // below), advance the fake clock by exactly `ms` instead of leaving `Date.now()` to whatever
+      // real time the poll loop happened to take -- otherwise a `Date.now() + timeoutMs` deadline
+      // captured earlier in the same test could be silently eaten by real scheduling delays.
+      if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
     },
     isClosed: () => state.closed,
     close: async () => {
@@ -467,6 +584,7 @@ async function makeSessions(
     progressIntervalMs?: number;
     authLandingTimeoutMs?: number;
     verificationTimeoutMs?: number;
+    log?: (line: string) => void;
   } = {}
 ) {
   const profilePath = path.join(await mkdtemp(path.join(os.tmpdir(), "apl-session-")), "profile");
@@ -501,7 +619,8 @@ async function makeSessions(
     // The probe keeps judging until its deadline; these fakes never take long to settle, so keep
     // the budgets short instead of spending the production defaults on a page that never renders.
     authLandingTimeoutMs: options.authLandingTimeoutMs ?? 50,
-    verificationTimeoutMs: options.verificationTimeoutMs ?? 500
+    verificationTimeoutMs: options.verificationTimeoutMs ?? 500,
+    log: options.log
   });
   return { sessions, manager, launched, policy };
 }

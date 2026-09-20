@@ -172,6 +172,15 @@ section {
   color: var(--vscode-descriptionForeground);
 }
 
+/* WP-D: the small "some candidates could not be retrieved (N)" line under the agent list --
+   state-owned like the rest of the panel's typography (see the file header), so it takes the
+   theme's own warning color rather than a Dawn one. */
+.notice--partial {
+  margin: 6px 0 0;
+  font-size: 0.88em;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
 .actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));

@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   connectExistingBroker,
   connectOrStartBroker,
+  setBrokerSpawnRunner,
+  setBrokerSpawnTarget,
+  spawnBundledBroker,
   terminateDescriptorBroker
 } from "../../src/broker/broker-lifecycle.js";
 import { readDescriptor, removeDescriptor, writeDescriptor } from "../../src/broker/broker-descriptor.js";
@@ -15,7 +18,8 @@ import { initializeLocalState } from "../../src/config/init.js";
 import { appPaths } from "../../src/config/paths.js";
 import { IpcServer } from "../../src/ipc/server.js";
 import { BROKER_PROTOCOL } from "../../src/ipc/protocol.js";
-import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
 
 const noopLocalStatePreparer = {
   async prepareLocalState() {
@@ -224,5 +228,69 @@ describe("broker startup coordination", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+/**
+ * ISSUE-11 (docs/validation-log-2026-09-14-windows-round3.md S2): after `install` stages a new
+ * version, every broker it spawns in that same process must run the machine install's own
+ * `<home>/app/<version>/dist/broker/process.js` with `<home>/bin/node(.exe)` -- never this running
+ * process's own tree (a portable extraction folder, for instance). `setBrokerSpawnTarget`/
+ * `setBrokerSpawnRunner` inspect exactly what `spawnBundledBroker()` would launch, via an injected
+ * spawner, so this never actually starts a broker process.
+ */
+describe("spawnBundledBroker's spawn target override (ISSUE-11)", () => {
+  afterEach(() => {
+    setBrokerSpawnTarget(undefined);
+    setBrokerSpawnRunner(undefined);
+  });
+
+  it("defaults to this process's own tree when no override is set", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    setBrokerSpawnRunner(((command: string, args: string[]) => {
+      calls.push({ command, args });
+      return { unref: () => undefined } as unknown as ChildProcess;
+    }) as typeof spawn);
+
+    await spawnBundledBroker();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe(process.execPath);
+    // `spawnBundledBroker()`'s default resolves "./process.js" against broker-lifecycle.ts's own
+    // `import.meta.url`, not this test file's -- computed the same way, relative to this test file's
+    // own location two directories up (tests/contract -> repo root -> src/broker/process.js).
+    expect(calls[0].args).toEqual([fileURLToPath(new URL("../../src/broker/process.js", import.meta.url))]);
+  });
+
+  it("spawns the staged install's own broker entry and node binary once install sets the override", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    setBrokerSpawnRunner(((command: string, args: string[]) => {
+      calls.push({ command, args });
+      return { unref: () => undefined } as unknown as ChildProcess;
+    }) as typeof spawn);
+    const home = path.join(os.tmpdir(), "apl-install-home-issue-11");
+    const entry = path.join(home, "app", "0.3.0", "dist", "broker", "process.js");
+    const node = path.join(home, "bin", process.platform === "win32" ? "node.exe" : "node");
+    setBrokerSpawnTarget({ entry, node });
+
+    await spawnBundledBroker();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe(node);
+    expect(calls[0].args).toEqual([entry]);
+  });
+
+  it("stops overriding once the override is cleared", async () => {
+    setBrokerSpawnTarget({ entry: "/wherever/process.js", node: "/wherever/node" });
+    setBrokerSpawnTarget(undefined);
+    const calls: Array<{ command: string; args: string[] }> = [];
+    setBrokerSpawnRunner(((command: string, args: string[]) => {
+      calls.push({ command, args });
+      return { unref: () => undefined } as unknown as ChildProcess;
+    }) as typeof spawn);
+
+    await spawnBundledBroker();
+
+    expect(calls[0].command).toBe(process.execPath);
   });
 });

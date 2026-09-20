@@ -61,7 +61,20 @@ export function failure(
         message: "The operation failed unexpectedly.",
         retryable: false
       };
-  const result = jsonSafe({ ok: false as const, requestId: requestIdValue, error: detail });
+  // item 1: a DomainError reconstructed from the broker's IPC response can carry `callLog`/
+  // `timedOut` (domain/errors.ts's ApplicationError) -- broker-internal diagnostics meant only for
+  // the CLI/extension's own log file, never the public MCP contract (frontend/schemas.ts's
+  // ToolError deliberately does not declare them). Strip them here, the one place every tool
+  // failure funnels through, rather than trust every upstream caller to never attach them.
+  const {
+    callLog: _callLog,
+    timedOut: _timedOut,
+    ...toolFacing
+  } = detail as ToolError & {
+    callLog?: string[];
+    timedOut?: boolean;
+  };
+  const result = jsonSafe({ ok: false as const, requestId: requestIdValue, error: toolFacing });
   return {
     structuredContent: result,
     content: [{ type: "text", text: JSON.stringify(result) }],

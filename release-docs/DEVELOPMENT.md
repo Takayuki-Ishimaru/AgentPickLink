@@ -1,10 +1,10 @@
 # 開発者向けガイド
 
-v0.1.3 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
+v0.2.0 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
 
 ## 準備
 
-Node.js 22 以降と npm をインストールし、`agent-pick-link-0.1.3-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
+Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.0-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-生成物は `dist-vsix/agent-pick-link-0.1.3.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
+生成物は `dist-vsix/agent-pick-link-0.2.0.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
 
 ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。
 
@@ -29,15 +29,15 @@ Windows のストレージ・権限テストは Windows でのみ実行されま
 
 ## ソースの構成
 
-| パス            | 内容                                                              |
-| --------------- | ----------------------------------------------------------------- |
-| `src/`          | VS Code 拡張機能、CLI、MCP サーバー、ローカル接続、ブラウザー操作 |
-| `tests/`        | 単体・契約・結合テスト、ローカルモック、VS Code API モック        |
-| `media/`        | パネルの JavaScript・CSS、配布用アイコンと画像                    |
-| `schemas/`      | 設定ファイルの JSON Schema                                        |
-| `examples/`     | 設定例                                                            |
-| `scripts/`      | スキーマ生成、パッケージの動作確認                                |
-| `release-docs/` | 利用者・開発者向けドキュメント                                    |
+| パス            | 内容                                                                               |
+| --------------- | ---------------------------------------------------------------------------------- |
+| `src/`          | VS Code 拡張機能、CLI、MCP サーバー、ローカル接続、ブラウザー操作                  |
+| `tests/`        | 単体・契約・結合テスト、ローカルモック、VS Code API モック                         |
+| `media/`        | パネルの JavaScript・CSS、配布用アイコンと画像                                     |
+| `schemas/`      | 設定ファイルの JSON Schema                                                         |
+| `examples/`     | 設定例                                                                             |
+| `scripts/`      | スキーマ生成、OSS 一覧の生成、パッケージの動作確認、ポータブルアーカイブの組み立て |
+| `release-docs/` | 利用者・開発者向けドキュメント                                                     |
 
 ルートには依存関係の定義とロックファイル、TypeScript・Vitest・ESLint・Prettier の設定、拡張機能のバンドル設定、README とライセンスを含みます。
 
@@ -49,7 +49,7 @@ node dist/cli/index.js --help
 node dist/cli/index.js --version
 ```
 
-拡張機能を介さず MCP クライアントに接続する場合は、`examples/mcp.json` の CLI パスをビルド先の絶対パスに置き換えて使用できます。Node.js の `node` コマンドがクライアントから利用できることを確認してください。
+`examples/mcp.json` は、v0.2.0 の拡張機能なしインストール（`apl-setup`）が書き込む固定識別子（Windows は `${env:LOCALAPPDATA}\AgentPickLink\bin\node.exe` + `bin\apl.js serve`。macOS・Linux は `${userHome}/.local/share/AgentPickLink/bin/node` + `bin/apl.js serve`）の例です。拡張機能を介さずソースビルドへ直接接続する場合は、`command` と `args` の先頭要素をビルド先の `node` 実行ファイルと `dist/cli/index.js` の絶対パスに置き換えてください。
 
 VSIX を ZIP として別のフォルダへ展開した後、その `extension/` ディレクトリに対して次を実行できます。
 
@@ -59,20 +59,34 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 
 この確認は CLI、MCP 接続、ローカル接続プロセスの起動・停止を検証します。ブラウザーを起動せず、Microsoft 365 へ接続しません。
 
+## ポータブルアーカイブの組み立て
+
+拡張機能なしの導入用アーカイブは、`npm pack` の出力に公式の Node.js ランタイムと `apl-setup` の起動スクリプトを加えて作成します。
+
+```sh
+npm pack --pack-destination output/portable-pack
+node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.0.tgz --platform host --out output/portable --smoke
+```
+
+`--platform` には `win-x64`、`win-arm64`、`darwin-arm64`、`darwin-x64`、`linux-x64` を複数指定できます。Node.js は `scripts/assemble-portable.mjs` の `PINNED_NODE_VERSION`（24.21.0）を nodejs.org から取得し、公式の `SHASUMS256.txt` と照合します。`--cache <dir>` で取得済みのランタイムを再利用し、`--node-version` で版を上書きできます。出力先には `AgentPickLink-<版>-<platform>.zip` / `.tgz` と、各アーカイブの SHA-256 を記録した `SHA256SUMS` が作成されます。`--smoke` は実行中の OS と一致するアーカイブを展開し、同梱 Node.js で CLI と MCP 接続、ローカル接続プロセスの起動・停止を確認します。他の OS 向けアーカイブは、それぞれの OS で `npm run smoke:package -- <展開先> --node <展開先>/runtime/node` を実行して確認してください。
+
 ソースを変更した場合は、関連テストと型チェック・lint を実行してください。設定スキーマを変更した場合は `npm run schemas:generate` で JSON Schema を更新します。書式の確認には `npm run format:check` を使用できます。
 
 ## 公開CIとリリース確認
 
-`.github/workflows/ci.yml` は push / pull request / 手動実行で、Windows・macOS・Ubuntuの各ランナー上で次を実行します。Node.jsは22系です。Windowsは実ACL処理の時間を確保したうえで、テストファイルを4ジョブに分割してすべて実行します。VSIXの検証はOSごとに1ジョブで行います。
+`.github/workflows/ci.yml` は push / pull request / 手動実行で、Windows・macOS・Ubuntuの各ランナー上で次を実行します。Node.jsは22系と24系の両方です。Windowsは実ACL処理の時間を確保したうえで、テストファイルを4ジョブに分割してすべて実行します。VSIXの検証とポータブルアーカイブの組み立てはOSごとにNode.js 24の1ジョブで行います。
 
-| 確認項目                                         | Windows | macOS    | Ubuntu |
-| ------------------------------------------------ | ------- | -------- | ------ |
-| 依存関係のクリーンインストール・型チェック・lint | 実行    | 実行     | 実行   |
-| 単体・契約・結合・設定保全・添付回帰テスト       | 実行    | 実行     | 実行   |
-| 実ブラウザー上の模擬UI・会話・ダウンロード       | Edge    | Chromium | Chrome |
-| JSON Schemaと実装の同期                          | 実行    | 実行     | 実行   |
-| VSIX作成・展開・同梱ファイル検証                 | 実行    | 実行     | 実行   |
-| 展開したCLI・MCPの接続、brokerの起動・終了       | 実行    | 実行     | 実行   |
+| 確認項目                                                | Windows | macOS    | Ubuntu |
+| ------------------------------------------------------- | ------- | -------- | ------ |
+| 依存関係のクリーンインストール・型チェック・lint        | 実行    | 実行     | 実行   |
+| 単体・契約・結合・設定保全・添付回帰テスト              | 実行    | 実行     | 実行   |
+| 実ブラウザー上の模擬UI・会話・ダウンロード              | Edge    | Chromium | Chrome |
+| JSON Schemaと実装の同期                                 | 実行    | 実行     | 実行   |
+| VSIX作成・展開・同梱ファイル検証                        | 実行    | 実行     | 実行   |
+| 展開したCLI・MCPの接続、brokerの起動・終了              | 実行    | 実行     | 実行   |
+| ポータブルアーカイブの組み立てと同梱Node.jsでの起動確認 | x64     | arm64    | x64    |
+
+ポータブルアーカイブは各ランナーの OS 向けだけを組み立て、`portable-<os>` の名前で Actions の artifact に保存します。他の CPU アーキテクチャ向けのアーカイブは CI では作成・確認しません。
 
 UbuntuはOSのサンドボックス設定に対応する公式Chromeを使用します（[Chromiumの説明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)）。ブラウザーの存在とサンドボックス付き起動を先に確認し、未導入によるDOMテストのスキップを防ぎます。各OSの実行ログにOS・CPUアーキテクチャ・Node.js・ブラウザーバージョンを出力し、テスト結果をActionsのartifactに保存します。
 

@@ -1,3 +1,4 @@
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { saveApprovals } from "../../src/config/approvals.js";
 import type { Registry } from "../../src/config/registry.js";
 import type { ApprovalStore } from "../../src/domain/approval.js";
 import type { BrowserAgentDefinition } from "../../src/domain/agent.js";
+import { buildSetupService } from "../../src/cli/commands/agent-discover.js";
 import { WorkspaceService } from "../../src/services/workspace-service.js";
 import type { CommandDeps } from "../../src/cli/command-deps.js";
 import type { Prompter } from "../../src/cli/ui/prompts.js";
@@ -112,7 +114,13 @@ export function makeCommandDeps(overrides: Partial<CommandDeps> & { paths: AppPa
 } {
   const stderrLines: string[] = [];
   const stdoutLines: string[] = [];
+  // A fresh throwaway home per call (never the developer's real `os.homedir()`): the default
+  // `--clients auto` now writes user-scope files keyed off `homedir()` (the VS Code user-profile
+  // `mcp.json`, `~/.claude.json`, `~/.codex/config.toml`), so any test that does not explicitly
+  // override `homedir` must still never touch the real machine's home directory.
+  const defaultHome = mkdtempSync(path.join(os.tmpdir(), "apl-cli-home-"));
   const base: CommandDeps = {
+    diagnose: async () => ({ ok: true, findings: [] }),
     paths: overrides.paths,
     root: () => "/repo",
     env: {},
@@ -131,6 +139,17 @@ export function makeCommandDeps(overrides: Partial<CommandDeps> & { paths: AppPa
     readDescriptor: async () => undefined,
     serveStdio: async () => {
       /* no-op default */
+    },
+    platform: process.platform,
+    homedir: () => defaultHome,
+    version: "0.0.0-test",
+    getuid: () => undefined,
+    packageRoot: async () => {
+      throw new Error("packageRoot was not stubbed for this test");
+    },
+    createSetupService: (deps, root) => buildSetupService(deps, root),
+    mcpHandshake: async () => {
+      throw new Error("mcpHandshake was not stubbed for this test");
     }
   };
   return { deps: { ...base, ...overrides }, stderrLines, stdoutLines };

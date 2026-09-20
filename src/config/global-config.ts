@@ -11,12 +11,16 @@ export const defaultGlobalConfig = (profilePath: string): GlobalConfig =>
     headlessDefaultsVersion: 1,
     browser: { profilePath }
   });
-export async function loadGlobalConfig(paths: AppPaths): Promise<GlobalConfig> {
+export async function loadGlobalConfig(
+  paths: AppPaths,
+  options: { readOnly?: boolean } = {}
+): Promise<GlobalConfig> {
   const text = await readText(paths.config);
   if (text === undefined) return defaultGlobalConfig(paths.profile);
   const raw = YAML.parse(text);
   let migrated = migrateGlobalConfig(raw);
-  if (JSON.stringify(migrated) !== JSON.stringify(raw)) migrated = await persistMigration(paths, migrated);
+  if (!options.readOnly && JSON.stringify(migrated) !== JSON.stringify(raw))
+    migrated = await persistMigration(paths, migrated);
   const value = GlobalConfigSchema.parse(migrated);
   return {
     ...value,

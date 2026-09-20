@@ -1,9 +1,54 @@
-import { mkdtemp } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { lstat, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { BrowserManager } from "../../src/transports/browser/browser-manager.js";
 import type { BrowserContextLike, PageLike } from "../../src/transports/browser/types.js";
+import { fakeProcessListing, formatProcessListing } from "../helpers/platform.js";
+
+/** Real, disposable child processes for the round4 U2 tests below -- mirrors
+ * tests/services/broker-staleness.test.ts's own `spawnDisposableProcess`: unlike a fake pid, these
+ * give the post-close exit wait a liveness signal that genuinely changes when killed. Swept up in
+ * `afterEach` as a safety net beyond each test's own cleanup. */
+const spawnedPids: number[] = [];
+function spawnDisposableProcess(): number {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
+  spawnedPids.push(child.pid!);
+  return child.pid!;
+}
+afterEach(() => {
+  for (const pid of spawnedPids.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone -- the point of this sweep */
+    }
+  }
+});
+
+const PROFILE_OWNER_MARKER_CONTENT = "AgentPickLink for Microsoft 365 dedicated browser profile v1\n";
+
+/** A profile directory that already carries the ownership marker `ProfileManager.prepare()`
+ * requires, so a test can pre-seed a `SingletonLock` symlink without tripping the
+ * "non-empty and not AgentPickLink-owned" guard. */
+async function ownedProfile(prefix: string): Promise<string> {
+  const profilePath = await mkdtemp(path.join(os.tmpdir(), prefix));
+  await writeFile(path.join(profilePath, ".agentpicklink-profile"), PROFILE_OWNER_MARKER_CONTENT);
+  return profilePath;
+}
+
+/** A process id this machine will not have: high, and immediately probed as absent. */
+function deadPid(): number {
+  for (let candidate = 999_999; candidate > 100_000; candidate -= 7919) {
+    try {
+      process.kill(candidate, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return candidate;
+    }
+  }
+  throw new Error("no dead pid available");
+}
 
 describe("BrowserManager", () => {
   it("adopts the signed-in context without relaunching and still observes crashes", async () => {
@@ -868,6 +913,11 @@ describe("BrowserManager", () => {
       const manager = new BrowserManager({
         profilePath,
         startupTimeoutMs: 10,
+        // Every scenario below reaches `launchContext()`'s pre-launch process-listing snapshot
+        // regardless of how it fails; without this, an uninjected default shells out for real (real
+        // PowerShell on Windows), which is what made this loop of four scenarios time out under CPU
+        // load there -- see ISSUE-2026-09-14-13.
+        processExec: async () => ({ stdout: "" }),
         launcher: {
           launchPersistentContext: async () => {
             if (scenario.failure === "timeout") await new Promise((resolve) => setTimeout(resolve, 200));
@@ -1095,5 +1145,594 @@ describe("BrowserManager", () => {
     release?.();
     await first;
     await expect(manager.runInteractiveLogin(async () => "ok")).resolves.toBe("ok");
+  });
+
+  it("self-heals a retained context whose browser process died without a close event", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-dead-context-"));
+    let launches = 0;
+    let crashed = 0;
+    let connected = true;
+    const manager = new BrowserManager({
+      profilePath,
+      onCrash: () => {
+        crashed++;
+      },
+      launcher: {
+        launchPersistentContext: async () => {
+          launches++;
+          connected = true;
+          return {
+            pages: () => [],
+            close: async () => undefined,
+            on: () => undefined,
+            browser: () => ({ isConnected: () => connected })
+          } satisfies BrowserContextLike;
+        }
+      }
+    });
+
+    await manager.start();
+    expect(launches).toBe(1);
+    expect(manager.isRunning()).toBe(true);
+
+    // The underlying browser process died (e.g. an external cleanup killed msedge.exe) without
+    // this manager ever observing a "close" event on the context it retained.
+    connected = false;
+
+    await manager.start();
+    expect(launches).toBe(2);
+    expect(crashed).toBe(1);
+    expect(manager.isRunning()).toBe(true);
+    await manager.close();
+  });
+
+  it("stops refusing to relaunch once a retained failed-close context is confirmed dead", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-dead-close-failed-"));
+    let closeCalls = 0;
+    let launches = 0;
+    let connected = true;
+    const manager = new BrowserManager({
+      profilePath,
+      launcher: {
+        launchPersistentContext: async () => {
+          launches++;
+          connected = true;
+          return {
+            pages: () => [],
+            close: async () => {
+              closeCalls++;
+              if (closeCalls === 1) throw new Error("automation context close failed");
+            },
+            on: () => undefined,
+            browser: () => ({ isConnected: () => connected })
+          } satisfies BrowserContextLike;
+        }
+      }
+    });
+
+    await manager.start();
+    await expect(manager.close()).rejects.toThrow("automation context close failed");
+    expect(closeCalls).toBe(1);
+
+    // The failed close is still against a live process at this point: start() must keep refusing.
+    await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_PROFILE_LOCKED" });
+    expect(launches).toBe(1);
+
+    // The process now confirmed gone -- start() must self-heal instead of blocking forever.
+    connected = false;
+    await manager.start();
+    expect(launches).toBe(2);
+    await manager.close();
+  });
+
+  it("removes a stale SingletonLock discovered mid-retry, pointing at a dead PID", async () => {
+    if (process.platform === "win32") return; // POSIX-only symlink lock, matches ProfileManager.
+    const profilePath = await ownedProfile("apl-stale-lock-");
+    const lockPath = path.join(profilePath, "SingletonLock");
+    const staleTarget = `${os.hostname()}-${deadPid()}`;
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      launcher: {
+        launchPersistentContext: async () => {
+          attempts++;
+          if (attempts === 1) {
+            // ProfileManager.prepare()'s own one-shot cleanup already ran and saw nothing to
+            // remove; model a lock that only appears once this (unmodeled) prior browser process
+            // has actually exited, holding the profile through this first failed attempt.
+            await symlink(staleTarget, lockPath);
+            throw new Error("Failed to launch: user data directory is already in use (SingletonLock)");
+          }
+          return { pages: () => [], close: async () => undefined, on: () => undefined };
+        }
+      }
+    });
+
+    await expect(manager.start()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await manager.close();
+  });
+
+  it("keeps a live SingletonLock untouched and still fails once the retry schedule is spent", async () => {
+    if (process.platform === "win32") return; // POSIX-only symlink lock, matches ProfileManager.
+    const profilePath = await ownedProfile("apl-live-lock-");
+    const lockPath = path.join(profilePath, "SingletonLock");
+    await symlink(`${os.hostname()}-${process.pid}`, lockPath);
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      startupTimeoutMs: 700,
+      launcher: {
+        launchPersistentContext: async () => {
+          attempts++;
+          throw new Error("Failed to launch: user data directory is already in use (SingletonLock)");
+        }
+      }
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_PROFILE_LOCKED" });
+    expect(attempts).toBeGreaterThan(1);
+    // A lock this host can prove is live (this very test process) must never be touched.
+    await expect(lstat(lockPath)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * docs/validation-log-2026-09-14-windows-round3.md S2: a broker's own shutdown must never hang
+ * forever on a half-dead browser (bounded close + force-kill), and a launch that fails because
+ * another live instance already owns the profile (Chromium exit code 21) gets a specific
+ * remediation and, on POSIX, one recovery attempt against the live pid the profile's own lock
+ * file already names.
+ */
+describe("BrowserManager round 3 S2: bounded close and owned-profile recovery", () => {
+  it("force-kills the browser process and does not hang when the automation context's close() never settles", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-hung-close-"));
+    const killed: number[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      closeTimeoutMs: 20,
+      killProcessTree: async (pid) => {
+        killed.push(pid);
+      },
+      launcher: {
+        launchPersistentContext: async () =>
+          ({
+            pages: () => [],
+            // Never settles -- models a browser process Playwright's own close() protocol can no
+            // longer get an answer from (its child processes already killed out from under it).
+            close: () => new Promise<void>(() => undefined),
+            on: () => undefined,
+            browser: () => ({ isConnected: () => true, process: () => ({ pid: 424_242 }) })
+          }) satisfies BrowserContextLike
+      }
+    });
+
+    await manager.start();
+    expect(manager.isRunning()).toBe(true);
+    // The whole point: this resolves at all (within the 20ms closeTimeoutMs, not the default 5s),
+    // rather than hanging on the close() above that never settles.
+    await expect(manager.dispose()).resolves.toBeUndefined();
+    expect(killed).toEqual([424_242]);
+    expect(manager.isRunning()).toBe(false);
+    // Force-killed and moved on -- not treated as a "failed close" that would block a relaunch.
+    await expect(manager.start()).resolves.toBeUndefined();
+    await manager.close();
+  });
+
+  it("force-kills the sign-in window's browser process when its close() never settles", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-hung-headed-close-"));
+    const killed: number[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      closeTimeoutMs: 20,
+      killProcessTree: async (pid) => {
+        killed.push(pid);
+      },
+      launcher: {
+        launchPersistentContext: async () =>
+          ({
+            pages: () => [],
+            close: () => new Promise<void>(() => undefined),
+            on: () => undefined,
+            browser: () => ({ isConnected: () => true, process: () => ({ pid: 555 }) })
+          }) satisfies BrowserContextLike
+      }
+    });
+
+    // Mirrors the existing "cancels a running sign-in..." test above: the body registers its abort
+    // listener and only *then* does the test cancel from the outside. Cancelling from inside the
+    // body itself, before that registration, would abort the signal before the listener exists.
+    let markRunning: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => (markRunning = resolve));
+    let sawSignal = false;
+    const login = manager.runInteractiveLogin(async (_context, signal) => {
+      markRunning?.();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      sawSignal = true;
+      return "never-completed";
+    });
+    await running;
+    expect(manager.cancelInteractiveLogin()).toBe(true);
+    await expect(login).rejects.toMatchObject({ code: "AUTH_FAILED", details: { cancelled: true } });
+    expect(sawSignal).toBe(true);
+    expect(killed).toEqual([555]);
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it("keeps a settling close's existing behavior unchanged and never force-kills it", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-fast-close-"));
+    let killCalls = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      closeTimeoutMs: 500,
+      killProcessTree: async () => {
+        killCalls++;
+      },
+      launcher: {
+        launchPersistentContext: async () => ({
+          pages: () => [],
+          close: async () => undefined,
+          on: () => undefined
+        })
+      }
+    });
+
+    await manager.start();
+    await expect(manager.close()).resolves.toBeUndefined();
+    expect(killCalls).toBe(0);
+  });
+
+  it("classifies a Chromium exit-code-21 launch failure with a specific, actionable remediation", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-owned-profile-"));
+    const manager = new BrowserManager({
+      profilePath,
+      launcher: {
+        launchPersistentContext: async () => {
+          throw new Error(
+            "browserType.launchPersistentContext: Target page, context or browser has been closed\n" +
+              "Call log:\n" +
+              "  - [pid=24092] <process did exit: exitCode=21, signal=null>"
+          );
+        }
+      }
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({
+      code: "BROWSER_START_FAILED",
+      remediation: expect.stringMatching(/owns the profile/)
+    });
+  });
+
+  it("recovers once from an exit-code-21 failure when the profile lock names a live, verified-owner pid, then retries the launch", async () => {
+    if (process.platform === "win32") return; // POSIX-only symlink lock, matches ProfileManager.
+    const profilePath = await ownedProfile("apl-owned-profile-recover-");
+    const lockPath = path.join(profilePath, "SingletonLock");
+    // `process.pid` is genuinely alive (this test worker), so `tryRecoverFromOwnedProfile`'s own
+    // liveness check needs no fake -- only the ownership/kill steps are stubbed, so nothing ever
+    // touches a real process.
+    await symlink(`${os.hostname()}-${process.pid}`, lockPath);
+    const ownerChecks: Array<{ pid: number; profilePath: string }> = [];
+    const killed: number[] = [];
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      isProfileOwnerProcess: async (pid, checkedPath) => {
+        ownerChecks.push({ pid, profilePath: checkedPath });
+        return true;
+      },
+      killProcessTree: async (pid) => {
+        killed.push(pid);
+      },
+      launcher: {
+        launchPersistentContext: async () => {
+          attempts++;
+          if (attempts === 1)
+            throw new Error(
+              "browserType.launchPersistentContext: Target page, context or browser has been closed\n" +
+                "  - [pid=24092] <process did exit: exitCode=21, signal=null>"
+            );
+          return { pages: () => [], close: async () => undefined, on: () => undefined };
+        }
+      }
+    });
+
+    await expect(manager.start()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(ownerChecks).toEqual([{ pid: process.pid, profilePath }]);
+    expect(killed).toEqual([process.pid]);
+    await manager.close();
+  });
+
+  it("never repeats the owned-profile recovery attempt within one launchContext() call", async () => {
+    if (process.platform === "win32") return; // POSIX-only symlink lock, matches ProfileManager.
+    const profilePath = await ownedProfile("apl-owned-profile-once-");
+    const lockPath = path.join(profilePath, "SingletonLock");
+    await symlink(`${os.hostname()}-${process.pid}`, lockPath);
+    let ownerCheckCalls = 0;
+    let killCalls = 0;
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      startupTimeoutMs: 8_000,
+      isProfileOwnerProcess: async () => {
+        ownerCheckCalls++;
+        return true;
+      },
+      killProcessTree: async () => {
+        killCalls++;
+      },
+      launcher: {
+        launchPersistentContext: async () => {
+          attempts++;
+          // Keeps failing the same way even after the "recovery" above -- a real dead pid would
+          // never come back, so a second recovery attempt must never be tried.
+          throw new Error(
+            "browserType.launchPersistentContext: Target page, context or browser has been closed\n" +
+              "  - [pid=24092] <process did exit: exitCode=21, signal=null>"
+          );
+        }
+      }
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_START_FAILED" });
+    expect(ownerCheckCalls).toBe(1);
+    expect(killCalls).toBe(1);
+    // The one retry the recovery bought it, plus the original attempt -- never more.
+    expect(attempts).toBe(2);
+  });
+});
+
+/**
+ * docs/validation-log-2026-09-14-windows-round4.md U2: a `close()` that itself settles (resolves,
+ * never hitting `closeTimeoutMs`) does not by itself prove the browser's OS process -- let alone its
+ * child tree -- has actually exited. `ensureBrowserProcessGone` (browser-manager.ts) now waits for
+ * both, bounded, force-killing whatever is left once each bound elapses.
+ */
+describe("BrowserManager round 4 U2: waits for the browser process (and its profile's tree) after a settled close()", () => {
+  it("waits for the browser's main process to exit on its own after close() settles, without force-killing it", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-exit-wait-"));
+    const pid = spawnDisposableProcess();
+    setTimeout(() => {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, 60);
+    const killed: number[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      browserExitTimeoutMs: 3_000,
+      processExec: async () => ({ stdout: "" }),
+      killProcessTree: async (killedPid) => {
+        killed.push(killedPid);
+      },
+      launcher: {
+        launchPersistentContext: async () =>
+          ({
+            pages: () => [],
+            close: async () => undefined,
+            on: () => undefined,
+            browser: () => ({ isConnected: () => true, process: () => ({ pid }) })
+          }) satisfies BrowserContextLike
+      }
+    });
+
+    await manager.start();
+    await expect(manager.close()).resolves.toBeUndefined();
+    expect(killed).toEqual([]);
+    // Genuinely gone (killed by the test's own timer above, not by this manager) -- proof this
+    // actually waited for the real exit rather than racing ahead of it.
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("force-kills the main process and logs it when it does not exit within browserExitTimeoutMs", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-exit-force-"));
+    const pid = spawnDisposableProcess();
+    const killed: number[] = [];
+    const logs: string[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      browserExitTimeoutMs: 30,
+      processExec: async () => ({ stdout: "" }),
+      killProcessTree: async (killedPid) => {
+        killed.push(killedPid);
+      },
+      onLog: (line) => logs.push(line),
+      launcher: {
+        launchPersistentContext: async () =>
+          ({
+            pages: () => [],
+            close: async () => undefined,
+            on: () => undefined,
+            browser: () => ({ isConnected: () => true, process: () => ({ pid }) })
+          }) satisfies BrowserContextLike
+      }
+    });
+
+    await manager.start();
+    await expect(manager.close()).resolves.toBeUndefined();
+    expect(killed).toEqual([pid]);
+    expect(logs.some((line) => line.includes(`main process (pid ${pid}) did not exit within`))).toBe(true);
+  });
+
+  it("waits for the profile's remaining browser-tree processes once the main process is already gone, force-killing whatever is left once that bound elapses too", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-tree-force-"));
+    const deadMainPid = deadPid(); // already gone -- skips straight to the tree phase
+    const stuckPid = 424_242;
+    const killed: number[] = [];
+    const logs: string[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      browserExitTimeoutMs: 3_000,
+      browserTreeTimeoutMs: 30,
+      // ISSUE-2026-09-14-13: formatted for whichever platform actually runs this suite (real
+      // `process.platform`, unpinned) so the fixture's shape always matches the branch
+      // `listCandidateProcesses` takes, on a real Windows host as much as on macOS/Linux --
+      // `profilePath` above is likewise this host's own native temp path either way.
+      processExec: fakeProcessListing([
+        { pid: stuckPid, ppid: 1, command: `/usr/bin/fake-msedge --user-data-dir=${profilePath}` }
+      ]),
+      killProcessTree: async (killedPid) => {
+        killed.push(killedPid);
+      },
+      onLog: (line) => logs.push(line),
+      launcher: {
+        launchPersistentContext: async () =>
+          ({
+            pages: () => [],
+            close: async () => undefined,
+            on: () => undefined,
+            browser: () => ({ isConnected: () => true, process: () => ({ pid: deadMainPid }) })
+          }) satisfies BrowserContextLike
+      }
+    });
+
+    await manager.start();
+    await expect(manager.close()).resolves.toBeUndefined();
+    expect(killed).toEqual([stuckPid]);
+    expect(logs).toContain("broker: force-killed 1 browser processes of the profile");
+  });
+
+  it("never runs the exit/tree wait when the context reports no browser pid", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-no-pid-"));
+    let execCalls = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      processExec: async () => {
+        execCalls++;
+        return { stdout: "" };
+      },
+      launcher: {
+        launchPersistentContext: async () => ({
+          pages: () => [],
+          close: async () => undefined,
+          on: () => undefined
+          // No `browser()` at all -- browserPidOf() returns undefined, matching most launcher
+          // fixtures elsewhere in this file (and the real launcher, when Playwright's own probe is
+          // unavailable).
+        })
+      }
+    });
+
+    await manager.start();
+    // launchContext() itself already called processExec once for its own pre-launch pid-list
+    // snapshot (docs/validation-log-2026-09-14-windows-round5.md V2, item 1 -- see that log line's
+    // own doc comment in browser-manager.ts). This test is about the *close* path's exit/tree wait,
+    // so only calls made from here on are relevant.
+    const execCallsAfterStart = execCalls;
+    await expect(manager.close()).resolves.toBeUndefined();
+    expect(execCalls).toBe(execCallsAfterStart);
+  });
+});
+
+/**
+ * docs/validation-log-2026-09-14-windows-round4.md U2 (item 3): a plain `BrowserStartTimeout` is
+ * reclassified with a more actionable remediation when `src/broker/profile-processes.js` still
+ * finds a browser process of this exact profile at the moment the timeout fires -- strong evidence
+ * of contention (most often an old broker's browser still shutting down) rather than a plain slow
+ * start.
+ */
+describe("BrowserManager round 4 U2: classifies a launch timeout as profile contention when another process is found", () => {
+  it("kills the launched tree and retries once, still failing with the profile-contention classification when both attempts hang", async () => {
+    // docs/validation-log-2026-09-14-windows-round5.md V2, "shorter penalty": the first launch
+    // after broker start now gets a shorter budget and one kill-and-retry (see
+    // browser-manager.ts's `launchWithFirstAttemptRetry`) instead of eating the full
+    // `startupTimeoutMs` outright -- this is round4 U2's own scenario above, now exercised through
+    // that retry: both the shorter first attempt and the full-budget retry hang the same way, so
+    // the final classification is unchanged ("BROWSER_START_FAILED with the classification from
+    // yesterday"), but the launcher is now called twice and the stuck tree is killed once in
+    // between.
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-launch-timeout-contended-"));
+    const otherPid = 99_991;
+    const killed: number[] = [];
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      startupTimeoutMs: 30,
+      firstLaunchTimeoutMs: 30,
+      firstLaunchKillWaitTimeoutMs: 30,
+      // ISSUE-2026-09-14-13: see the round4 U2 "waits for the browser process" describe above --
+      // formatted for whichever platform actually runs this suite so it matches the branch
+      // `listCandidateProcesses` takes on a real Windows host as much as on macOS/Linux.
+      processExec: fakeProcessListing([
+        { pid: otherPid, ppid: 1, command: `/usr/bin/fake-msedge --user-data-dir=${profilePath}` }
+      ]),
+      killProcessTree: async (pid) => {
+        killed.push(pid);
+      },
+      launcher: {
+        // Never resolves, on either attempt -- models the exact hang this classification targets.
+        launchPersistentContext: () => {
+          attempts++;
+          return new Promise<BrowserContextLike>(() => undefined);
+        }
+      }
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({
+      code: "BROWSER_START_FAILED",
+      remediation: expect.stringContaining("still running/shutting down")
+    });
+    expect(attempts).toBe(2);
+    expect(killed).toEqual([otherPid]);
+  });
+
+  it("kills the launched tree and succeeds on the retried second attempt after the first launch after broker start times out", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-first-launch-retry-"));
+    const stalePid = 88_881;
+    const killed: number[] = [];
+    let attempts = 0;
+    const manager = new BrowserManager({
+      profilePath,
+      startupTimeoutMs: 5_000,
+      firstLaunchTimeoutMs: 30,
+      firstLaunchKillWaitTimeoutMs: 200,
+      // Stops reporting the stale pid once it has been "killed" -- models a predecessor broker's
+      // browser tree that is genuinely still shutting down and then actually goes away, unlike the
+      // "both hang" scenario above. ISSUE-2026-09-14-13: formatted for whichever platform actually
+      // runs this suite (real `process.platform`, unpinned), same as the fixed processExec above.
+      processExec: async () =>
+        formatProcessListing(
+          killed.includes(stalePid)
+            ? []
+            : [{ pid: stalePid, ppid: 1, command: `/usr/bin/fake-msedge --user-data-dir=${profilePath}` }]
+        ),
+      killProcessTree: async (pid) => {
+        killed.push(pid);
+      },
+      launcher: {
+        launchPersistentContext: async () => {
+          attempts++;
+          // First attempt hangs (the shorter firstLaunchTimeoutMs budget above times it out);
+          // the retry, with the full startupTimeoutMs budget, succeeds immediately.
+          if (attempts === 1) return new Promise<BrowserContextLike>(() => undefined);
+          return { pages: () => [], close: async () => undefined, on: () => undefined };
+        }
+      }
+    });
+
+    await expect(manager.start()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(killed).toEqual([stalePid]);
+    await manager.close();
+  });
+
+  it("keeps the generic timeout message when no other profile process is found", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-launch-timeout-clean-"));
+    const manager = new BrowserManager({
+      profilePath,
+      startupTimeoutMs: 30,
+      processExec: async () => ({ stdout: "" }),
+      launcher: {
+        launchPersistentContext: () => new Promise<BrowserContextLike>(() => undefined)
+      }
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({
+      code: "BROWSER_START_FAILED",
+      remediation: "Run: m365-agent broker restart"
+    });
   });
 });

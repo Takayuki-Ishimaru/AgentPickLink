@@ -8,8 +8,9 @@
  * top-level domain. Matching is case-insensitive and ignores one trailing dot on the host being
  * checked; schemes, paths, ports, credentials, and trailing dots are rejected in entries.
  *
- * Kept free of zod and node imports: the config schema, the extension host (src/extension/plan.ts),
- * and the browser transport (AttachmentSaver, ResponseExtractor) all share this one definition.
+ * Kept free of zod and node imports: the config schema, the setup plan (src/services/setup-plan.ts,
+ * re-exported by the extension host at src/extension/plan.ts), and the browser transport
+ * (AttachmentSaver, ResponseExtractor) all share this one definition.
  */
 
 const WILDCARD_PREFIX = "*.";

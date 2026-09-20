@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { encodeFrame, FrameDecoder } from "./framing.js";
 import type { BrokerDescriptor, BrokerHello, IpcProgressFrame, IpcResponse } from "./protocol.js";
 import { BROKER_CAPABILITIES, BROKER_PROTOCOL } from "./protocol.js";
+import { PACKAGE_VERSION } from "../config/package-version.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
 export class IpcClient {
@@ -25,7 +26,7 @@ export class IpcClient {
   private connectionGeneration = 0;
   constructor(
     private readonly descriptor: BrokerDescriptor,
-    private readonly packageVersion = "0.1.3",
+    private readonly packageVersion = PACKAGE_VERSION,
     private readonly capabilities: readonly string[] = BROKER_CAPABILITIES
   ) {}
   isConnected(): boolean {
@@ -248,7 +249,11 @@ export class IpcClient {
           remediation: message.error.remediation,
           submissionState: message.error.submissionState,
           partialResponse: message.error.partialResponse as never,
-          retryAfterMs: message.error.retryAfterMs
+          retryAfterMs: message.error.retryAfterMs,
+          // item 1: forwarded so the CLI/extension can append the redacted call log to their own
+          // log file -- see domain/errors.ts's ApplicationError and ipc/protocol.ts's IpcResponse.
+          callLog: message.error.callLog,
+          timedOut: message.error.timedOut
         })
       );
   }

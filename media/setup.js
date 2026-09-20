@@ -5,12 +5,14 @@
 (function () {
   "use strict";
 
-  var vscode = acquireVsCodeApi();
+  var vscode = window.aplBrowser || acquireVsCodeApi();
 
   var STRINGS = {
     ja: {
       title: "Microsoft 365 エージェント",
       setup: "環境をセットアップする",
+      installMachine: "機械インストールを更新",
+      machineUpdateAvailable: "この拡張機能から機械インストールを更新できます。",
       chooseNext: "エージェントを選択して保存",
       workspacePending: "このフォルダーはまだ設定されていません。",
       workspaceApproved: "このフォルダーの設定は保存・承認済みです。",
@@ -22,6 +24,13 @@
       descriptionSummary: "{total}件を表示・説明あり {descriptions}件",
       partialSummary:
         "一覧の追加取得が一部完了していません。取得済みの候補は選択できます。必要に応じて更新してください。",
+      discoveryPartialNotice:
+        "一部の候補を取得できませんでした（{count} 件）。再実行すると増えることがあります。",
+      // ISSUE-2026-09-14-01: shown instead of discoveryPartialNotice when failedCountKnown is
+      // false -- failedCount is then only a floor for an unknown number of losses, and showing it
+      // as a count would misstate what is known (never "(0 件)").
+      discoveryPartialNoticeUnknown:
+        "一部の候補を取得できなかった可能性があります。再実行すると増えることがあります。",
       updatingSummary: "保存済みの一覧を表示しています。新しいエージェントは「一覧を更新」で取得できます。",
       refreshList: "一覧を更新",
       inspectingDetails: "エージェントの説明を取得しています",
@@ -118,6 +127,8 @@
     en: {
       title: "Microsoft 365 agents",
       setup: "Set up environment",
+      installMachine: "Update machine installation",
+      machineUpdateAvailable: "This extension can update the machine installation.",
       chooseNext: "Choose agents and save",
       workspacePending: "This folder is not set up yet.",
       workspaceApproved: "Settings for this folder are saved and approved.",
@@ -129,6 +140,10 @@
       descriptionSummary: "{total} agents shown · {descriptions} with descriptions",
       partialSummary:
         "Some additional agents could not be checked. Retrieved agents can still be selected. Refresh to try again.",
+      discoveryPartialNotice:
+        "Some candidates could not be retrieved ({count}). Re-running discovery may find more.",
+      discoveryPartialNoticeUnknown:
+        "Some candidates may not have been retrieved. Re-running discovery may find more.",
       updatingSummary: "Showing saved agents. Use Refresh list to find new agents.",
       refreshList: "Refresh list",
       inspectingDetails: "Reading agent descriptions",
@@ -581,9 +596,16 @@
         state.status &&
           (!state.status.broker.authState || state.status.broker.authState.state !== "authenticated")
           ? "signIn"
-          : "refresh"
+          : state.status
+            ? "refresh"
+            : "setup"
       )
     ];
+    if (state.machineInstall) {
+      buttons.push(button(strings.installMachine, "installMachine", true));
+      if (state.machineInstall.updateAvailable)
+        buttons.push(h("p", { class: "muted", text: strings.machineUpdateAvailable }));
+    }
     // G1: not gated on `disabled` -- it must stay clickable while `busy()` is true, since a
     // sign-in in progress is exactly what makes it busy.
     if (state.phase === "signing-in")
@@ -756,7 +778,23 @@
           render();
         }
       }),
-      h("div", { class: "agents", id: "agent-list", "aria-busy": String(busy()) }, list)
+      h("div", { class: "agents", id: "agent-list", "aria-busy": String(busy()) }, list),
+      // WP-D: a small, count-bearing notice under the list itself -- distinct from the broader
+      // "partialSummary" banner above it (discoverySummary()), which covers the same run without a
+      // count. Metadata only: a number, never which candidates were unresolved.
+      state.discoverySummary && state.discoverySummary.partial
+        ? h("p", {
+            class: "notice notice--partial",
+            role: "status",
+            text:
+              state.discoverySummary.failedCountKnown === false
+                ? strings.discoveryPartialNoticeUnknown
+                : strings.discoveryPartialNotice.replace(
+                    "{count}",
+                    String(state.discoverySummary.failedCount || 0)
+                  )
+          })
+        : null
     );
   }
 
@@ -1154,10 +1192,14 @@
     render();
   }
 
-  window.addEventListener("message", function (event) {
-    var message = event.data;
+  function receive(message) {
     if (message && message.type === "state" && message.state) accept(message.state);
-  });
+  }
+  if (window.aplBrowser) window.aplBrowser.onMessage(receive);
+  else
+    window.addEventListener("message", function (event) {
+      receive(event.data);
+    });
 
   render();
   setTimeout(function () {

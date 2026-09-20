@@ -62,6 +62,17 @@ export type ApplicationError = {
   submissionState?: SubmissionState;
   partialResponse?: PartialResponse;
   retryAfterMs?: number;
+  /** item 1 (broker.log persistence): a redacted, size-bounded (<=40 lines) Playwright launch call
+   * log, present only on a browser launch failure that carried one (see `browser-manager.ts`'s
+   * `launchFailure`). Crosses IPC so the CLI/extension can append it to their own log file
+   * (`src/cli/setup-host-terminal.ts`'s `appendCliLog`, prefixed `browser-log:`) -- the MCP tool
+   * surface strips it again before an AI client ever sees a result
+   * (`src/frontend/tool-results.ts`'s `failure()`), so it must never be treated as part of the
+   * public MCP contract. */
+  callLog?: string[];
+  /** Sibling to `callLog`: true when the root cause was a launch timeout (ours or Playwright's
+   * own). Same "logs only, never the MCP tool result" rule applies. */
+  timedOut?: boolean;
 };
 export type ApplicationErrorResult = { ok: false; requestId: string; error: ApplicationError };
 

@@ -5,15 +5,17 @@ import type { CommandDeps } from "../command-deps.js";
 
 /** Adapts the CLI's granular `CommandDeps` into the smaller, decoupled `SetupDeps` shape
  * `SetupService` needs -- the same adaptation a VS Code extension host would perform with its
- * own broker-spawn/local-state wiring instead of `connectOrStartDefaultBroker`. */
-export function buildSetupService(deps: CommandDeps): SetupService {
+ * own broker-spawn/local-state wiring instead of `connectOrStartDefaultBroker`. `root` defaults to
+ * `deps.root` (every existing caller's behavior); `install` (WP-B) passes a different one per
+ * workspace, since one CLI invocation can set up more than one. */
+export function buildSetupService(deps: CommandDeps, root: () => string = deps.root): SetupService {
   return new SetupService({
     paths: deps.paths,
     connect: () => deps.connectOrStartDefaultBroker(deps.paths),
     connectExisting: () => deps.connectExistingBroker(deps.paths),
     preparer: deps.preparer,
     clock: deps.clock,
-    root: deps.root
+    root
   });
 }
 

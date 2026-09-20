@@ -1,0 +1,52 @@
+/* Dawn palette defaults for the sixteen theme tokens without webview fallbacks. */
+:root {
+  --vscode-badge-background: #c6a7e8;
+  --vscode-badge-foreground: #191827;
+  --vscode-button-background: #4057d6;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #3346b8;
+  --vscode-button-secondaryBackground: #c6a7e8;
+  --vscode-button-secondaryForeground: #191827;
+  --vscode-button-secondaryHoverBackground: #b793dc;
+  --vscode-descriptionForeground: #595464;
+  --vscode-focusBorder: #4057d6;
+  --vscode-font-family: system-ui, sans-serif;
+  --vscode-font-size: 14px;
+  --vscode-foreground: #191827;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #191827;
+  --vscode-textLink-foreground: #4057d6;
+}
+body {
+  background: #f2eef5;
+  max-width: 960px;
+  margin: 24px auto;
+  padding: 0 20px;
+}
+#terminal-notice:not(:empty) {
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 2px solid #4057d6;
+}
+
+.brand-mark {
+  display: none;
+  mask: none;
+  -webkit-mask: none;
+}
+
+/* ISSUE-07: setup.css's `.header-row` keeps an 18px first column for `.brand-mark` even once it is
+   hidden above -- on the standalone page's own (often narrower) width that leaves the title's text
+   column so tight the heading wraps one character per line. There is only ever one column here, so
+   `h2`/`.dev` (which setup.css pins to column 2) are re-pointed at the single remaining column;
+   `1 / -1` rather than a bare `1` so either can still span the full row if a future column is ever
+   added back. The Dawn accent rule under the header (border-bottom on `.header-row` itself) is
+   untouched. */
+.header-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.header-row h2,
+.header-row .dev {
+  grid-column: 1 / -1;
+}

@@ -98,6 +98,18 @@ export interface BrowserContextLike {
   /** Optional native-background handoff. Resolves only after login pages are retired and the
    * same browser is ready for automation with the configured visibility/download policy. */
   completeInteractiveLogin?(): Promise<void>;
+  /** Optional liveness probe for the underlying browser process (Playwright's real
+   * `BrowserContext.browser()` already returns `Browser | null`, and `Browser.isConnected()`
+   * exists) -- used by browser-manager.ts's `start()` to self-heal a retained context whose
+   * process died without a "close" event ever being observed (e.g. killed out from under the
+   * broker). Absent, returning `null`, or throwing is treated as "unknown -- assume alive" so a
+   * missing or flaky probe never forces an unnecessary relaunch against a context that is fine.
+   * `process()` mirrors Playwright's real `Browser.process()` (also already present on the real
+   * object; declared here only so this structural type admits reading it): the OS child process
+   * this manager's own launcher started, when known. Used only to force-kill a browser whose
+   * close() has hung (docs/validation-log-2026-09-14-windows-round3.md S2) -- never for anything
+   * that assumes the process is reachable in the common, successful-close case. */
+  browser?(): { isConnected(): boolean; process?(): { pid: number } | null } | null;
 }
 export interface PageHandle {
   key: string;

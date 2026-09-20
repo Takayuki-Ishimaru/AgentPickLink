@@ -63,27 +63,38 @@ describe("attachment resource containment", () => {
     return client;
   }
 
-  it("rejects a symlink inside the attachments directory even when its target sits outside it", async () => {
-    const attachmentsDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-symlink-"));
-    const outsideDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-outside-symlink-"));
-    const outsideSecret = path.join(outsideDirectory, "secret.txt");
-    await writeFile(outsideSecret, "outside the attachments directory", "utf8");
-    const linkPath = path.join(attachmentsDirectory, "planted-link.txt");
-    await symlink(outsideSecret, linkPath);
+  // Creating a *file* symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode on win32,
+  // unlike the directory case below (a junction, which needs neither privilege): there is no
+  // privilege-free Windows equivalent for a file, so this one fixture cannot be built on a
+  // normal, non-elevated account there.
+  it.skipIf(process.platform === "win32")(
+    "rejects a symlink inside the attachments directory even when its target sits outside it",
+    async () => {
+      const attachmentsDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-symlink-"));
+      const outsideDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-outside-symlink-"));
+      const outsideSecret = path.join(outsideDirectory, "secret.txt");
+      await writeFile(outsideSecret, "outside the attachments directory", "utf8");
+      const linkPath = path.join(attachmentsDirectory, "planted-link.txt");
+      await symlink(outsideSecret, linkPath);
 
-    try {
-      const client = await connect(attachmentsDirectory);
-      await expect(client.readResource({ uri: pathToFileURL(linkPath).href })).rejects.toThrow();
-    } finally {
-      await rm(attachmentsDirectory, { recursive: true, force: true });
-      await rm(outsideDirectory, { recursive: true, force: true });
+      try {
+        const client = await connect(attachmentsDirectory);
+        await expect(client.readResource({ uri: pathToFileURL(linkPath).href })).rejects.toThrow();
+      } finally {
+        await rm(attachmentsDirectory, { recursive: true, force: true });
+        await rm(outsideDirectory, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("rejects an attachments directory that is itself a symlink", async () => {
     const realDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-real-"));
     const linkedDirectory = path.join(os.tmpdir(), `apl-attachments-link-${Date.now()}`);
-    await symlink(realDirectory, linkedDirectory, "dir");
+    // "junction" (rather than "dir") so this fixture needs no elevated privilege/Developer Mode on
+    // win32 -- POSIX ignores the `type` argument entirely, and a junction is still reported by
+    // `fs.lstat().isSymbolicLink()` as a symlink there, so the containment check under test (which
+    // reads via `lstat`, not `stat`) exercises the same code path on every platform.
+    await symlink(realDirectory, linkedDirectory, "junction");
     const filePath = path.join(linkedDirectory, "result.txt");
     await writeFile(path.join(realDirectory, "result.txt"), "secret", "utf8");
 

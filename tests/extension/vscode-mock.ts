@@ -156,7 +156,11 @@ export type MockWorkspaceFolder = { uri: Uri; name: string; index: number };
 
 export type ConfigurationUpdate = { key: string; value: unknown; target: number | undefined };
 
+export type MockTerminal = { options: Record<string, unknown>; shown: boolean; show(): void };
+const terminalClosed = new EventEmitter<MockTerminal>();
+
 export type VscodeMockState = {
+  terminals: MockTerminal[];
   /** Every `showInformationMessage`/`showWarningMessage`/`showErrorMessage` call, in order. */
   messages: RecordedMessage[];
   /** Answers the next message box(es) with; the first matching entry wins and is consumed. */
@@ -188,6 +192,7 @@ const configurationEmitter = new EventEmitter<{ affectsConfiguration: (section: 
 
 function freshState(): VscodeMockState {
   return {
+    terminals: [],
     messages: [],
     answer: () => undefined,
     commands: new Map(),
@@ -216,6 +221,7 @@ export const vscodeMock: VscodeMockState = freshState();
 
 /** Puts every recording, setting and listener back to its pristine state. */
 export function resetVscodeMock(): void {
+  terminalClosed.dispose();
   trustEmitter.dispose();
   configurationEmitter.dispose();
   Object.assign(vscodeMock, freshState());
@@ -244,6 +250,18 @@ function recordMessage(kind: MessageKind, message: string, rest: unknown[]): Pro
 }
 
 export const window = {
+  createTerminal(options: Record<string, unknown>): MockTerminal {
+    const terminal = {
+      options,
+      shown: false,
+      show() {
+        this.shown = true;
+      }
+    };
+    vscodeMock.terminals.push(terminal);
+    return terminal;
+  },
+  onDidCloseTerminal: terminalClosed.event,
   createOutputChannel(name: string, _options?: { log?: boolean }): MockOutputChannel {
     const channel: MockOutputChannel = {
       name,

@@ -3,17 +3,29 @@ import { LazyBrokerPort } from "../../src/frontend/lazy-broker-port.js";
 import type { FrontendBrokerPort } from "../../src/frontend/broker-port.js";
 import { DomainError } from "../../src/domain/errors.js";
 
+/** Every test below constructs its own `LazyBrokerPort` around a fake factory; the real default
+ * `checkStaleness` (`defaultBrokerStalenessCheck`) touches the real filesystem and, if a broker
+ * happens to be running on this machine, a real IPC socket -- never appropriate for a unit test.
+ * `tests/services/broker-staleness.test.ts` and `tests/frontend/lazy-broker-port-staleness.test.ts`
+ * cover the staleness behaviour itself. */
+function makePort(
+  factory: (signal: AbortSignal) => Promise<FrontendBrokerPort>,
+  checkStaleness: () => Promise<void> = async () => {}
+): LazyBrokerPort {
+  return new LazyBrokerPort(factory, checkStaleness);
+}
+
 describe("LazyBrokerPort", () => {
   it("does not dispatch or start a factory after the frontend closes", async () => {
     const factory = vi.fn();
-    const port = new LazyBrokerPort(factory);
+    const port = makePort(factory);
     const pending = port.list("/repo", "first");
     port.close();
     await expect(pending).resolves.toMatchObject({ code: "BROKER_UNAVAILABLE" });
     expect(factory).not.toHaveBeenCalled();
 
     const list = vi.fn(async () => ({ ok: true }));
-    const connected = new LazyBrokerPort(async () => ({ list }) as unknown as FrontendBrokerPort);
+    const connected = makePort(async () => ({ list }) as unknown as FrontendBrokerPort);
     await connected.list("/repo", "connected");
     const afterConnect = connected.list("/repo", "closing");
     connected.close();
@@ -33,7 +45,7 @@ describe("LazyBrokerPort", () => {
       .fn()
       .mockResolvedValueOnce({ ask: oldAsk, close: oldClose, isConnected: () => live })
       .mockResolvedValueOnce(fresh);
-    const port = new LazyBrokerPort(factory);
+    const port = makePort(factory);
     await expect(
       port.ask("/repo", { agent: "requirements", message: "hello" }, "ask")
     ).resolves.toMatchObject({ code: "BROKER_UNAVAILABLE" });
@@ -53,9 +65,12 @@ describe("LazyBrokerPort", () => {
           resolve = done;
         })
     );
-    const port = new LazyBrokerPort(factory);
+    const port = makePort(factory);
     const pending = port.list("/repo", "list");
-    await Promise.resolve();
+    // Flush every pending microtask hop between `list()` and the factory actually being invoked
+    // (checkStaleness's own await, then the factory call) -- a single `await Promise.resolve()`
+    // is not enough once `ensureNotStale()` sits in front of the factory call.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     port.close();
     const close = vi.fn();
     const list = vi.fn();
@@ -78,7 +93,7 @@ describe("LazyBrokerPort", () => {
       })
     };
     const factory = vi.fn().mockResolvedValue(backing);
-    const port = new LazyBrokerPort(factory);
+    const port = makePort(factory);
 
     expect(factory).not.toHaveBeenCalled();
     const first = await port.list("/repo", "req-1");
@@ -90,7 +105,7 @@ describe("LazyBrokerPort", () => {
   });
 
   it("converts a factory failure into a structured, retryable BROKER_UNAVAILABLE result instead of throwing", async () => {
-    const port = new LazyBrokerPort(() => Promise.reject(new Error("spawn failed")));
+    const port = makePort(() => Promise.reject(new Error("spawn failed")));
     const result = await port.list("/repo", "req-1");
     // A non-DomainError factory failure is normalized by asDomainError (INTERNAL_ERROR, message
     // withheld by design) before this wrapper maps it onto the broker-unavailable envelope --
@@ -100,7 +115,7 @@ describe("LazyBrokerPort", () => {
   });
 
   it("preserves a specific broker DomainError code (e.g. BROKER_START_FAILED) surfaced by the factory", async () => {
-    const port = new LazyBrokerPort(() =>
+    const port = makePort(() =>
       Promise.reject(new DomainError("BROKER_START_FAILED", "The broker did not start.", true))
     );
     const result = await port.ask("/repo", { agent: "requirements", message: "hi" }, "req-2");
@@ -119,7 +134,7 @@ describe("LazyBrokerPort", () => {
       elapsedMs: 0
     }));
     const backing: FrontendBrokerPort = { ask: askSpy };
-    const port = new LazyBrokerPort(async () => backing);
+    const port = makePort(async () => backing);
     const onProgress = vi.fn();
 
     await port.ask("/repo", { agent: "requirements", message: "hi" }, "req-1", undefined, onProgress);
@@ -143,7 +158,7 @@ describe("LazyBrokerPort", () => {
       })
     };
     const factory = vi.fn().mockRejectedValueOnce(new Error("not ready")).mockResolvedValueOnce(backing);
-    const port = new LazyBrokerPort(factory);
+    const port = makePort(factory);
 
     const failed = await port.session("/repo", { action: "list" }, "req-1");
     expect(failed).toMatchObject({ code: "BROKER_UNAVAILABLE" });

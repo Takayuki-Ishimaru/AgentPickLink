@@ -177,7 +177,34 @@ export const GlobalConfigSchema = z
         audit: z.boolean().default(true)
       })
       .strict()
-      .default({ level: "info", audit: true })
+      .default({ level: "info", audit: true }),
+    /** The extension-less `install`/`apl-setup` client selection (docs/extension-less-onboarding.md
+     * §4.3/§4.4), mirrored from -- and eventually the single source of truth for -- the VS Code
+     * extension's `agentpicklink.integrations.*` settings (§4.7 C8, unchanged in meaning: they still
+     * govern the project/workspace-scope files, `claudeProject`/`vscodeWorkspace`). A config.yaml
+     * written before this field existed simply lacks the key, so the default below is the whole
+     * migration story: no client was ever selected until an explicit `install`/`integrations write`
+     * turns one on. `vscodeUser`/`claudeUser` are the default, zero-touch, user-scope writers;
+     * `vscodeWorkspace`/`claudeProject` are their opt-in workspace/project-scope counterparts.
+     * `src/config/migrations.ts` renames the pre-4.4 keys (`vscode` -> `vscodeWorkspace`, `claude`
+     * -> `claudeProject`) on load, so an older config.yaml keeps meaning exactly what it always
+     * meant instead of silently gaining the new zero-touch defaults. */
+    clients: z
+      .object({
+        vscodeUser: z.boolean().default(false),
+        vscodeWorkspace: z.boolean().default(false),
+        claudeUser: z.boolean().default(false),
+        claudeProject: z.boolean().default(false),
+        codex: z.boolean().default(false)
+      })
+      .strict()
+      .default({
+        vscodeUser: false,
+        vscodeWorkspace: false,
+        claudeUser: false,
+        claudeProject: false,
+        codex: false
+      })
   })
   .strict();
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;

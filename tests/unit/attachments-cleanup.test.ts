@@ -51,9 +51,13 @@ describe("saved attachment retention and quota", () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), "apl-attachment-outside-"));
     await writeFile(path.join(outside, "precious.pdf"), Buffer.alloc(8_000, 1));
     // A link planted where a workspace directory would be, and one inside an expired request.
-    await symlink(outside, path.join(root, "linked-workspace"), "dir");
+    // "junction" (rather than "dir") needs no elevated privilege/Developer Mode on win32 -- POSIX
+    // ignores the `type` argument entirely, and cleanupAttachments' own symlink detection
+    // (src/observability/attachments-cleanup.ts) is based on `Dirent.isSymbolicLink()`/`lstat`,
+    // which reports a junction as a symlink exactly like a real "dir" symlink.
+    await symlink(outside, path.join(root, "linked-workspace"), "junction");
     const expired = await requestDirectory(root, "workspace", "req-old", 100, now);
-    await symlink(outside, path.join(expired, "linked"), "dir");
+    await symlink(outside, path.join(expired, "linked"), "junction");
     // Stamped last: adding the link would otherwise make the directory look freshly written.
     await utimes(expired, new Date(now - 400 * HOUR), new Date(now - 400 * HOUR));
 

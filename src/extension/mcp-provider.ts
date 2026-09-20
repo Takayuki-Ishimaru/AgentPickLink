@@ -10,6 +10,7 @@
 import * as vscode from "vscode";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { integrationEntryStatus } from "./integrations.js";
 import type { ExtensionRuntime } from "./runtime.js";
 
 export const MCP_PROVIDER_ID = "agentpicklink.mcp";
@@ -22,6 +23,15 @@ async function fileExists(target: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readIfExists(target: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(target, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }
 
@@ -46,6 +56,40 @@ export class AgentPickLinkMcpProvider implements vscode.McpServerDefinitionProvi
     if (!(await fileExists(path.join(folder.uri.fsPath, WORKSPACE_FILE)))) {
       this.runtime.log(`mcp: no ${WORKSPACE_FILE} in the workspace; offering no server definition`);
       return [];
+    }
+    // §4.7 C5: VS Code's own collision policy silently disables the lower-priority same-label
+    // definition this provider would otherwise register (workspace .vscode/mcp.json, sort order 0,
+    // and the user-profile mcp.json, sort order 200, both beat this provider's 300), so a machine
+    // already registering m365-agents through either file gets one enabled definition, not two.
+    // §P2: any entry under the `m365-agents` key -- foreign included -- already occupies that
+    // label in the higher-priority collection, so VS Code would silently disable this provider's
+    // copy anyway. Report which kind it was, and which file, rather than registering a definition
+    // the user will never see.
+    const currentDefinition = await this.runtime.integrationDefinition();
+    const variables = this.runtime.integrationVariables();
+    const vscodeMcpJsonText = await readIfExists(path.join(folder.uri.fsPath, ".vscode", "mcp.json"));
+    if (vscodeMcpJsonText !== undefined) {
+      // §4.7 C9: the workspace file may hold the portable `${userHome}`/`${env:LOCALAPPDATA}` form,
+      // which only classifies correctly when the same variable prefixes are passed back in.
+      const status = integrationEntryStatus(vscodeMcpJsonText, "vscodeMcpJson", currentDefinition, variables);
+      if (status !== "absent") {
+        this.runtime.log(
+          `mcp: workspace file registers ${MCP_SERVER_LABEL} (${status}); provider offers no definition`
+        );
+        return [];
+      }
+    }
+    const vscodeUserMcpJsonText = await readIfExists(this.runtime.vscodeUserMcpJsonPath());
+    if (vscodeUserMcpJsonText !== undefined) {
+      // The user-profile file never gets a §4.7 C9 variable form (it is per-machine, never shared),
+      // so no `variables` are passed here.
+      const status = integrationEntryStatus(vscodeUserMcpJsonText, "vscodeUser", currentDefinition);
+      if (status !== "absent") {
+        this.runtime.log(
+          `mcp: user-profile mcp.json registers ${MCP_SERVER_LABEL} (${status}); provider offers no definition`
+        );
+        return [];
+      }
     }
     const node = await this.runtime.node();
     const definition = new vscode.McpStdioServerDefinition(

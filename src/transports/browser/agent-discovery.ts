@@ -32,6 +32,11 @@ export interface AgentDiscoveryOptions {
   descriptionWaitMs?: number;
   /** Strategy D: at most this many store cards are resolved in one run. */
   storeMaxItems?: number;
+  /** How long a store card's one bounded retry waits before it is re-located and clicked again
+   * (see `STORE_RETRY_SETTLE_MS`, whose value is this option's default). Overridable purely so a
+   * test can shrink it without needing a multi-second real timer; the production default is the
+   * documented contract value. */
+  relocateDelayMs?: number;
 }
 
 /** Prefix only: every discovery run uses its own suffixed page key, so two concurrent runs can
@@ -152,6 +157,10 @@ const STORE_REACT_POLL_MS = 50;
 /** How long a dismissed details dialog is given to disappear before its exactly named close
  * control is tried instead. */
 const DIALOG_CLOSE_WAIT_MS = 500;
+/** How long a store card's one bounded retry waits before it is re-located and clicked again: long
+ * enough for a rail re-render or a slow-to-open dialog to settle, short enough that a catalogue
+ * where several cards need it still fits the overall discovery budget. */
+const STORE_RETRY_SETTLE_MS = 200;
 /** Poll interval while the store renders (or re-renders) its cards. */
 const STORE_CARDS_POLL_MS = 100;
 /** Direct agent route, as strategy B recognizes it; used only to notice that rows have arrived. */
@@ -192,8 +201,19 @@ const GENERIC_NAMES = new Set([
 
 type RawSidebarCandidate = { id?: string; name?: string; description?: string };
 /** One store card as `storeCards` reads it (see there). `opens`: the card's own accessible
- * description says that clicking it opens the agent (`STORE_OPENS_HINT_PATTERN`). */
-type StoreCard = { key: string; name: string; description?: string; list: string; opens: boolean };
+ * description says that clicking it opens the agent (`STORE_OPENS_HINT_PATTERN`). `handle`: a
+ * stable per-card attribute value (Microsoft 365 has been observed to carry
+ * `data-tid="featuredItemRenderer_<guid>"` on the card itself), when the page exposes one -- used
+ * only to re-locate the same card after a bounded retry, never logged and never used to click by
+ * position. */
+type StoreCard = {
+  key: string;
+  name: string;
+  description?: string;
+  list: string;
+  opens: boolean;
+  handle?: string;
+};
 /**
  * Which cards strategy D clicks. `opens`: only the cards whose accessible description says the
  * click opens the agent -- the store marks the account's added/created agents that way, and the
@@ -264,6 +284,7 @@ export class AgentDiscovery {
   private readonly storeItemWaitMs: number;
   private readonly descriptionWaitMs: number;
   private readonly storeMaxItems: number;
+  private readonly relocateDelayMs: number;
 
   constructor(options: AgentDiscoveryOptions) {
     this.manager = options.manager;
@@ -278,6 +299,7 @@ export class AgentDiscovery {
     this.storeItemWaitMs = options.storeItemWaitMs ?? 3_000;
     this.descriptionWaitMs = options.descriptionWaitMs ?? this.navigationTimeoutMs;
     this.storeMaxItems = options.storeMaxItems ?? 500;
+    this.relocateDelayMs = options.relocateDelayMs ?? STORE_RETRY_SETTLE_MS;
   }
 
   /** The same neutral landing target the session probes open (see `neutralLandingUrl`). */
@@ -1160,6 +1182,9 @@ export class AgentDiscovery {
       errors: 0,
       offHost: 0,
       more: 0,
+      retried: 0,
+      recovered: 0,
+      scroll: 0,
       partial: false
     };
     let mode: StoreClickMode = "all";
@@ -1202,12 +1227,21 @@ export class AgentDiscovery {
       return cards;
     };
     try {
-      await this.awaitStoreSettled(page, Math.min(run.deadlineMs, Date.now() + this.storeWaitMs));
+      // Scroll every card list to its own bottom, and only then wait for the count to settle: a
+      // virtualized store list renders a card solely once it has actually scrolled into view, so
+      // settling first would lock in a count that never included the cards below the fold.
+      stats.scroll = await this.awaitStoreSettled(
+        page,
+        Math.min(run.deadlineMs, Date.now() + this.storeWaitMs)
+      );
       stats.more = await this.expandStore(page, run.deadlineMs, recordExpansionFailure);
+      // "Load more" can add height to an already-scrollable list; one more pass catches that.
+      if (await this.scrollStoreListsOnce(page)) stats.scroll++;
       let cards = await readCards();
       // Decided once, on the fully paged-in catalogue, and kept for the run.
       mode = storeClickMode(cards);
       const unprocessed = (card: StoreCard) => !processed.has(card.key);
+      const onCatchUpScroll = () => stats.scroll++;
       for (;;) {
         let next = cards.find(unprocessed);
         if (!next && cards.length < stats.items) {
@@ -1219,7 +1253,8 @@ export class AgentDiscovery {
             run.deadlineMs,
             readCards,
             () => false,
-            recordExpansionFailure
+            recordExpansionFailure,
+            onCatchUpScroll
           );
           next = cards.find(unprocessed);
         }
@@ -1238,23 +1273,49 @@ export class AgentDiscovery {
         }
         run.progress?.("Reading the agent store", { current: processed.size, total: cards.length });
         const storeBefore = page.url();
-        let outcome: Awaited<ReturnType<AgentDiscovery["resolveStoreCard"]>>;
-        try {
-          outcome = await this.resolveStoreCard(
-            page,
-            next,
-            origin,
-            surface,
-            run.deadlineMs,
-            recordDescription
-          );
-        } catch {
-          // One card's click or dialog misbehaving is that card's problem, not the run's.
-          stats.errors++;
-          outcome = { via: "unresolved", navigated: page.url() !== storeBefore };
-          stats.unresolved--;
+        const attemptCard = async (
+          target: StoreCard
+        ): Promise<{
+          outcome: Awaited<ReturnType<AgentDiscovery["resolveStoreCard"]>>;
+          threw: boolean;
+        }> => {
+          try {
+            return {
+              outcome: await this.resolveStoreCard(
+                page,
+                target,
+                origin,
+                surface,
+                run.deadlineMs,
+                recordDescription
+              ),
+              threw: false
+            };
+          } catch {
+            // One card's click or dialog misbehaving is that card's problem, not the run's.
+            return { outcome: { via: "unresolved", navigated: page.url() !== storeBefore }, threw: true };
+          }
+        };
+        let { outcome, threw } = await attemptCard(next);
+        // A card that threw outright, or whose click/dialog never resolved to anything within its
+        // own wait, gets exactly one more try after a short settle: a rail re-render can drop the
+        // click target between marking and clicking, and some tenants only open a card's details
+        // on a second click. The card is re-located fresh from the live DOM -- by its own stable
+        // attribute when the page exposes one, else by its accessible text -- never by its position
+        // in the list, which a re-render or a page of new cards can also reorder.
+        if ((threw || outcome.via === "unresolved") && Date.now() + this.relocateDelayMs < run.deadlineMs) {
+          await wait(this.relocateDelayMs, page);
+          const relocated = await this.relocateStoreCard(page, next);
+          if (relocated) {
+            stats.retried++;
+            ({ outcome, threw } = await attemptCard(relocated));
+            // The retry recovered the card -- a resolved outcome, not a second `unresolved` --
+            // so this must never itself count as a loss (see `summarizeDiscoveryCompleteness`).
+            if (!threw && outcome.via !== "unresolved") stats.recovered++;
+          }
         }
-        stats[outcome.via]++;
+        if (threw) stats.errors++;
+        else stats[outcome.via]++;
         const entry = lists.get(next.list);
         if (entry) {
           if (outcome.via === "navigation") entry.navigation++;
@@ -1282,7 +1343,8 @@ export class AgentDiscovery {
             run.deadlineMs,
             readCards,
             (card) => unprocessed(card) && (mode === "all" || card.opens),
-            recordExpansionFailure
+            recordExpansionFailure,
+            onCatchUpScroll
           );
         }
       }
@@ -1293,7 +1355,9 @@ export class AgentDiscovery {
       `store-catalog:items=${stats.items} attr=${stats.attribute} nav=${stats.navigation}` +
         ` dialog=${stats.dialog} open=${stats.open} forbidden-only=${stats.forbiddenOnly}` +
         ` skipped=${stats.skipped} none=${stats.unresolved} errors=${stats.errors}` +
-        ` off-host=${stats.offHost} more=${stats.more}${stats.partial ? " partial" : ""}`
+        ` off-host=${stats.offHost} more=${stats.more} retried=${stats.retried}` +
+        ` recovered=${stats.recovered} scroll=${stats.scroll}` +
+        `${stats.partial ? " partial" : ""}`
     );
     if (shapes.size) {
       const listSummary = [...lists.entries()]
@@ -1358,18 +1422,48 @@ export class AgentDiscovery {
     return offHost ? "off-host" : "load";
   }
 
-  /** Waits until the store has rendered its cards and the count has held steady for a few polls
+  /**
+   * Waits until the store has rendered its cards and the count has held steady for a few polls
    * (the store paints skeleton cards first and fills them in from the network), or the deadline
-   * passes. */
-  private async awaitStoreSettled(page: PageLike, deadlineMs: number): Promise<void> {
+   * passes. Each poll first nudges every `role="list"` group toward its own bottom (see
+   * `scrollStoreListsOnce`): a store list can be virtualized exactly like the sidebar rail, so a
+   * card below the fold never joins the DOM -- and never joins the count this settles on -- until
+   * something has actually scrolled to it. Returns how many polls actually moved a list.
+   */
+  private async awaitStoreSettled(page: PageLike, deadlineMs: number): Promise<number> {
     let previous = -1;
     let steady = 0;
+    let steps = 0;
     for (;;) {
+      if (await this.scrollStoreListsOnce(page)) steps++;
       const count = (await this.storeCards(page)).length;
       steady = count === previous ? steady + 1 : 1;
       previous = count;
-      if ((count > 0 && steady >= REVEAL_STABLE_POLLS) || Date.now() >= deadlineMs) return;
+      if ((count > 0 && steady >= REVEAL_STABLE_POLLS) || Date.now() >= deadlineMs) return steps;
       await wait(STORE_CARDS_POLL_MS, page);
+    }
+  }
+
+  /** One scroll-to-bottom pass over every `role="list"` group the store shows, mirroring
+   * `hydrateSidebarRail` for the store's own card lists rather than the sidebar. Read-only --
+   * nothing is clicked -- and a list that is not scrollable (or a page that cannot evaluate) costs
+   * one no-op round trip. Returns whether anything actually moved. */
+  private async scrollStoreListsOnce(page: PageLike): Promise<boolean> {
+    if (!page.evaluate) return false;
+    try {
+      const moved = await page.evaluate<unknown>(() => {
+        let advanced = false;
+        for (const element of Array.from(document.querySelectorAll('[role="list"]'))) {
+          const list = element as HTMLElement;
+          const before = list.scrollTop;
+          list.scrollTop = list.scrollHeight;
+          if (list.scrollTop !== before) advanced = true;
+        }
+        return advanced;
+      });
+      return moved === true;
+    } catch {
+      return false;
     }
   }
 
@@ -1389,10 +1483,12 @@ export class AgentDiscovery {
     deadlineMs: number,
     read: () => Promise<StoreCard[]>,
     pending: (card: StoreCard) => boolean,
-    onExpansionFailure: (error: unknown) => void
+    onExpansionFailure: (error: unknown) => void,
+    onScroll?: () => void
   ): Promise<StoreCard[]> {
     const deadline = Math.min(deadlineMs, Date.now() + this.storeWaitMs);
     for (;;) {
+      if (await this.scrollStoreListsOnce(page)) onScroll?.();
       const cards = await read();
       if (cards.length >= before || cards.some(pending) || Date.now() >= deadline) return cards;
       if (!(await this.expandStore(page, deadline, onExpansionFailure)))
@@ -1430,9 +1526,19 @@ export class AgentDiscovery {
           // The returning store can replace its skeleton/first page between the visibility
           // check and the click. A removed disclosure means there is nothing left to expand;
           // keep the cards that have rendered instead of aborting the whole catalogue.
-          if ((await locator.count?.()) === 0 || !((await first.isVisible?.()) ?? false)) return clicks;
-          // The control can remain present while its click is obstructed or its list is
-          // being replaced. Re-read the available cards and continue within the same budget.
+          const stillThere = ((await locator.count?.()) ?? 0) > 0 && ((await first.isVisible?.()) ?? false);
+          // A control that went disabled while its click was pending has nothing left to give
+          // either -- some tenants disable "load more" instead of removing it once the list is
+          // exhausted. Neither case is a failure worth reporting.
+          const stillEnabled = stillThere && ((await first.isEnabled?.()) ?? false);
+          // A control can also stay visible and enabled at the true end of the list -- clicking it
+          // then does nothing, and the click itself can still time out (obstructed, mid re-render).
+          // That is the end of the list, not a failure, unless items were genuinely still arriving
+          // (the catalogue grew despite the click failing) or something unexpected -- a dialog --
+          // is in the way, in which case the timeout reflects a real problem worth surfacing.
+          const grew = stillEnabled ? (await this.storeCards(page)).length > count : false;
+          const dialogPending = stillEnabled && !grew ? await this.storeDialogVisible(page) : false;
+          if (!stillThere || !stillEnabled || (!grew && !dialogPending)) return clicks;
           onFailure(error);
           return clicks;
         }
@@ -1487,17 +1593,45 @@ export class AgentDiscovery {
       .filter(
         (
           card
-        ): card is { key: string; name: string; description?: string; list?: unknown; opens?: unknown } =>
+        ): card is {
+          key: string;
+          name: string;
+          description?: string;
+          list?: unknown;
+          opens?: unknown;
+          handle?: unknown;
+        } =>
           !!card &&
           typeof card === "object" &&
           typeof (card as { key?: unknown }).key === "string" &&
           typeof (card as { name?: unknown }).name === "string"
       )
-      .map((card) => ({
-        ...card,
-        list: typeof card.list === "string" ? card.list : "#?",
-        opens: card.opens === true
-      }));
+      .map((card) => {
+        const { handle, ...rest } = card;
+        return {
+          ...rest,
+          list: typeof card.list === "string" ? card.list : "#?",
+          opens: card.opens === true,
+          ...(typeof handle === "string" && handle ? { handle } : {})
+        };
+      });
+  }
+
+  /**
+   * Re-reads the store's cards and finds the one a failed attempt was resolving, for the bounded
+   * retry in `storeCatalogue`. Prefers the stable `handle` attribute (see `StoreCard`) when the
+   * original card had one -- a re-render can rebuild the DOM without changing the card's own
+   * content, in which case its accessible text still matches too, but the handle is the more
+   * deliberate signal when a tenant provides one. Falls back to the accessible text (`key`).
+   * Never by position: a re-render or a newly loaded page of cards can reorder the list, and the
+   * card at the same index may no longer be the same card.
+   */
+  private async relocateStoreCard(page: PageLike, card: StoreCard): Promise<StoreCard | undefined> {
+    const fresh = await this.storeCards(page);
+    return (
+      (card.handle ? fresh.find((candidate) => candidate.handle === card.handle) : undefined) ??
+      fresh.find((candidate) => candidate.key === card.key)
+    );
   }
 
   /**
@@ -2347,12 +2481,18 @@ export function readStoreCards(args: {
     const hint =
       normalize(element.getAttribute("aria-description")) ||
       normalize(element.closest('[role="listitem"]')?.getAttribute("aria-description"));
+    // A stable per-card attribute, when the tenant renders one, survives a re-render that would
+    // otherwise make the card's accessible text the only way to re-find it after a retry.
+    const handle =
+      normalize(element.getAttribute("data-tid")) ||
+      normalize(element.closest('[role="listitem"]')?.getAttribute("data-tid"));
     cards.push({
       key,
       name,
       list: listOf(element),
       opens: opens.test(hint),
-      ...(rest ? { description: rest } : {})
+      ...(rest ? { description: rest } : {}),
+      ...(handle ? { handle } : {})
     });
     if (cards.length >= args.max) break;
   }
@@ -2520,22 +2660,43 @@ export function storeClickMode(cards: ReadonlyArray<{ opens: boolean }>): StoreC
   return cards.some((card) => card.opens) ? "opens" : "all";
 }
 
+/**
+ * Dedupes by `stableAgentId` (falling back to the canonical URL), keeping the first-seen entry's
+ * `source` and merging in a later description/id when the first pass lacked one. Rail candidates
+ * (sidebar/link) keep the order they were read from the DOM in, which callers and tests already
+ * treat as meaningful. Only the store's candidates -- whose resolution order depends on click and
+ * dialog timing that can legitimately differ between two runs of the same account -- are put in a
+ * stable order (by id, then by name) afterwards, so two discoveries of the same tenant return the
+ * same list in the same order even when the store resolved its cards in a different sequence.
+ */
 function merge(agents: DiscoveredAgent[]): DiscoveredAgent[] {
   const byKey = new Map<string, DiscoveredAgent>();
+  const order: string[] = [];
   for (const agent of agents) {
     const key = agent.stableAgentId ?? agent.url;
     const existing = byKey.get(key);
-    if (!existing) {
-      byKey.set(key, agent);
-      continue;
-    }
-    byKey.set(key, {
-      ...existing,
-      description: agent.description ?? existing.description,
-      stableAgentId: existing.stableAgentId ?? agent.stableAgentId
-    });
+    if (!existing) order.push(key);
+    byKey.set(
+      key,
+      existing
+        ? {
+            ...existing,
+            description: agent.description ?? existing.description,
+            stableAgentId: existing.stableAgentId ?? agent.stableAgentId
+          }
+        : agent
+    );
   }
-  return [...byKey.values()];
+  const rail = order.filter((key) => byKey.get(key)!.source !== "store");
+  const store = order
+    .filter((key) => byKey.get(key)!.source === "store")
+    .sort((leftKey, rightKey) => {
+      const left = byKey.get(leftKey)!;
+      const right = byKey.get(rightKey)!;
+      const byId = (left.stableAgentId ?? "").localeCompare(right.stableAgentId ?? "");
+      return byId !== 0 ? byId : left.displayName.localeCompare(right.displayName);
+    });
+  return [...rail, ...store].map((key) => byKey.get(key)!);
 }
 
 /** Key names a keyboard hint starts with, chords included ("Shift + Tab"). */

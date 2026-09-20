@@ -187,7 +187,8 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
     });
     expect(result.warnings).toContain("sidebar:3/3 link:6/3 scroll:1 store:route:/chat/agentstore");
     expect(result.warnings.find((warning) => warning.startsWith("store-catalog:"))).toBe(
-      "store-catalog:items=6 attr=1 nav=3 dialog=1 open=1 forbidden-only=0 skipped=0 none=0 errors=0 off-host=0 more=1"
+      "store-catalog:items=6 attr=1 nav=3 dialog=1 open=1 forbidden-only=0 skipped=0 none=0 errors=0" +
+        " off-host=0 more=1 retried=0 recovered=0 scroll=0"
     );
     // The metadata-only shapes: per list, how its cards resolved; per outcome, what the first such
     // card's subtree looked like (attribute names, test ids, tag tallies -- never a name).
@@ -228,7 +229,8 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       "agent-store-spa"
     ]);
     expect(result.warnings.find((warning) => warning.startsWith("store-catalog:"))).toBe(
-      "store-catalog:items=6 attr=1 nav=3 dialog=0 open=0 forbidden-only=0 skipped=2 none=0 errors=0 off-host=0 more=1"
+      "store-catalog:items=6 attr=1 nav=3 dialog=0 open=0 forbidden-only=0 skipped=2 none=0 errors=0" +
+        " off-host=0 more=1 retried=0 recovered=0 scroll=0"
     );
     const shapes = result.warnings.find((warning) => warning.startsWith("store-shapes:"));
     expect(shapes).toContain(
@@ -237,6 +239,39 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
     expect(shapes).toContain("self=card.aria-description:open(");
     expect(app.storeViolations()).toEqual([]);
   }, 90_000);
+
+  it("returns the same store candidates in the same order across two consecutive discoveries", async () => {
+    // A real-tenant account (docs/validation-log-2026-09-13-windows.md, Issue-09) returned 6
+    // candidates on one discovery run and 10 with a store-expansion-failed warning on the very next
+    // run against the same account. The store's own resolution order can legitimately vary between
+    // two runs (click/dialog timing, which card a bounded retry had to recover), so the completeness
+    // and stability of the returned list -- not just whether each run individually succeeds -- is
+    // what regresses here. Two discoveries of the same unchanged mock account must return the exact
+    // same candidates in the exact same order.
+    const storeLanding = new BrowserTransport({
+      manager,
+      appHosts: ["127.0.0.1"],
+      authHosts: ["localhost"],
+      allowInsecureLoopback: true,
+      neutralAppUrl: `${app.origin}/chat?store=page`,
+      navigationTimeoutMs: 20_000,
+      storeWaitMs: 1_000
+    });
+
+    const first = await storeLanding.discoverAgents(60_000);
+    const second = await storeLanding.discoverAgents(60_000);
+
+    const shapeOf = (result: typeof first) =>
+      result.agents.map((agent) => ({
+        stableAgentId: agent.stableAgentId,
+        displayName: agent.displayName,
+        url: agent.url,
+        source: agent.source
+      }));
+    // Sanity: this fixture actually exercises the store catalogue both times, not two empty runs.
+    expect(first.agents.filter((agent) => agent.source === "store").length).toBe(MOCK_STORE_CATALOG.length);
+    expect(shapeOf(second)).toEqual(shapeOf(first));
+  }, 150_000);
 
   it("clicks the all-agents control when the tenant renders it as a menu item", async () => {
     // Same landing page, with the disclosure shipped as <a role="menuitem"> instead of a button.

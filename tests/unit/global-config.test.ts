@@ -130,3 +130,96 @@ describe("global config download defaults migration", () => {
     expect(reloaded.navigation.downloadHosts).toEqual([]);
   });
 });
+
+/* §4.4: the pre-4.4 `clients:` keys (`vscode`/`claude`, meaning the workspace/project-scope file
+ * of that era) are renamed to their explicit new spellings on load. */
+describe("global config clients: key migration (§4.4)", () => {
+  it("renames the old vscode/claude keys to vscodeWorkspace/claudeProject, keeping vscodeUser/codex", () => {
+    const migrated = migrateGlobalConfig({
+      version: 1,
+      downloadDefaultsVersion: 1,
+      headlessDefaultsVersion: 1,
+      browser: { profilePath: "/profile" },
+      clients: { vscode: true, vscodeUser: false, claude: true, codex: true }
+    }) as { clients: Record<string, unknown> };
+
+    expect(migrated.clients).toEqual({
+      vscodeWorkspace: true,
+      vscodeUser: false,
+      claudeProject: true,
+      codex: true
+    });
+    expect(GlobalConfigSchema.safeParse(migrated).success).toBe(true);
+  });
+
+  it("is a no-op when the clients block already uses the new keys", () => {
+    const value = {
+      version: 1,
+      downloadDefaultsVersion: 1,
+      headlessDefaultsVersion: 1,
+      browser: { profilePath: "/profile" },
+      clients: {
+        vscodeUser: true,
+        vscodeWorkspace: false,
+        claudeUser: true,
+        claudeProject: false,
+        codex: false
+      }
+    };
+    expect(migrateGlobalConfig(value)).toEqual(value);
+  });
+
+  it("never overwrites an already-present new key with the old one's value", () => {
+    const migrated = migrateGlobalConfig({
+      version: 1,
+      downloadDefaultsVersion: 1,
+      headlessDefaultsVersion: 1,
+      browser: { profilePath: "/profile" },
+      clients: { vscode: true, vscodeWorkspace: false, claude: true, claudeProject: false, codex: false }
+    }) as { clients: Record<string, unknown> };
+
+    expect(migrated.clients.vscodeWorkspace).toBe(false);
+    expect(migrated.clients.claudeProject).toBe(false);
+    expect(migrated.clients).not.toHaveProperty("vscode");
+    expect(migrated.clients).not.toHaveProperty("claude");
+  });
+
+  it("leaves a config with no clients block at all untouched", () => {
+    const value = {
+      version: 1,
+      downloadDefaultsVersion: 1,
+      headlessDefaultsVersion: 1,
+      browser: { profilePath: "/profile" }
+    };
+    expect(migrateGlobalConfig(value)).toEqual(value);
+  });
+
+  it("round-trips through loadGlobalConfig/saveGlobalConfig, persisting the renamed keys", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "apl-global-config-clients-"));
+    const paths = appPaths(path.join(root, "appdata"));
+    await mkdir(path.dirname(paths.config), { recursive: true });
+    await writeFile(
+      paths.config,
+      YAML.stringify({
+        version: 1,
+        downloadDefaultsVersion: 1,
+        headlessDefaultsVersion: 1,
+        browser: { profilePath: paths.profile },
+        clients: { vscode: true, claude: false, codex: true }
+      }),
+      { encoding: "utf8" }
+    );
+
+    const loaded = await loadGlobalConfig(paths);
+    expect(loaded.clients).toEqual({
+      vscodeUser: false,
+      vscodeWorkspace: true,
+      claudeUser: false,
+      claudeProject: false,
+      codex: true
+    });
+    const persisted = YAML.parse(await readFile(paths.config, "utf8"));
+    expect(persisted.clients).not.toHaveProperty("vscode");
+    expect(persisted.clients.vscodeWorkspace).toBe(true);
+  });
+});

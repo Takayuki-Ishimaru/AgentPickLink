@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AgentDiscovery, stripKeyboardHint } from "../../src/transports/browser/agent-discovery.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
@@ -17,6 +17,24 @@ type SidebarRow = { id?: string; name?: string; description?: string };
 type LinkRow = { href?: string; name?: string };
 
 describe("AgentDiscovery", () => {
+  // Every test below drives `discovery.discover(...)` against an absolute `Date.now() + timeoutMs`
+  // deadline, and several of its internal polls compare against that same real clock. The fixture's
+  // `waitForTimeout` never actually sleeps, but a real clock still advances on its own while the
+  // event loop is busy or the OS scheduler is not giving this process any time -- exactly what
+  // happens on a loaded CI runner -- so a slow enough tick can silently eat into a 1-5 s budget
+  // between one `Date.now()` check and the next, changing which branch a test takes even though
+  // every assertion here is logically deterministic. Fake timers make `Date.now()` advance only
+  // when this file's own `waitForTimeout` fake calls `vi.advanceTimersByTimeAsync`, so every wait
+  // becomes an exact, reproducible amount of virtual time instead of whatever the real scheduler
+  // happens to deliver.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("merges sidebar rows and direct links, keeping one candidate per stable agent id", async () => {
     const events: ProgressEvent[] = [];
     const { discovery } = await makeDiscovery({
@@ -544,7 +562,8 @@ describe("AgentDiscovery", () => {
     const result = await discovery.discover(5_000);
 
     expect(result.warnings).toContain(
-      "store-catalog:items=1 attr=0 nav=0 dialog=0 open=0 forbidden-only=0 skipped=0 none=0 errors=1 off-host=0 more=0"
+      "store-catalog:items=1 attr=0 nav=0 dialog=0 open=0 forbidden-only=0 skipped=0 none=0 errors=1" +
+        " off-host=0 more=0 retried=1 recovered=0 scroll=0"
     );
   });
 
@@ -573,7 +592,11 @@ describe("AgentDiscovery", () => {
     expect(result.agents[0]?.description).toBe("Existing description");
   });
 
-  it("reports failed expansion but still inspects every available card", async () => {
+  it("treats a load-more control that keeps failing over an unchanging list as the end of the list, and still inspects every available card", async () => {
+    // ISSUE-2026-09-14-01: a "load more" click that keeps throwing while the catalogue never grows
+    // and no dialog is in the way is the end of the list, not a failure -- ` store-expansion-failed`
+    // must not fire and the run must not be marked partial for it. The three cards are still all
+    // inspected regardless (and end up `errors=3` in their own right, from `cardClick` throwing).
     let cardClicks = 0;
     const { discovery } = await makeDiscovery({
       sidebar: () => [
@@ -593,13 +616,36 @@ describe("AgentDiscovery", () => {
       }
     });
     const result = await discovery.discover(5_000);
-    expect(cardClicks).toBe(3);
-    expect(result.warnings.filter((line) => line.startsWith("store-expansion-failed:"))).toHaveLength(1);
+    // Each card is clicked twice: its bounded retry re-locates and clicks it again after a short
+    // settle, and every retry fails here too, so all three still end up counted as errors.
+    expect(cardClicks).toBe(6);
+    expect(result.warnings.filter((line) => line.startsWith("store-expansion-failed:"))).toHaveLength(0);
     expect(result.warnings.some((line) => line.startsWith("store-catalog-failed:"))).toBe(false);
-    expect(result.warnings.find((line) => line.startsWith("store-catalog:"))).toContain(
-      "errors=3 off-host=0 more=0 partial"
-    );
+    const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
+    expect(catalogue).toContain("errors=3 off-host=0 more=0 retried=3 recovered=0 scroll=0");
+    expect(catalogue?.endsWith(" partial")).toBe(false);
     expect(result.agents[0]?.description).toBe("Existing description");
+  });
+
+  it("reports a load-more control that keeps failing as a real expansion failure when a dialog is in the way", async () => {
+    // Unlike the unchanging-list case above, a dialog appearing where none was expected means the
+    // control's own click is genuinely obstructed, not merely at the end of the list.
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-requirements", name: "Requirements Agent" }],
+      links: () => [{ href: "https://m365.example.test/chat/agentstore", name: "Agent catalogue" }],
+      controls: {
+        "Show more": () => {
+          throw new Error("load more obstructed");
+        }
+      },
+      storeCards: () => [],
+      dialogVisible: () => true
+    });
+    const result = await discovery.discover(5_000);
+    expect(result.warnings.filter((line) => line.startsWith("store-expansion-failed:"))).toHaveLength(1);
+    expect(result.warnings.find((line) => line.startsWith("store-catalog:"))?.endsWith(" partial")).toBe(
+      true
+    );
   });
 
   it("never follows a route the landing page does not link to, or one on another host", async () => {
@@ -696,7 +742,12 @@ describe("AgentDiscovery", () => {
 
     expect(result.agents.map((agent) => agent.stableAgentId)).toEqual(["agent-requirements"]);
     expect(result.warnings).toContain("sidebar:1/1 link:1/0 scroll:0 store:route-empty:/chat/all");
-    expect(Date.now() - started).toBeLessThan(2_000);
+    // `Date.now()` only advances here through this file's fake timers (see the top-level
+    // `beforeEach`), in exact `SETTLE_POLL_MS`/`STORE_CARDS_POLL_MS`-sized steps driven by
+    // `waitForTimeout` -- never by real wall-clock scheduling -- so this is a deterministic count
+    // of how much (virtual) time the pass spent polling, not a measurement of real CI slowness.
+    // It proves the pass moved on long before the full 5 s `storeWaitMs` budget.
+    expect(Date.now() - started).toBeLessThan(4_000);
   });
 
   it("keeps waiting after the one guarded click until the rail actually changes", async () => {
@@ -731,6 +782,55 @@ describe("AgentDiscovery", () => {
       ["agent-late", "store"]
     ]);
   });
+
+  it("retries a card once after it briefly vanishes from the store, and resolves it on the second look", async () => {
+    // markStoreCard reporting "not found" (rather than throwing) is what a rail re-render between
+    // marking and clicking looks like when nothing else went wrong: the card simply is not there
+    // any more under that accessible text, and comes back once the re-render has settled.
+    let attempts = 0;
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-requirements", name: "Requirements Agent" }],
+      links: () => [{ href: "https://m365.example.test/chat/agentstore", name: "Agent catalogue" }],
+      storeCards: () => [{ key: "Rerendered Card", name: "Rerendered Card", list: "#0:-", opens: true }],
+      storeCardFound: (key) => {
+        if (key !== "Rerendered Card") return true;
+        attempts++;
+        return attempts > 1;
+      },
+      storeCardId: (key) => (key === "Rerendered Card" ? "agent-rerendered" : undefined)
+    });
+
+    const result = await discovery.discover(5_000);
+
+    expect(attempts).toBe(2);
+    expect(result.agents.map((agent) => agent.stableAgentId)).toContain("agent-rerendered");
+    expect(result.warnings).toContain(
+      "store-catalog:items=1 attr=1 nav=0 dialog=0 open=0 forbidden-only=0 skipped=0 none=0 errors=0" +
+        " off-host=0 more=0 retried=1 recovered=1 scroll=0"
+    );
+  });
+
+  it("returns store candidates in a stable order sorted by id, regardless of the order the store rendered them in", async () => {
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-requirements", name: "Requirements Agent" }],
+      links: () => [{ href: "https://m365.example.test/chat/agentstore", name: "Agent catalogue" }],
+      storeCards: () => [
+        { key: "Zeta Card", name: "Zeta Agent", list: "#0:-", opens: true },
+        { key: "Alpha Card", name: "Alpha Agent", list: "#0:-", opens: true },
+        { key: "Mid Card", name: "Mid Agent", list: "#0:-", opens: true }
+      ],
+      storeCardId: (key) =>
+        ({ "Zeta Card": "agent-zeta", "Alpha Card": "agent-alpha", "Mid Card": "agent-mid" })[key]
+    });
+
+    const result = await discovery.discover(5_000);
+
+    expect(
+      result.agents.filter((agent) => agent.source === "store").map((agent) => agent.stableAgentId)
+    ).toEqual(["agent-alpha", "agent-mid", "agent-zeta"]);
+    // The rail candidate keeps its own place; only the store's own order is normalized.
+    expect(result.agents[0]?.stableAgentId).toBe("agent-requirements");
+  });
 });
 
 describe("stripKeyboardHint", () => {
@@ -762,6 +862,9 @@ async function makeDiscovery(options: {
   fileLinks?: () => string[];
   /** One rail-scroll step (`restore` puts it back); defaults to "nothing is scrollable". */
   scroll?: (restore: boolean) => { moved: boolean; atEnd: boolean };
+  /** One store-list scroll-to-bottom pass (`scrollStoreListsOnce`): returns whether anything
+   * moved. Defaults to "nothing is scrollable", called on every settle/catch-up poll. */
+  storeScroll?: () => boolean;
   body?: string;
   appHost?: string;
   /** Whether the chat structure (main region / composer) exists yet; defaults to "rendered". */
@@ -776,6 +879,17 @@ async function makeDiscovery(options: {
   storeCards?: () => unknown[];
   /** Optional failure injected when the fake resolves a catalogue card. */
   cardClick?: () => void;
+  /** Whether a details dialog is open (`storeDialogVisible`); defaults to "never" -- these fake
+   * pages do not render one unless a test opts in. */
+  dialogVisible?: () => boolean;
+  /** Whether `markStoreCard` finds the card being marked, keyed by its accessible text; defaults
+   * to "always found". Returning false simulates a re-render that removed it before it could be
+   * marked, without throwing (the bounded retry's non-throwing path). */
+  storeCardFound?: (key: string) => boolean;
+  /** The stable agent id `markStoreCard` reports for the card being marked, keyed by its
+   * accessible text; returning one resolves the card via the attribute path with no click at all,
+   * the simplest way to exercise scroll/retry mechanics without also faking click navigation. */
+  storeCardId?: (key: string) => string | undefined;
   /** Observes every navigation, so a test can make the next page look different. */
   onGoto?: (url: string) => void;
   /** The agent section's own "show all" control: its accessible name, and what clicking it does. */
@@ -798,12 +912,22 @@ async function makeDiscovery(options: {
       if (source.includes("firstReadableBlock"))
         return { rows: options.sidebar(), links: options.links() } as never;
       // The section-disclosure walk stops at document.body, so it must be recognized first.
-      if (source.includes("shapeOf")) return { found: true, shape: "attrs=- testid=- tags=-" } as never;
+      if (source.includes("shapeOf")) {
+        const key = (arg as { key?: unknown } | undefined)?.key;
+        const found = typeof key === "string" ? (options.storeCardFound?.(key) ?? true) : true;
+        if (!found) return { found: false } as never;
+        const id = typeof key === "string" ? options.storeCardId?.(key) : undefined;
+        return { found: true, shape: "attrs=- testid=- tags=-", ...(id ? { id } : {}) } as never;
+      }
       if (source.includes("args.marker"))
         return (
           options.sectionDisclosure ? { name: options.sectionDisclosure.name } : { reason: "no-control" }
         ) as never;
       if (source.includes("document.body")) return (options.body ?? AUTHENTICATED_BODY) as never;
+      // scrollStoreListsOnce's own body (a single "did anything move" scroll pass over the store's
+      // role="list" groups): checked ahead of the sidebar rail's scrollTop fake below, since both
+      // bodies mention scrollTop but only this one declares "advanced".
+      if (source.includes("advanced")) return (options.storeScroll?.() ?? false) as never;
       if (source.includes("scrollTop"))
         return (options.scroll ?? (() => ({ moved: false, atEnd: true })))(
           (arg as { restore?: boolean } | undefined)?.restore === true
@@ -815,6 +939,11 @@ async function makeDiscovery(options: {
       if (source.includes("rowSelector")) return (options.sidebar().length + options.links().length) as never;
       if (source.includes("a[href]")) return options.links() as never;
       if (source.includes("data-agent-id")) return options.sidebar() as never;
+      // storeDialogVisible's own body (checked ahead of the catch-all below): no fake page here
+      // ever renders a details dialog unless a test says so, so the default must be "closed", not
+      // the catch-all's "true" -- otherwise every still-actionable expansion-click failure would
+      // look like it happened while a dialog was open.
+      if (source.includes("alertdialog")) return (options.dialogVisible?.() ?? false) as never;
       return true as never;
     },
     getByRole: (role: string, roleOptions?: { name?: string | RegExp; exact?: boolean }) => {
@@ -843,7 +972,11 @@ async function makeDiscovery(options: {
       };
       return locator;
     },
-    waitForTimeout: async () => undefined,
+    // Advances the fake clock (see the top-level `beforeEach`) by exactly `ms` of virtual time
+    // instead of ever really sleeping, so every deadline this file exercises is deterministic.
+    waitForTimeout: async (ms: number) => {
+      if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
+    },
     isClosed: () => false,
     close: async () => {
       closed.push("page");
@@ -872,6 +1005,9 @@ async function makeDiscovery(options: {
     storeWaitMs: options.storeWaitMs ?? 1,
     storeItemWaitMs: 1,
     descriptionWaitMs: 2,
+    // Fake timers make this virtual regardless, but a tiny value keeps intent obvious alongside
+    // the other budgets above.
+    relocateDelayMs: 1,
     // Fakes never take long to render; keep the waits short instead of spending production budgets.
     renderTimeoutMs: options.renderTimeoutMs ?? 50,
     rowsSettleMs: options.rowsSettleMs ?? 20

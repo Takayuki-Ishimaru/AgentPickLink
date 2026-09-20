@@ -8,6 +8,7 @@ import {
   WORKSPACE_FILE,
   registerMcpProvider
 } from "../../src/extension/mcp-provider.js";
+import { mergeVscodeMcpJson } from "../../src/extension/integrations.js";
 import { createRuntimeHarness, logText, type RuntimeHarness } from "./harness.js";
 import { createExtensionContext, lm, resetVscodeMock, setWorkspaceRoot, vscodeMock } from "./vscode-mock.js";
 
@@ -56,6 +57,127 @@ describe("provideMcpServerDefinitions", () => {
     expect(definition.args).toEqual([path.join(harness.extensionRoot, "dist", "cli", "index.js"), "serve"]);
     expect(definition.version).toBe("0.1.0");
     expect(definition.cwd?.fsPath).toBe(harness.workspaceRoot);
+  });
+
+  it("offers nothing when .vscode/mcp.json already registers a managed m365-agents entry (§4.7 C5)", async () => {
+    await writeWorkspaceFile();
+    const definition = await harness.runtime.integrationDefinition();
+    await fs.mkdir(path.join(harness.workspaceRoot, ".vscode"), { recursive: true });
+    await fs.writeFile(
+      path.join(harness.workspaceRoot, ".vscode", "mcp.json"),
+      mergeVscodeMcpJson(undefined, { ...definition, env: { ...definition.env, M365_AGENT_MANAGED: "1" } }),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toEqual([]);
+    expect(logText()).toContain(
+      "workspace file registers m365-agents (managed); provider offers no definition"
+    );
+  });
+
+  it("offers nothing when .vscode/mcp.json has a legacy (pre-marker) m365-agents entry", async () => {
+    await writeWorkspaceFile();
+    await fs.mkdir(path.join(harness.workspaceRoot, ".vscode"), { recursive: true });
+    await fs.writeFile(
+      path.join(harness.workspaceRoot, ".vscode", "mcp.json"),
+      mergeVscodeMcpJson(undefined, {
+        command: "/usr/local/bin/node",
+        args: ["/ext/dist/cli/index.js", "serve"]
+      }),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toEqual([]);
+  });
+
+  // §P2: a foreign entry occupies the `m365-agents` label in the higher-priority collection just
+  // as a managed one does, so VS Code would silently disable the provider's copy anyway (§4.7 C5).
+  it("offers nothing when .vscode/mcp.json has a foreign m365-agents entry, and says which", async () => {
+    await writeWorkspaceFile();
+    await fs.mkdir(path.join(harness.workspaceRoot, ".vscode"), { recursive: true });
+    await fs.writeFile(
+      path.join(harness.workspaceRoot, ".vscode", "mcp.json"),
+      mergeVscodeMcpJson(undefined, { command: "/usr/bin/some-other-tool", args: ["serve"] }),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toEqual([]);
+    expect(logText()).toContain(
+      "workspace file registers m365-agents (foreign); provider offers no definition"
+    );
+  });
+
+  // §4.4/§4.7 C5: the default `vscodeUser` writer's file also beats this provider's sort order
+  // (200 vs 300), so a managed/legacy entry there must suppress the provider's definition too.
+  it("offers nothing when the user-profile mcp.json already registers a managed m365-agents entry (§4.4/C5)", async () => {
+    await writeWorkspaceFile();
+    const definition = await harness.runtime.integrationDefinition();
+    const userProfilePath = harness.runtime.vscodeUserMcpJsonPath();
+    await fs.mkdir(path.dirname(userProfilePath), { recursive: true });
+    await fs.writeFile(
+      userProfilePath,
+      mergeVscodeMcpJson(undefined, { ...definition, env: { ...definition.env, M365_AGENT_MANAGED: "1" } }),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toEqual([]);
+    expect(logText()).toContain(
+      "user-profile mcp.json registers m365-agents (managed); provider offers no definition"
+    );
+  });
+
+  it("still offers a definition when the user-profile mcp.json has no m365-agents entry at all", async () => {
+    await writeWorkspaceFile();
+    const userProfilePath = harness.runtime.vscodeUserMcpJsonPath();
+    await fs.mkdir(path.dirname(userProfilePath), { recursive: true });
+    await fs.writeFile(
+      userProfilePath,
+      JSON.stringify({ servers: { "some-other-server": { command: "/usr/bin/other", args: [] } } }, null, 2),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toHaveLength(1);
+  });
+
+  it("still offers a definition when .vscode/mcp.json has no m365-agents entry at all", async () => {
+    await writeWorkspaceFile();
+    await fs.mkdir(path.join(harness.workspaceRoot, ".vscode"), { recursive: true });
+    await fs.writeFile(
+      path.join(harness.workspaceRoot, ".vscode", "mcp.json"),
+      JSON.stringify({ servers: { "some-other-server": { command: "/usr/bin/other", args: [] } } }, null, 2),
+      "utf8"
+    );
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toHaveLength(1);
+  });
+
+  it("§4.7 C9: suppresses on a variable-form managed entry, which only classifies with variables", async () => {
+    await writeWorkspaceFile();
+    const definition = await harness.runtime.integrationDefinition();
+    const variables = harness.runtime.integrationVariables()!;
+    // The identity the archive would write on this machine: under the home directory, so the
+    // writer substitutes `${userHome}`/`${env:LOCALAPPDATA}` for its prefix.
+    const homeBased = {
+      command: path.join(harness.home, "bin", process.platform === "win32" ? "node.exe" : "node"),
+      args: [path.join(harness.home, "bin", "apl.js"), "serve"],
+      env: { ...definition.env, M365_AGENT_MANAGED: "1" }
+    };
+    const text = mergeVscodeMcpJson(undefined, homeBased, variables);
+    expect(text).toContain("${");
+    await fs.mkdir(path.join(harness.workspaceRoot, ".vscode"), { recursive: true });
+    await fs.writeFile(path.join(harness.workspaceRoot, ".vscode", "mcp.json"), text, "utf8");
+
+    const provider = new AgentPickLinkMcpProvider(harness.runtime);
+    expect(await provider.provideMcpServerDefinitions()).toEqual([]);
+    expect(logText()).toContain(
+      "workspace file registers m365-agents (managed); provider offers no definition"
+    );
   });
 
   it("fires onDidChangeMcpServerDefinitions from refresh()", () => {

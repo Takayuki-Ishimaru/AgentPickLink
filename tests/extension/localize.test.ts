@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ERROR_CODES } from "../../src/domain/errors.js";
-import { describeErrorCode, pickLocale, translate } from "../../src/extension/localize.js";
+import {
+  describeDiscoverySummary,
+  describeErrorCode,
+  pickLocale,
+  translate
+} from "../../src/extension/localize.js";
 
 /** The codes whose remediation the panel shows in the user's language (I3). */
 const LOCALIZED_REMEDIATION_CODES = [
@@ -54,5 +59,21 @@ describe("locale selection", () => {
   it("translates the host-side messages in both locales", () => {
     expect(translate("ja", "reload")).toBe("再読み込み");
     expect(translate("en", "reload")).toBe("Reload");
+  });
+});
+
+describe("describeDiscoverySummary (WP-D)", () => {
+  it("renders the count-bearing partial notice in both locales", () => {
+    expect(describeDiscoverySummary({ partial: true, failedCount: 3 }, "ja")).toBe(
+      "一部の候補を取得できませんでした（3 件）。再実行すると増えることがあります。"
+    );
+    expect(describeDiscoverySummary({ partial: true, failedCount: 3 }, "en")).toBe(
+      "Some candidates could not be retrieved (3). Re-running discovery may find more."
+    );
+  });
+
+  it("defaults the count to 0 when the summary carries none, and renders nothing when not partial", () => {
+    expect(describeDiscoverySummary({ partial: true }, "en")).toContain("(0)");
+    expect(describeDiscoverySummary({ partial: false }, "en")).toBeUndefined();
   });
 });

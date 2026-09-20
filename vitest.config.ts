@@ -14,6 +14,8 @@ export default defineConfig({
   // not consumed by competing browser startups on machines with many reported CPU cores.
   test: {
     include: ["tests/**/*.test.ts"],
+    // Every worker gets a throw-away HOME before any test module loads (see the file header).
+    setupFiles: ["tests/setup/isolate-home.ts"],
     environment: "node",
     maxWorkers: 2,
     // Windows tests exercise real PowerShell ACL operations; five seconds does not cover setup.

@@ -99,7 +99,10 @@ export interface InteractiveAgentTransport extends AgentTransport {
    * the pending `login()` rejects with AUTH_FAILED ("The sign-in was cancelled."). `cancelled` is
    * false when no sign-in was in progress -- cancelling nothing is not an error. */
   cancelLogin?(): Promise<{ cancelled: boolean }>;
-  authenticationState?(): Promise<{ state: string }>;
+  /** ISSUE-2026-09-14-05: `onProgress`, when supplied, receives a single `verifying`-phase event
+   * whose `message` is prefixed `login-reason:` explaining why the silent probe settled where it
+   * did (verdict kind, landing state, detector rule, elapsed ms -- never a URL or page text). */
+  authenticationState?(onProgress?: ProgressSink): Promise<{ state: string }>;
   resetProfile?(): Promise<void>;
   captureAgent?(timeoutMs?: number): Promise<CapturedAgent>;
   inspectAgentUrl?(url: string): Promise<CapturedAgent>;

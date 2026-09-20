@@ -98,8 +98,17 @@ async function refreshIntegrationsOnActivate(runtime: ExtensionRuntime): Promise
   try {
     const definition = await runtime.integrationDefinition();
     const workspaceRoot = runtime.workspaceRoot();
+    // §4.7 C9: without `variables` this refresh expands nothing, reads a portable
+    // `${userHome}`/`${env:LOCALAPPDATA}` entry as stale, and rewrites it back to an absolute path
+    // -- which the next `apl-setup` turns back into the variable form, forever.
+    const variables = runtime.integrationVariables();
     const summary = await refreshStaleIntegrations(
-      { definition, homeDirectory: runtime.homeDirectory(), ...(workspaceRoot ? { workspaceRoot } : {}) },
+      {
+        definition,
+        homeDirectory: runtime.homeDirectory(),
+        ...(workspaceRoot ? { workspaceRoot } : {}),
+        ...(variables ? { variables } : {})
+      },
       settings
     );
     for (const file of summary.refreshed) runtime.log(`integration refreshed: ${file}`);
@@ -178,6 +187,7 @@ export function activate(
   };
 
   const commands: Array<[string, () => unknown]> = [
+    ["agentpicklink.installMachine", () => provider.installMachine()],
     [
       "agentpicklink.setup",
       async () => {
@@ -219,7 +229,15 @@ export function activate(
   const autoStart = (): Promise<void> => {
     if (!vscode.workspace.isTrusted || !runtime.workspaceRoot()) return Promise.resolve();
     if (autoStartPromise) return autoStartPromise;
-    autoStartPromise = (deps.restartBrokerIfStale ?? restartBrokerIfStale)(runtime)
+    // §4.7 C13: `install.json` decides which broker this window may start or stop, and
+    // `brokerEntry()` is synchronous -- so the record has to be in hand *before* the first broker
+    // decision, which with every integration flag off is this very line. Without the await, the
+    // machine install's live broker is judged against this extension's own tree and restarted on
+    // every activation.
+    autoStartPromise = runtime
+      .ready()
+      .catch(() => undefined)
+      .then(() => (deps.restartBrokerIfStale ?? restartBrokerIfStale)(runtime))
       .catch(() => false)
       .then(() => deps.connectOrStartBroker(runtime))
       .then((client) => {

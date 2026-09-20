@@ -3,8 +3,10 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appPaths } from "../config/paths.js";
+import { PACKAGE_VERSION } from "../config/package-version.js";
 import { initializeLocalState } from "../config/init.js";
 import { loadGlobalConfig } from "../config/global-config.js";
+import { createBrokerLogger } from "../observability/broker-log.js";
 import { BrowserTransport } from "../transports/browser/browser-transport.js";
 import { browserLocalStatePreparer } from "../transports/browser/local-state.js";
 import { TransportRouter } from "../transports/transport-router.js";
@@ -13,12 +15,19 @@ import { userScopedPipeName } from "./broker-descriptor.js";
 
 async function main(): Promise<void> {
   const paths = await initializeLocalState(appPaths(), browserLocalStatePreparer);
+  // item 1: the single broker-wide log sink (<paths.logs>/broker.log) -- wired into both the
+  // browser transport (BrowserManager's own log()/onLog lines: staleness/profile-process lines,
+  // redacted launch call logs, force-kill decisions, plus SessionManager's silent auth-probe
+  // reason lines -- ISSUE-2026-09-14-05) and BrokerServer (start/stop/shutdown lifecycle lines),
+  // so every broker-side diagnostic previously discarded by `stdio: "ignore"` now lands in one file.
+  const brokerLog = createBrokerLogger(paths.logs);
   const config = await loadGlobalConfig(paths);
   const resolvedProfile = path.resolve(config.browser.profilePath);
   const profileIdentity =
     process.platform === "win32" ? resolvedProfile.toLocaleLowerCase() : resolvedProfile;
   const profileId = createHash("sha256").update(profileIdentity).digest("hex").slice(0, 12);
   const transport = new BrowserTransport({
+    log: (line) => brokerLog.log(line),
     profilePath: config.browser.profilePath,
     channel: config.browser.channel,
     // Background operation is a product invariant, including profiles with a legacy visible setting.
@@ -66,9 +75,10 @@ async function main(): Promise<void> {
   const server = new BrokerServer({
     paths,
     pipeName: userScopedPipeName(profileId),
-    packageVersion: "0.1.3",
+    packageVersion: PACKAGE_VERSION,
     router,
-    build
+    build,
+    log: (line) => brokerLog.log(line)
   });
   await server.start();
   const shutdown = () => {

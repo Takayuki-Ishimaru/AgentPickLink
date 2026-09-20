@@ -1,5 +1,64 @@
 # リリースノート
 
+## v0.2.0 Beta
+
+### 主な変更
+
+- **拡張機能なしで導入できます。** Node.js 同梱のポータブルアーカイブを追加しました。`apl-setup <ワークスペース>` でサインイン、エージェントの選択と承認、対応 AI クライアントへの MCP 登録、接続確認を行えます。Node.js の別途インストールは不要です。
+- **ブラウザーでセットアップできます。** `apl-setup --browser` でセットアップ画面を開けます。エージェントの利用承認は端末で確認します。`--dry-run` では設定を変更せずに導入内容を確認できます。
+- **更新と切り戻しを改善しました。** VS Code 拡張機能とポータブル版が同じインストール先を共有します。`apl self use <バージョン>` で以前の版へ戻せます。`apl self prune` は旧版を削除する前に確認します。
+- **接続とエージェント一覧の取得を安定化しました。** 更新後の接続プロセスの再起動、ブラウザーの終了処理、一覧の追加読み込みを改善しました。Windows の一部環境で Edge の初回起動が失敗する問題も修正しました。
+- **問題を調べやすくしました。** `apl doctor` で導入状態を確認できます。セットアップや接続に失敗した場合は、エラーの理由と対処方法、診断ログを確認できます。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.0.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。
+
+ポータブル版を使う場合は、お使いの OS・CPU 向けのアーカイブを展開し、そのフォルダーで `apl-setup <ワークスペース>` を実行してください。更新時も、新しいアーカイブを展開して同じコマンドを実行します。
+
+既存の設定、ワークスペース承認、専用ブラウザープロファイルは引き続き利用できます。v0.1.x の拡張機能で有効にした連携設定は、起動時に新しい形式へ移行します。手動で作成した連携設定は保持します。
+
+### 配布物
+
+- `agent-pick-link-0.2.0.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.0-win-x64.zip` / `AgentPickLink-0.2.0-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.0-darwin-arm64.tgz` / `AgentPickLink-0.2.0-darwin-x64.tgz` — macOS 用ポータブル版。
+- `AgentPickLink-0.2.0-linux-x64.tgz` — Linux 用ポータブル版（実験的）。
+- `agent-pick-link-0.2.0-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲と制限
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向け、Linux は実験的な提供です。Windows ARM64 / Linux x64 の実機動作と macOS Intel のネイティブ動作は未確認です。
+
+VS Code のユーザープロファイルへの登録は単一フォルダー向けです。複数のフォルダーで使う場合は、各フォルダーで `--clients vscode-workspace` を指定してください。マルチルートのワークスペースは対象外です。
+
+今回の版では、AI クライアント経由の質問・回答・生成ファイル取得、英語 UI、MFA・条件付きアクセスを伴う再サインイン、エージェント種別ごとの会話、実際の拡張パネルでの一連のセットアップ操作は未確認です。自動テストはローカルの模擬画面を使用し、実テナントでの動作を保証しません。確認済みの操作とその他の未確認項目は [検証範囲](RELEASE-CHECKLIST.md) を参照してください。
+
+導入手順は [README](README.md)、組織での導入は [管理者向けノート](MANAGED-ENVIRONMENTS.md) を参照してください。
+
+### English
+
+- **Install without the VS Code extension.** Portable archives bundle Node.js. Run `apl-setup <workspace>` to sign in, select and approve agents, register MCP with supported AI clients, and check the connection.
+- **Set up in your browser.** Use `apl-setup --browser` to open the setup page; agent approvals are confirmed in the terminal. Use `--dry-run` to preview the installation without changing settings.
+- **Update or roll back.** The extension and portable edition share one installation. Use `apl self use <version>` to return to an earlier version. `apl self prune` asks before deleting old versions.
+- **More reliable connections and discovery.** Improved connection-process restarts, browser shutdown, and loading additional agents. Fixed Edge failing to launch for the first time in some Windows environments.
+- **Clearer diagnostics.** `apl doctor` checks the installation. Setup and connection failures provide error details, suggested remedies, and diagnostic logs.
+
+To update the extension, install `agent-pick-link-0.2.0.vsix` using **Extensions: Install from VSIX…**, reload VS Code, and restart external clients' MCP connections. For the portable edition, extract the archive for your OS and CPU and run `apl-setup <workspace>` from that folder. Repeat with the new archive when upgrading.
+
+Existing settings, workspace approvals, and the dedicated browser profile can be reused. Integrations enabled by the v0.1.x extension migrate at startup; manually created entries are preserved.
+
+Downloads include the VSIX, portable archives for Windows x64 / ARM64, macOS Apple Silicon / Intel, and Linux x64, plus `agent-pick-link-0.2.0-source.zip` and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+This beta primarily targets Windows 11 with Microsoft Edge. macOS is intended for development and verification; Linux support is experimental. Native operation on Windows ARM64, Linux x64, and Intel Macs has not been verified. VS Code user-profile registration supports one folder; use `--clients vscode-workspace` for each folder when working with several folders. Multi-root workspaces are unsupported.
+
+For this version, sending questions and retrieving answers or generated files through AI clients, the English UI, re-login with MFA or Conditional Access, conversations across agent types, and the complete setup flow in the actual extension panel have not been verified. Automated tests use local mock pages and do not establish live-tenant compatibility. The [verification scope](RELEASE-CHECKLIST.md) lists confirmed operations and remaining limitations, including client application and OS policy checks.
+
+See the [English README](README.en.md) and [Managed environments](MANAGED-ENVIRONMENTS.en.md) for installation details.
+
 ## v0.1.3 Beta — 2026-09-09
 
 - 添付ファイルを保存する際、Microsoft 365 が提供する元のファイル名を優先するよう改善しました。日本語・空白・丸数字を保持し、同名の別ファイルは連番を付けて保存します。

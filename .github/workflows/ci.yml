@@ -18,12 +18,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, shard: "1/4", partition: 1 }
-          - { os: windows-latest, shard: "2/4", partition: 2 }
-          - { os: windows-latest, shard: "3/4", partition: 3 }
-          - { os: windows-latest, shard: "4/4", partition: 4 }
-          - { os: macos-latest, shard: "1/1", partition: 1 }
-          - { os: ubuntu-latest, shard: "1/1", partition: 1 }
+          - { os: windows-latest, node: 22, shard: "1/4", partition: 1 }
+          - { os: windows-latest, node: 22, shard: "2/4", partition: 2 }
+          - { os: windows-latest, node: 22, shard: "3/4", partition: 3 }
+          - { os: windows-latest, node: 22, shard: "4/4", partition: 4 }
+          - { os: macos-latest, node: 22, shard: "1/1", partition: 1 }
+          - { os: ubuntu-latest, node: 22, shard: "1/1", partition: 1 }
+          - { os: windows-latest, node: 24, shard: "1/4", partition: 1 }
+          - { os: windows-latest, node: 24, shard: "2/4", partition: 2 }
+          - { os: windows-latest, node: 24, shard: "3/4", partition: 3 }
+          - { os: windows-latest, node: 24, shard: "4/4", partition: 4 }
+          - { os: macos-latest, node: 24, shard: "1/1", partition: 1 }
+          - { os: ubuntu-latest, node: 24, shard: "1/1", partition: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -35,7 +41,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
       # The development checkout prepares the same source tree distributed to users.
       # In the public source repository, the checked-out root already is that tree.
@@ -85,23 +91,63 @@ jobs:
       - run: npm run lint
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm test -- --shard=${{ matrix.shard }} --reporter=default --reporter=junit --outputFile=output/test-results.xml
+        env:
+          HOME: ${{ runner.temp }}/apl-test/user
+          USERPROFILE: ${{ runner.temp }}/apl-test/user
+          APPDATA: ${{ runner.temp }}/apl-test/roaming
+          LOCALAPPDATA: ${{ runner.temp }}/apl-test/local
+          M365_AGENT_APP_DATA: ${{ runner.temp }}/apl-test/app-data
+          M365_AGENT_INSTALL_ROOT: ${{ runner.temp }}/apl-test/install
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm run schemas:check
         working-directory: ${{ steps.source.outputs.path }}
       - name: Package VSIX
-        if: matrix.partition == 1
+        if: matrix.partition == 1 && matrix.node == 24
         working-directory: ${{ steps.source.outputs.path }}
         run: npm run package:vsix
       - name: Smoke test extracted VSIX
-        if: matrix.partition == 1
+        if: matrix.partition == 1 && matrix.node == 24
         working-directory: ${{ steps.source.outputs.path }}
         run: |
           python -c 'import glob, zipfile; files = glob.glob("dist-vsix/*.vsix"); assert len(files) == 1; zipfile.ZipFile(files[0]).extractall("output/vsix-smoke")'
           npm run smoke:package -- output/vsix-smoke/extension
+      - name: Determine pinned portable Node.js version
+        if: matrix.partition == 1 && matrix.node == 24
+        id: portable-node
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          version=$(node -e "console.log(require('node:fs').readFileSync('scripts/assemble-portable.mjs', 'utf8').match(/PINNED_NODE_VERSION = \"([^\"]+)\"/)[1])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # 30-50 MiB per platform; keyed on the pinned runtime version so a version bump invalidates it
+      # automatically instead of needing a manual key edit (docs/extension-less-onboarding.md 4.6/4.8).
+      - name: Cache bundled Node.js runtime download
+        if: matrix.partition == 1 && matrix.node == 24
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.source.outputs.path }}/output/portable-cache
+          key: portable-node-${{ runner.os }}-${{ steps.portable-node.outputs.version }}
+      - name: Pack staged tree for the portable archive
+        if: matrix.partition == 1 && matrix.node == 24
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          mkdir -p output/portable-pack
+          npm pack --pack-destination output/portable-pack
+      - name: Assemble and smoke-test the portable archive
+        if: matrix.partition == 1 && matrix.node == 24
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          package=$(ls output/portable-pack/*.tgz | head -n1)
+          node scripts/assemble-portable.mjs --package "$package" --platform host --out output/portable --cache output/portable-cache --smoke
+      - name: Publish portable archive
+        if: matrix.partition == 1 && matrix.node == 24
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.os }}
+          path: ${{ steps.source.outputs.path }}/output/portable/*
       - name: Publish test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.os }}-${{ matrix.partition }}
+          name: test-results-${{ matrix.os }}-node${{ matrix.node }}-${{ matrix.partition }}
           path: ${{ steps.source.outputs.path }}/output/test-results.xml
           if-no-files-found: warn
