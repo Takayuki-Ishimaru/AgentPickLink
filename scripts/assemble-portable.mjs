@@ -19,6 +19,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+// Git Bash's GNU tar interprets Windows drive letters as remote archive hosts.
+// Use Windows' native bsdtar, which also supports ZIP input and output.
+const tarCommand =
+  process.platform === "win32"
+    ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+    : "tar";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 // Pinned Node.js runtime version bundled into every portable archive. Looked up from
@@ -131,7 +137,7 @@ async function extractNodeRuntime({ archivePath, nodePlatform, version, destDir,
   const tmp = await mkdtemp(path.join(os.tmpdir(), "apl-node-extract-"));
   try {
     if (isWindows) {
-      await execFileAsync("tar", [
+      await execFileAsync(tarCommand, [
         "xf",
         archivePath,
         "-C",
@@ -142,7 +148,7 @@ async function extractNodeRuntime({ archivePath, nodePlatform, version, destDir,
       await cp(path.join(tmp, topFolder, "node.exe"), path.join(destDir, "node.exe"));
       await cp(path.join(tmp, topFolder, "LICENSE"), path.join(destDir, "LICENSE-node"));
     } else {
-      await execFileAsync("tar", [
+      await execFileAsync(tarCommand, [
         "xzf",
         archivePath,
         "-C",
@@ -189,7 +195,7 @@ async function stagePackage(packageArg, destDir) {
   if (info.isDirectory()) {
     await cp(packageArg, destDir, { recursive: true });
   } else if (info.isFile() && /\.(tgz|tar\.gz)$/.test(packageArg)) {
-    await execFileAsync("tar", ["xzf", path.resolve(packageArg), "-C", destDir, "--strip-components=1"]);
+    await execFileAsync(tarCommand, ["xzf", path.resolve(packageArg), "-C", destDir, "--strip-components=1"]);
   } else {
     throw new Error(`--package must be a directory or a .tgz/.tar.gz file: ${packageArg}`);
   }
@@ -297,10 +303,10 @@ async function createArchive({
     if (!isWindows && (await commandExists("zip"))) {
       await execFileAsync("zip", ["-rq", archivePath, folderName], { cwd: stageParent });
     } else {
-      await execFileAsync("tar", ["-a", "-cf", archivePath, folderName], { cwd: stageParent });
+      await execFileAsync(tarCommand, ["-a", "-cf", archivePath, folderName], { cwd: stageParent });
     }
   } else {
-    await execFileAsync("tar", ["czf", archivePath, folderName], { cwd: stageParent });
+    await execFileAsync(tarCommand, ["czf", archivePath, folderName], { cwd: stageParent });
   }
   return archivePath;
 }
@@ -344,8 +350,8 @@ async function runSmoke(archivePath, isWindows) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "apl-portable-smoke-"));
   try {
     // See extractNodeRuntime: windows-latest has no unzip, so use tar (bsdtar reads .zip) there too.
-    if (isWindows) await execFileAsync("tar", ["xf", archivePath, "-C", tmp]);
-    else await execFileAsync("tar", ["xzf", archivePath, "-C", tmp]);
+    if (isWindows) await execFileAsync(tarCommand, ["xf", archivePath, "-C", tmp]);
+    else await execFileAsync(tarCommand, ["xzf", archivePath, "-C", tmp]);
     const [entry] = await readdir(tmp);
     const extractedDir = path.join(tmp, entry);
     const nodeBin = path.join(extractedDir, "runtime", isWindows ? "node.exe" : "node");
