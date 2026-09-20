@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.0 Beta** — VS Code から、利用を承認した Microsoft 365 エージェントへ質問するためのローカル MCP ブリッジです。
+**v0.2.1 Beta** — VS Code から、利用を承認した Microsoft 365 エージェントへ質問するためのローカル MCP ブリッジです。
 
 Microsoft 365 にサインインしてエージェントを選び、ワークスペース単位で利用を承認すると、MCP 対応の AI クライアントから質問できるようになります。回答テキストや引用に加え、エージェントが生成したファイルを保存できます。
 
@@ -16,13 +16,13 @@ AgentPickLink は **MIT ライセンスのオープンソースソフトウェ�
 
 本ソフトウェアは Microsoft の公式製品ではありません。ベータ版のため、Microsoft 365 の画面変更やテナントの設定によって接続・取得に失敗する場合があります。
 
-## v0.2.0 の主な変更
+## v0.2.1 の主な変更
 
-- Node.js同梱のポータブルアーカイブから、拡張機能なしでセットアップできます。
-- `--browser` で既存パネルと同じセットアップ画面を開けます。一覧承認と能力拡大の確認は端末に表示します。
-- VSIXとアーカイブが同じ機械インストールを共有し、拡張パネルから明示的に更新できます。
-- dry-runの無書き込み、複数ワークスペースの発見結果再利用、doctorを含む導入検証、旧版削除の確認を追加しました。
-- ローカル接続プロセスの再起動・停止処理と診断ログ（`broker.log`）を改善し、Windows で初回のブラウザー起動が失敗する問題を修正しました。
+- アンインストール時に削除対象と接続プロセスの終了を確認し、別のインストールの設定を保持します。
+- VS Code の設定を更新するとき、コメントや他の MCP サーバーの設定を保持します。
+- ブラウザーセットアップの通信エラーと復旧手順を表示し、処理中の重複操作を防ぎます。
+- セットアップ画面で、サインイン・エージェント選択・承認・クライアント連携の準備状態を確認できます。
+- CLI の JSON 出力と診断の終了コードを整理し、ESM プロジェクト内のインストール先でもランチャーが起動するよう修正しました。
 
 詳細は [リリースノート](release-docs/CHANGELOG.md) を参照してください。
 
@@ -37,25 +37,25 @@ Node.js 22 以降を別途インストールすると実行環境を明示でき
 
 WSL、Remote SSH、Dev Containers、Codespaces、複数ルートのワークスペース、リモート MCP サーバー、無人実行は対象外です。すべての Microsoft 365 エージェントや画面構成への対応を保証するものではありません。
 
-Windows・macOS・Ubuntu の自動テストを公開 CI で実行します。Ubuntu は実験的な検証対象です。実際の Microsoft 365 テナントと VS Code 画面での確認は CI に含まれません。詳しくは [検証範囲](release-docs/DEVELOPMENT.md) を参照してください。
+Windows・macOS・Ubuntu の自動テストを公開 CI で実行します。Ubuntu は開発・CI 専用の検証対象で、通常利用の対象外です。実際の Microsoft 365 テナントと VS Code 画面での確認は CI に含まれません。詳しくは [検証範囲](release-docs/DEVELOPMENT.md) を参照してください。
 
 ## インストール
 
-1. GitHub の **Releases → v0.2.0 (Beta)** で `agent-pick-link-0.2.0.vsix` をダウンロードします。
+1. GitHub の **Releases → v0.2.1 (Beta)** で `agent-pick-link-0.2.1.vsix` をダウンロードします。
 2. VS Code のコマンドパレットから **Extensions: Install from VSIX… / 拡張機能: VSIX からのインストール…** を実行し、ダウンロードしたファイルを選びます。
 3. 再読み込みを求められた場合は、VS Code を再読み込みします。
 
 ターミナルからもインストールできます。
 
 ```sh
-code --install-extension agent-pick-link-0.2.0.vsix
+code --install-extension agent-pick-link-0.2.1.vsix
 ```
 
 VSIX には拡張機能、CLI、ローカル接続プロセス、MCP サーバーを同梱しています。npm パッケージや Marketplace からのインストールは、このベータ版の配布手順には含みません。
 
-### v0.1.0〜v0.1.3 からの更新
+### v0.2.0 以前からの更新
 
-同じ手順で v0.2.0 の VSIX をインストールし、VS Code を再読み込みしてください。既存の設定・ワークスペース承認・専用ブラウザープロファイルはそのまま利用できます。パネルで接続状態を確認し、必要に応じて **接続して更新 / Connect and refresh** を実行してください。外部 AI クライアントの MCP 接続も再起動して、新しいバージョンを読み込みます。v0.1.x で有効にした Codex / Claude Code / VS Code の連携設定は、起動時に新しい形式へ更新し、その旨を 1 回通知します。
+同じ手順で v0.2.1 の VSIX をインストールし、VS Code を再読み込みしてください。既存の設定・ワークスペース承認・専用ブラウザープロファイルはそのまま利用できます。パネルで接続状態を確認し、必要に応じて **接続して更新 / Connect and refresh** を実行してください。外部 AI クライアントの MCP 接続も再起動して、新しいバージョンを読み込みます。v0.1.x で有効にした Codex / Claude Code / VS Code の連携設定は、起動時に新しい形式へ更新し、その旨を 1 回通知します。
 
 ## 拡張機能なしでインストールする
 
@@ -67,8 +67,10 @@ VSIX には拡張機能、CLI、ローカル接続プロセス、MCP サーバ�
 
    ```
    .\apl-setup C:\path\to\workspace          (Windows)
-   ./apl-setup /path/to/workspace            (macOS / Linux)
+   ./apl-setup /path/to/workspace            (macOS)
    ```
+
+Linux アーカイブは開発・CI 専用です。通常の `serve` は `PLATFORM_UNSUPPORTED` で停止します。`M365_AGENT_ALLOW_UNSUPPORTED_OS=1` は開発者向けの例外で、一般利用の導入手順ではありません。Remote SSH・WSL・コンテナー等はこの指定でも利用できません。
 
 Node.js は同梱されているため、別途インストールする必要はありません。アップグレードは、新しいアーカイブを展開して同じコマンドを再実行するだけです（`apl-setup <ワークスペース>`）。以前の版に戻す場合は `apl self use <version>` を実行します。
 
@@ -140,4 +142,10 @@ AgentPickLink は、Microsoft 365 Copilot の Web 画面を、利用者自身の
 - [利用 OSS・第三者ソフトウェア一覧](release-docs/OSS-LICENSES.md)
 - [第三者ソフトウェアの著作権・ライセンス全文](release-docs/THIRD-PARTY-NOTICES.txt)
 
-開発者向けには `agent-pick-link-0.2.0-source.zip` を配布します。依存関係は `package-lock.json` に固定しており、展開したソースのみでインストール・テスト・ビルドできます。
+開発者向けには `agent-pick-link-0.2.1-source.zip` を配布します。依存関係は `package-lock.json` に固定しており、展開したソースのみでインストール・テスト・ビルドできます。
+
+## CLI の出力・削除時の確認
+
+`--json` のコマンド結果は stdout の単一 JSON オブジェクトです。進捗・確認は stderr に出ます（`serve` は MCP 通信専用、ヘルプ・版表示は対象外）。`doctor` は正常 0、問題あり 1、診断実行失敗 2。`install` は完了・dry-run 0、拒否・引数不正・導入失敗 1、クライアント未反映 2、一部導入・検証失敗 3 です。
+
+`self uninstall` は正規のインストール情報と実体を検証し、対象ブローカーの終了を確認してから削除します。`--yes` は確認の省略だけです。`--purge-data` は共有データを削除するため、別インストールのブローカーが稼働中なら拒否します。削除後も起動競合を防ぐ空の `broker/startup.lock` は残します。壊れたインストールは同じ場所に再インストールして修復してから削除してください。

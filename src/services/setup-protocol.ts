@@ -75,6 +75,7 @@ export type DevModeInfo = { insecureLoopback: boolean; devAppUrl: boolean };
 
 export type PanelState = {
   phase: PanelPhase;
+  clientApplication?: "complete" | "partial" | "not-selected";
   /** Extension-only explicit machine installation offer. */
   machineInstall?: { installedVersion?: string; updateAvailable: boolean };
   status?: SetupStatus;

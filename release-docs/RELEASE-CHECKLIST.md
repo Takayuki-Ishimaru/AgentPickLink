@@ -1,42 +1,36 @@
-# リリース時の検証範囲
+# 対応環境と検証範囲
 
-v0.2.0 の検証範囲を示します。公開 CI の結果は [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) から確認できます。ローカルの自動テストと実機確認は、公開 CI の結果を代替しません。
+v0.2.1 Beta の対応環境と確認範囲を説明します。
 
-## CI に定義した検証
+## 対応環境
 
-| 確認項目                                                                   | 対象                                             |
-| -------------------------------------------------------------------------- | ------------------------------------------------ |
-| 型チェック、lint、単体・契約・結合テスト                                   | Windows / macOS / Ubuntu                         |
-| TOML の対象外設定の保持、バックアップ、保存失敗時の動作                    | Windows / macOS / Ubuntu                         |
-| 実ブラウザー上の模擬画面による完了判定・添付取得                           | Windows: Edge / macOS: Chromium / Ubuntu: Chrome |
-| JSON Schema と実装の同期                                                   | Windows / macOS / Ubuntu                         |
-| VSIX の作成・展開、同梱 CLI / MCP の接続とローカル接続プロセスの起動・停止 | Windows / macOS / Ubuntu                         |
-| ポータブルアーカイブの組み立てと、同梱 Node.js による CLI / MCP の起動確認 | Windows x64 / macOS arm64 / Ubuntu x64           |
+- **Windows 11 / Microsoft Edge**: 主な利用対象です。
+- **macOS / Microsoft Edge または Google Chrome**: 開発・検証向けです。
+- **Linux**: 開発・CI 専用です。通常の利用は対象外で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。
+- **VS Code**: ローカルで開いた単一フォルダーを対象とします。WSL、Remote SSH、Dev Containers、Codespaces、マルチルートのワークスペース、リモート MCP サーバー、無人運転には対応しません。
 
-CI は Node.js 22 / 24 を対象とし、Node.js 24 の各 OS ジョブで、その OS 向けのポータブルアーカイブを作成して起動確認します。他の CPU アーキテクチャ向けのアーカイブは CI では作成しません。
+Windows ARM64、macOS Intel、Linux x64 のアーカイブも配布しますが、この版での各実機の動作は未確認です。配布物の有無は、すべての環境での動作保証を意味しません。
 
-Windows の CI は Windows Server を使用します。Ubuntu は実験的な検証対象です。これらの成功は、すべての OS バージョンや実際の VS Code 画面での動作確認を意味しません。
+## 自動検証の範囲
 
-## 確認済みの利用環境
+公開 CI は Windows・macOS・Ubuntu、Node.js 22 / 24 で、型チェック、テスト、模擬ブラウザー画面の操作、設定スキーマ、配布パッケージの作成と起動を確認する構成です。結果は公開リポジトリの [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) で、対象バージョンまたはコミットを選んで確認してください。
 
-- Windows 11 x64 と Microsoft Edge: アーカイブからの導入、診断、VS Code / Codex 設定からの MCP 接続、別のワークスペースへの導入、アップグレード、以前の版への切り戻し、VSIX との共存、旧形式の連携設定の移行を確認しています。アンインストール後も設定と専用ブラウザープロファイルは保持されます。
-- macOS（Apple Silicon）: アーカイブからの導入、Gatekeeper と隔離属性の扱い、Claude Code / Codex CLI への登録と除去、同梱 Node.js による MCP 接続を確認しています。
-- macOS（Intel）: Rosetta 上での起動確認のみです。
-- Windows ARM64 / Linux x64: 配布アーカイブを用意していますが、実機での動作は未確認です。
+ブラウザーの自動テストはローカルの模擬画面を使用し、VS Code のテストは API モックを使用します。実 Microsoft 365 テナントや実際の VS Code 画面を操作する試験ではありません。Windows の CI ランナーも Windows 11 のデスクトップ実機とは異なります。ソースからの確認方法は [開発者向けガイド](DEVELOPMENT.md) を参照してください。
 
-SmartScreen、AppLocker / WDAC、Windows の Explorer からのダブルクリック起動は未確認です。組織での導入前に、[管理者向けノート](MANAGED-ENVIRONMENTS.md) に沿って利用環境で確認してください。
+## この版で未確認の範囲
 
-## 実 Microsoft 365 テナント
+この版では、Windows 実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。以前の版での確認結果を、この版の動作保証として扱いません。
 
-このリリースで確認した範囲（Windows 11 x64、Edge、日本語 UI、職場アカウント、アーカイブからの導入）: サインイン（既存セッションの再利用を含む）、エージェント一覧の取得、選択したエージェントの承認・保存、`doctor`、VS Code / Codex 設定からの MCP 接続、会話の作成・終了、VS Code のチャットでの 3 ツール表示。
+特に、AI クライアントからの質問・回答・生成ファイル取得、エージェントの種類や表示言語による差、MFA・条件付きアクセスを伴う再サインインは、利用するテナントで確認してください。セットアップでの保存完了は、実際の質問・回答やファイルの内容の正しさまで確認したことを意味しません。
 
-このリリースでは、次の確認は未実施です。
+SmartScreen、AppLocker / WDAC、Gatekeeper などの実行制御や、組織のクライアント設定によって起動・接続が制限される場合があります。導入方法と確認点は [管理者向けノート](MANAGED-ENVIRONMENTS.md) を参照してください。
 
-- 質問の送信と回答・生成ファイルの取得（AI クライアント経由）。単一ファイル・複数 PDF・PDF と ZIP が混在する応答。
-- 英語 UI と、Agent Builder / Copilot Studio（M365 公開）などのエージェント種別ごとの会話。
-- MFA や条件付きアクセスを伴う再サインイン。
-- 拡張機能のパネルからのサインイン・一覧取得・承認保存の一連の操作（実 VS Code 画面）。拡張機能の起動と MCP 登録は Windows で確認済み。
-- Claude Code / Codex 本体からの利用。
-- macOS での実テナント確認（この版）。
+## English
 
-実ブラウザーの自動テストはローカルの模擬画面を使用します。テナント固有の設定、アクセス権限、Microsoft 365 の画面変更による影響は別途確認が必要です。
+v0.2.1 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
+
+Public CI is configured for Windows, macOS, and Ubuntu with Node.js 22 / 24. It uses local mock browser pages and VS Code API mocks, and does not verify a live tenant or the actual VS Code interface. Select the relevant version or commit in [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) to view its results.
+
+Additional Windows desktop, live-tenant, and actual VS Code interface checks have not been performed for this version. Native Windows ARM64, Intel Mac, and Linux x64 operation is unverified for this version. Earlier checks do not establish compatibility for the current version. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content.
+
+See [Managed environments](MANAGED-ENVIRONMENTS.en.md) for execution controls and client policy considerations.

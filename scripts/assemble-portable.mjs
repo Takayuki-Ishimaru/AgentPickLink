@@ -274,8 +274,11 @@ async function writeReadmeInstall(stageDir) {
 
    \`\`\`
    .\\apl-setup C:\\path\\to\\workspace          (Windows: cmd or PowerShell)
-   ./apl-setup /path/to/workspace              (macOS / Linux)
+   ./apl-setup /path/to/workspace              (macOS)
    \`\`\`
+
+Linux archives are for development/CI only. Normal Linux use is unsupported; the standard
+\`serve\` command returns \`PLATFORM_UNSUPPORTED\`.
 
 Node.js is bundled in \`runtime/\` -- you do not need to install it yourself. \`runtime/LICENSE-node\` is the
 Node.js license for that bundled runtime.

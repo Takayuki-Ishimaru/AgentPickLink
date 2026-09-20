@@ -308,8 +308,14 @@
     vscode.postMessage(message);
   }
 
+  var transportPending = false;
+  var transportExpired = false;
   function busy() {
-    return ["checking", "signing-in", "discovering", "saving"].indexOf(state.phase) >= 0;
+    return (
+      transportPending ||
+      transportExpired ||
+      ["checking", "signing-in", "discovering", "saving"].indexOf(state.phase) >= 0
+    );
   }
 
   function canSave() {
@@ -389,7 +395,7 @@
       h("div", {
         class: "connection-status",
         role: "status",
-        text: busy() ? strings.phase[state.phase] : connection
+        text: busy() ? strings.phase[state.phase] || connection : connection
       }),
       h("p", {
         class: "workspace-state",
@@ -400,6 +406,58 @@
             : strings.workspacePending
       }),
       h("p", { class: "muted", text: approved ? strings.updatingSummary : "" })
+    );
+  }
+
+  function completionSection() {
+    var ja = state.locale === "ja";
+    var status = state.status;
+    var completed = ja ? "確認済み" : "Confirmed";
+    var pending = ja ? "未確認" : "Not checked";
+    var rows = [];
+    function row(label, result) {
+      rows.push(h("dt", { text: label }), h("dd", { text: result }));
+    }
+    row(
+      ja ? "サインイン" : "Sign-in",
+      status && status.broker.authState && status.broker.authState.state === "authenticated"
+        ? completed
+        : pending
+    );
+    row(
+      ja ? "エージェント選択" : "Agent selection",
+      local.selected.size ? String(local.selected.size) + (ja ? " 件を選択" : " selected") : pending
+    );
+    row(
+      ja ? "このワークスペースの承認" : "Workspace approval",
+      status && status.workspace.approvalStatus === "approved" ? completed : pending
+    );
+    row(
+      ja ? "選んだクライアントへの反映" : "Selected client configuration",
+      state.clientApplication === "complete" && !local.integrations
+        ? completed
+        : state.clientApplication === "partial"
+          ? ja
+            ? "一部未完了。警告を確認"
+            : "Incomplete; check warnings"
+          : state.clientApplication === "not-selected"
+            ? ja
+              ? "連携の選択なし"
+              : "No integrations selected"
+            : pending
+    );
+    row(ja ? "MCP 接続確認" : "MCP connection", ja ? "クライアント側で確認が必要" : "Check in your client");
+    return h(
+      "details",
+      { class: "completion-section" },
+      h("summary", { text: ja ? "セットアップの完了条件" : "Setup completion checks" }),
+      h("dl", { class: "technical-status" }, rows),
+      h("p", {
+        class: "muted",
+        text: ja
+          ? "MCP クライアントで m365_agent_list が使えることを確認してください。保存や接続の成功は M365 の回答を保証しません。質問を送るテストは、内容を確認して明示的に実行してください。"
+          : "Confirm m365_agent_list works in your MCP client. Saving and connecting do not verify M365 responses. Send a test question only as an explicit action after reviewing its content."
+      })
     );
   }
 
@@ -1122,6 +1180,7 @@
     while (app.firstChild) app.removeChild(app.firstChild);
     [
       statusSection(),
+      completionSection(),
       signInBanner(),
       progressLine(),
       noticeBanner(),
@@ -1193,6 +1252,11 @@
   }
 
   function receive(message) {
+    if (message && message.type === "transport") {
+      transportPending = message.pending;
+      transportExpired = message.expired;
+      render();
+    }
     if (message && message.type === "state" && message.state) accept(message.state);
   }
   if (window.aplBrowser) window.aplBrowser.onMessage(receive);

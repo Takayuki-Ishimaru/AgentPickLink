@@ -165,14 +165,14 @@ describe("applyIntegrations", () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "apl-ws-"));
     await mkdir(path.join(workspace, ".vscode"), { recursive: true });
     const target = path.join(workspace, ".vscode", "mcp.json");
-    await writeFile(target, "// comment\n{}\n", "utf8");
+    await writeFile(target, "// comment\n{ broken }\n", "utf8");
     const summary = await applyIntegrations(
       { definition: block, homeDirectory: home, workspaceRoot: workspace },
       { codex: false, claudeCode: false, vscodeMcpJson: true }
     );
     expect(summary.written).toEqual([]);
-    expect(summary.skipped[0]).toContain("not plain JSON");
-    expect(await readFile(target, "utf8")).toBe("// comment\n{}\n");
+    expect(summary.skipped[0]).toContain("invalid JSONC");
+    expect(await readFile(target, "utf8")).toBe("// comment\n{ broken }\n");
   });
 });
 
@@ -220,7 +220,7 @@ describe("integrationNeedsRefresh", () => {
     });
 
     it("is false (never throws) for unparseable JSON", () => {
-      expect(integrationNeedsRefresh("// comment\n{}\n", block, "vscodeMcpJson")).toBe(false);
+      expect(integrationNeedsRefresh("// comment\n{ broken }\n", block, "vscodeMcpJson")).toBe(false);
     });
   });
 });
@@ -470,7 +470,7 @@ describe("parseJsonEntry / parseCodexEntry", () => {
 describe("integrationEntryStatus", () => {
   it("is absent when the file has no m365-agents entry, or does not exist", () => {
     expect(integrationEntryStatus(JSON.stringify({ servers: {} }), "vscodeMcpJson", block)).toBe("absent");
-    expect(integrationEntryStatus("// comment\n{}\n", "vscodeMcpJson", block)).toBe("absent");
+    expect(integrationEntryStatus("// comment\n{ broken }\n", "vscodeMcpJson", block)).toBe("absent");
   });
 
   it("is managed when the ownership marker is present", () => {

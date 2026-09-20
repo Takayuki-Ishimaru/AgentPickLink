@@ -940,6 +940,11 @@ export class SetupController {
       const status = await this.setup().status();
       this.patch({
         phase: "done",
+        clientApplication: !Object.values(input.integrations).some(Boolean)
+          ? "not-selected"
+          : summary.skipped.length || summary.warnings?.length
+            ? "partial"
+            : "complete",
         notice: connected ? undefined : "saved-needs-sign-in",
         error: connectionError,
         discoverySummary: undefined,

@@ -3,7 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { attachmentMediaType } from "../domain/attachment-media.js";
-import { FILE_GENERATION_INSTRUCTIONS } from "./file-generation-guidance.js";
+import {
+  FILE_GENERATION_INSTRUCTIONS,
+  CORE_INSTRUCTIONS,
+  FILE_GENERATION_GUIDANCE_URI
+} from "./file-generation-guidance.js";
 import { createToolHandlers, TOOL_DESCRIPTIONS, type ToolCallResult } from "./tools.js";
 import { decodeUtf8Exact, isTextLikeMediaType } from "./tool-results.js";
 import {
@@ -355,7 +359,7 @@ export async function createSdkServer(
       title: "AgentPickLink for M365",
       version: PACKAGE_VERSION
     },
-    { instructions: FILE_GENERATION_INSTRUCTIONS }
+    { instructions: CORE_INSTRUCTIONS }
   );
   for (const tool of PUBLIC_TOOLS) {
     // MCP SDK v2 accepts JSON-schema objects for the low-level registration path, and it runs
@@ -405,6 +409,18 @@ export async function createSdkServer(
       }
     );
   }
+  server.registerResource(
+    "file-generation-guidance",
+    FILE_GENERATION_GUIDANCE_URI,
+    {
+      title: "File generation and validation",
+      mimeType: "text/plain",
+      description: "Read before requesting files: format-specific portability and verification guidance."
+    },
+    async (uri: URL) => ({
+      contents: [{ uri: uri.href, mimeType: "text/plain", text: FILE_GENERATION_INSTRUCTIONS }]
+    })
+  );
   if (options?.attachmentsDirectory) {
     const attachmentsDirectory = options.attachmentsDirectory;
     const maxAttachmentReadBytes = options.maxAttachmentReadBytes ?? ATTACHMENT_MAX_BYTES;

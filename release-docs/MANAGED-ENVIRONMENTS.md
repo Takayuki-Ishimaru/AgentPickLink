@@ -4,10 +4,10 @@
 
 このページは、AgentPickLink の **拡張機能なしインストール経路**（GitHub Release からポータブルアーカイブを
 ダウンロードして展開し、`apl-setup <ワークスペース>` を 1 回実行する方式。VS Code 拡張機能のインストール
-は不要）を評価・展開する IT・セキュリティ管理者向けです。この経路は **v0.2.0** に含まれます。
-本書は実装済みの導入方法を説明します。Windows 11 x64 の実機と職場アカウントでの導入、アップグレード、
-切り戻し、VSIX との共存、アンインストールは 2026-09-13〜17 に確認済みです。SmartScreen、AppLocker / WDAC、
-Windows ARM64 と Linux の実機での実行など、環境依存の受け入れ検証は配布前に別途必要です。
+は不要）を評価・展開する IT・セキュリティ管理者向けです。v0.2.1 の導入方法を説明します。
+Windows 11 / Microsoft Edge を主な対象とし、macOS は開発・検証向け、Linux は開発・CI 専用です。
+SmartScreen、AppLocker / WDAC などの実行制御やテナント設定による制限は、導入先で確認してください。
+この版の対応範囲は [対応環境と検証範囲](RELEASE-CHECKLIST.md) を参照してください。
 
 ## 登録される内容と識別子
 
@@ -47,6 +47,7 @@ API を通じて `<node> <拡張機能のインストール先>/dist/cli/index.j
 ```
 <home>/
   bin/node | bin/node.exe   同梱ランタイム（後述の「ランタイムの出所」を参照）
+  bin/package.json          ランチャーを CommonJS として実行するための設定
   bin/apl.js                現在の app/<version>/dist/cli/index.js を読み込むランチャー
   bin/apl | bin/apl.cmd     doctor・self・integrations 用の人間向けシム。ホストが起動することはない
   app/<version>/            インストール済みパッケージ本体。旧版は `apl self prune` まで保持される
@@ -82,7 +83,7 @@ CLI は、Microsoft 365 へのサインインとエージェントとの通信�
   `install.json` にも記録されます。`nodejs.org` が配布する公式バイナリであり、アーカイブのビルド時に
   `nodejs.org` 自身の `SHASUMS256.txt` と照合済みです。独自ビルドや改変版ではありません。
 - **コード署名。** Windows では、同梱の `node.exe` は Authenticode 署名済みで、発行者は OpenJS
-  Foundation です（Node.js 24.21.0 x64、2026-09-13にWindows Authenticodeで有効な署名を確認）。本書の記載をそのまま信頼せず、Sysinternals の `sigcheck -a bin\node.exe`
+  Foundation です。本書の記載をそのまま信頼せず、Sysinternals の `sigcheck -a bin\node.exe`
   などで各自確認してください。macOS では、同梱の `node` バイナリはコード署名済みで、
   `codesign -dv --verbose=4 bin/node` で確認できます。
 - **アーカイブの整合性。** すべての GitHub Release には、アーカイブと並んで `SHA256SUMS` が含まれます。

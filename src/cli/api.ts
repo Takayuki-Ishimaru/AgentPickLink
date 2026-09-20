@@ -1,3 +1,4 @@
+import { toToolError } from "./ui/formatter.js";
 import type { AgentView, ToolError } from "../frontend/schemas.js";
 import type { AgentCandidate } from "../services/setup-service.js";
 import type { InstallCommandOptions, InstallReport } from "./commands/install.js";
@@ -85,8 +86,7 @@ export async function runCommand(context: CliContext, action: () => Promise<unkn
     printResult(context, result);
     if (isCliError(result)) process.exitCode = 1;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Command failed.";
-    context.error(message);
+    printResult(context, toToolError(error));
     process.exitCode = 1;
   }
 }

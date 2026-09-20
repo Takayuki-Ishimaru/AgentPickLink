@@ -21,7 +21,7 @@ export function createTtyPrompter(): Prompter {
   return {
     interactive,
     async question(text: string): Promise<string> {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
       try {
         return (await rl.question(text)).trim();
       } finally {

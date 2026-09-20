@@ -1,10 +1,10 @@
 # 開発者向けガイド
 
-v0.2.0 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
+v0.2.1 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
 
 ## 準備
 
-Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.0-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
+Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.1-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-生成物は `dist-vsix/agent-pick-link-0.2.0.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
+生成物は `dist-vsix/agent-pick-link-0.2.1.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
 
 ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。
 
@@ -49,7 +49,7 @@ node dist/cli/index.js --help
 node dist/cli/index.js --version
 ```
 
-`examples/mcp.json` は、v0.2.0 の拡張機能なしインストール（`apl-setup`）が書き込む固定識別子（Windows は `${env:LOCALAPPDATA}\AgentPickLink\bin\node.exe` + `bin\apl.js serve`。macOS・Linux は `${userHome}/.local/share/AgentPickLink/bin/node` + `bin/apl.js serve`）の例です。拡張機能を介さずソースビルドへ直接接続する場合は、`command` と `args` の先頭要素をビルド先の `node` 実行ファイルと `dist/cli/index.js` の絶対パスに置き換えてください。
+`examples/mcp.json` は、ビルドした MCP サーバーへ接続する設定例です。`command` と `args` のパスを、使用する Node.js とビルド先の `dist/cli/index.js` の絶対パスに置き換えてください。ポータブル版の固定ランチャーを使う場合は、[管理者向けノート](MANAGED-ENVIRONMENTS.md) を参照してください。
 
 VSIX を ZIP として別のフォルダへ展開した後、その `extension/` ディレクトリに対して次を実行できます。
 
@@ -64,8 +64,9 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 拡張機能なしの導入用アーカイブは、`npm pack` の出力に公式の Node.js ランタイムと `apl-setup` の起動スクリプトを加えて作成します。
 
 ```sh
+mkdir -p output/portable-pack
 npm pack --pack-destination output/portable-pack
-node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.0.tgz --platform host --out output/portable --smoke
+node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.1.tgz --platform host --out output/portable --smoke
 ```
 
 `--platform` には `win-x64`、`win-arm64`、`darwin-arm64`、`darwin-x64`、`linux-x64` を複数指定できます。Node.js は `scripts/assemble-portable.mjs` の `PINNED_NODE_VERSION`（24.21.0）を nodejs.org から取得し、公式の `SHASUMS256.txt` と照合します。`--cache <dir>` で取得済みのランタイムを再利用し、`--node-version` で版を上書きできます。出力先には `AgentPickLink-<版>-<platform>.zip` / `.tgz` と、各アーカイブの SHA-256 を記録した `SHA256SUMS` が作成されます。`--smoke` は実行中の OS と一致するアーカイブを展開し、同梱 Node.js で CLI と MCP 接続、ローカル接続プロセスの起動・停止を確認します。他の OS 向けアーカイブは、それぞれの OS で `npm run smoke:package -- <展開先> --node <展開先>/runtime/node` を実行して確認してください。

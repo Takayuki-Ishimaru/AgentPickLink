@@ -81,7 +81,7 @@ function createCommandDeps(): CommandDeps {
       process.stderr.write(text);
     },
     stdout: (text) => {
-      process.stdout.write(text);
+      (process.argv.includes("--json") ? process.stderr : process.stdout).write(text);
     },
     preparer: browserLocalStatePreparer,
     workspaces: new WorkspaceService(),

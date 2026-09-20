@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DomainError } from "../domain/errors.js";
+import { toToolError } from "./ui/formatter.js";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { formatInstallReport } from "./commands/install.js";
 import { pickLocaleFromEnv } from "../services/localize.js";
 import { createDefaultCliApi } from "./runtime.js";
-import { isCliError, runCommand, type CliApi, type CliContext } from "./api.js";
+import { isCliError, printResult, runCommand, type CliApi, type CliContext } from "./api.js";
 
 /** Repeatable-option accumulator for commander (`--workspace <path>` may be given more than once). */
 function collect(value: string, previous: string[]): string[] {
@@ -15,7 +17,7 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
-  const program = new Command();
+  const program = new Command().exitOverride();
   program.name("m365-agent").description("AgentPickLink for M365").version(PACKAGE_VERSION);
   program
     .option("--json", "emit machine-readable JSON")
@@ -43,7 +45,17 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   leaf(program.command("login"), () => api.login());
   leaf(program.command("logout"), () => api.logout({ yes: context().yes }));
   const doctor = program.command("doctor").option("--agent <alias>").option("--auth");
-  doctor.action((opts: { agent?: string; auth?: boolean }) => runCommand(context(), () => api.doctor(opts)));
+  doctor.action(async (opts: { agent?: string; auth?: boolean }) => {
+    const ctx = context();
+    try {
+      const result = await api.doctor(opts);
+      printResult(ctx, result);
+      process.exitCode = isCliError(result) ? 2 : result.ok === false ? 1 : 0;
+    } catch (error) {
+      printResult(ctx, toToolError(error));
+      process.exitCode = 2;
+    }
+  });
 
   const broker = program.command("broker");
   leaf(broker.command("status"), () => api.broker("status"));
@@ -54,8 +66,10 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   const add = agent.command("add").option("--capture").option("--url <url>").option("--force");
   add.action((opts: { capture?: boolean; url?: string; force?: boolean }) =>
     runCommand(context(), async () => {
-      if (opts.capture && opts.url) throw new Error("Use either --capture or --url, not both.");
-      if (!opts.capture && !opts.url) throw new Error("Specify --capture or --url <url>.");
+      if (opts.capture && opts.url)
+        throw new DomainError("INVALID_ARGUMENT", "Use either --capture or --url, not both.");
+      if (!opts.capture && !opts.url)
+        throw new DomainError("INVALID_ARGUMENT", "Specify --capture or --url <url>.");
       if (opts.capture)
         process.stderr.write(
           "A dedicated Edge window will open. Navigate to the target agent's direct 1:1 chat and leave that page visible.\n"
@@ -162,7 +176,11 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
         verbose: ctx.verbose
       });
       if (isCliError(result)) {
-        ctx.error(`${result.code}: ${result.message}${result.remediation ? `\n${result.remediation}` : ""}`);
+        if (ctx.json) ctx.out(JSON.stringify(result));
+        else
+          ctx.error(
+            `${result.code}: ${result.message}${result.remediation ? `\n${result.remediation}` : ""}`
+          );
         process.exitCode = 1;
         return;
       }
@@ -263,7 +281,25 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
 }
 
 export async function main(argv = process.argv): Promise<void> {
-  await buildProgram().parseAsync(argv);
+  const program = buildProgram().exitOverride();
+  const json = argv.slice(2).includes("--json");
+  const configure = (command: Command): void => {
+    command.configureOutput({ writeErr: () => undefined });
+    command.commands.forEach(configure);
+  };
+  configure(program);
+  try {
+    await program.parseAsync(argv);
+  } catch (error) {
+    if (error instanceof CommanderError && error.exitCode === 0) return;
+    const result =
+      error instanceof CommanderError
+        ? { code: "INVALID_ARGUMENT", message: error.message, retryable: false }
+        : toToolError(error);
+    if (json) process.stdout.write(`${JSON.stringify(result)}\n`);
+    else process.stderr.write(`${result.code}: ${result.message}\n`);
+    process.exitCode = 1;
+  }
 }
 
 /**

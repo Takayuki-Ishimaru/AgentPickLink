@@ -49,8 +49,8 @@ export function assertSupportedTopology(
     environment.M365_AGENT_ALLOW_UNSUPPORTED_OS !== "1"
   ) {
     throw new DomainError(
-      "REMOTE_HOST_UNSUPPORTED",
-      "AgentPickLink requires local Windows 11 (production) or macOS (development) desktop execution."
+      "PLATFORM_UNSUPPORTED",
+      "This OS is not supported for normal use. Use local Windows 11 (production) or macOS (development). Linux artifacts are for development/CI only; M365_AGENT_ALLOW_UNSUPPORTED_OS=1 is a development override and does not enable Remote, WSL or containers."
     );
   }
   if (

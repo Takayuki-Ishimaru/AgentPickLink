@@ -1,3 +1,4 @@
+import { editVscodeServer, parseVscodeSettings } from "./jsonc-settings.js";
 /**
  * Opt-in AI-client integrations. Every writer is a pure function over the existing file text so it
  * can be unit tested without a filesystem (`tests/extension/integrations.test.ts`) and so an
@@ -452,7 +453,10 @@ export function parseJsonEntry(
   kind: JsonIntegrationKind
 ): ParsedIntegrationEntry | undefined {
   const containerKey = containerKeyFor(kind);
-  const document = parseJsonObject(existing, jsonFileLabel(kind));
+  const document =
+    kind === "vscodeUser" || kind === "vscodeMcpJson"
+      ? parseVscodeSettings(existing).value
+      : parseJsonObject(existing, jsonFileLabel(kind));
   const container = document[containerKey];
   if (typeof container !== "object" || container === null || Array.isArray(container)) return undefined;
   const entry = (container as Record<string, unknown>)[MCP_SERVER_NAME];
@@ -872,6 +876,7 @@ function setJsonMember(
   containerKey: "mcpServers" | "servers",
   value: Record<string, unknown>
 ): string {
+  if (containerKey === "servers") return editVscodeServer(existing, value);
   const before = parseJsonObject(existing, file);
   if (existing === undefined || existing.trim().length === 0) {
     nestedObject(before, containerKey)[MCP_SERVER_NAME] = value;
@@ -939,6 +944,7 @@ function setJsonMember(
  * `removeCodexConfigToml`'s own contract below.
  */
 function deleteJsonMember(existing: string, file: string, containerKey: "mcpServers" | "servers"): string {
+  if (containerKey === "servers") return editVscodeServer(existing, undefined);
   const before = parseJsonObject(existing, file);
   const root = asJsonObject(scanJsonDocument(existing));
   if (!root) throw new Error(`${file} does not contain a JSON object.`);
@@ -1016,7 +1022,7 @@ export function mergeClaudeUserMcpJson(
 
 /* ------------------------------------------------------------------ remove writers */
 
-export type RemoveOptions = { force?: boolean };
+export type RemoveOptions = { force?: boolean; requireIdentityMatch?: boolean };
 
 function refuseForeign(
   file: string,
@@ -1266,6 +1272,10 @@ async function removeClaudeUser(
     if (existing === undefined) return;
     const status = integrationEntryStatus(existing, "claudeUser", context.definition);
     if (status === "absent") return;
+    if (opts.requireIdentityMatch && integrationNeedsRefresh(existing, context.definition, "claudeUser")) {
+      summary.skipped.push(`${file}: belongs to another installation; left untouched.`);
+      return;
+    }
     if (status === "foreign" && !opts.force) {
       summary.skipped.push(
         `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`
@@ -1517,6 +1527,13 @@ export async function removeIntegrations(
       if (existing === undefined) return;
       const status = integrationEntryStatus(existing, kind, context.definition, context.variables);
       if (status === "absent") return;
+      if (
+        opts.requireIdentityMatch &&
+        integrationNeedsRefresh(existing, context.definition, kind, context.variables)
+      ) {
+        summary.skipped.push(`${file}: belongs to another installation; left untouched.`);
+        return;
+      }
       if (status === "foreign" && !opts.force) {
         summary.skipped.push(
           `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`

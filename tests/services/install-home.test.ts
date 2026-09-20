@@ -518,7 +518,15 @@ describe("listVersions / useVersion / pruneVersions", () => {
 
   it("useVersion re-points bin/apl.js at an already-staged version", async () => {
     await withTempDir(async (home) => {
-      await fs.mkdir(path.join(home, "app", "3.0.0"), { recursive: true });
+      await fs.mkdir(path.join(home, "app", "3.0.0", "dist", "cli"), { recursive: true });
+      await fs.writeFile(
+        path.join(home, "app", "3.0.0", "package.json"),
+        JSON.stringify({ name: "agent-pick-link", version: "3.0.0", type: "module" })
+      );
+      await fs.writeFile(
+        path.join(home, "app", "3.0.0", "dist", "cli", "index.js"),
+        "export function runCli() {}\n"
+      );
       await useVersion({ home, version: "3.0.0", platform: "darwin" });
       const content = await fs.readFile(path.join(home, "bin", "apl.js"), "utf8");
       expect(content).toContain('"3.0.0"');

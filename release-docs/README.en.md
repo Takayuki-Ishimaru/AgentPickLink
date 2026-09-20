@@ -8,7 +8,7 @@
 
 [日本語](README.md) | [English](README.en.md)
 
-**v0.2.0 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.1 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,13 +16,13 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.0
+## What's new in v0.2.1
 
-- Portable archives bundle Node.js and set up AgentPickLink without a VS Code extension.
-- `--browser` opens the shared setup page; roster approval and capability widening remain in the terminal.
-- VSIX and archive installs share one machine installation, with an explicit update action in the extension panel.
-- Dry-run writes nothing; multiple workspaces reuse discovery; installation includes doctor checks; pruning asks for confirmation.
-- Broker restart and shutdown handling and diagnostics (`broker.log`) are improved, and a first-launch browser failure on Windows is fixed.
+- Uninstall checks the target installation and waits for its connection process to exit, preserving settings for other installations.
+- VS Code configuration updates preserve comments and other MCP server settings.
+- Browser setup shows connection errors and recovery steps, and prevents duplicate operations while a request is pending.
+- The setup page shows the readiness of sign-in, agent selection, approval, and client integration separately.
+- CLI JSON output and diagnostic exit codes are consistent, and the launcher now works when installed inside an ESM project.
 
 See the [release notes](CHANGELOG.md) for details.
 
@@ -37,25 +37,25 @@ You can install Node.js 22 or later to provide an explicit runtime. Otherwise, t
 
 WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported. Compatibility with every Microsoft 365 agent or interface layout is not guaranteed.
 
-Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu remains experimental. CI does not verify a live Microsoft 365 tenant or the actual VS Code interface. See the [validation scope](DEVELOPMENT.md).
+Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a development/CI test target and is not supported for normal use. CI does not verify a live Microsoft 365 tenant or the actual VS Code interface. See the [validation scope](DEVELOPMENT.md).
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.0.vsix` from **Releases → v0.2.0 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.1.vsix` from **Releases → v0.2.1 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.0.vsix
+code --install-extension agent-pick-link-0.2.1.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
-### Updating from v0.1.0 through v0.1.3
+### Updating from v0.2.0 or earlier
 
-Install the v0.2.0 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.1 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
 ## Install without the extension
 
@@ -67,8 +67,10 @@ Install the v0.2.0 VSIX using the same steps, then reload VS Code. Your existing
 
    ```
    .\apl-setup C:\path\to\workspace          (Windows)
-   ./apl-setup /path/to/workspace            (macOS / Linux)
+   ./apl-setup /path/to/workspace            (macOS)
    ```
+
+Linux archives are for development/CI only. Normal `serve` exits with `PLATFORM_UNSUPPORTED`. `M365_AGENT_ALLOW_UNSUPPORTED_OS=1` is a developer override, not a normal installation procedure; Remote SSH, WSL and container restrictions still apply.
 
 Node.js is bundled, so you never need to install it yourself. To upgrade, extract a newer archive and run the same command again (`apl-setup <workspace>`). To roll back to a previous version, run `apl self use <version>`.
 
@@ -140,7 +142,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.0-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.1-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -151,4 +153,10 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.0.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.1.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+
+## CLI output and uninstall checks
+
+With `--json`, command results are a single stdout JSON object; progress and prompts go to stderr (`serve` remains MCP-only; help/version display is excluded). `doctor` exits 0 for healthy, 1 for findings, and 2 for execution failure. `install` exits 0 for complete/dry-run, 1 for refusal/invalid arguments/installation failure, 2 for no client configured, and 3 for partial installation or verification failure.
+
+`self uninstall` validates the installation metadata and files, then waits for its broker to exit before removing files. `--yes` only skips confirmation. `--purge-data` refuses while another installation's broker uses the shared data. The empty `broker/startup.lock` remains to preserve startup coordination. Repair a damaged installation by reinstalling to the same location before uninstalling.

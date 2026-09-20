@@ -438,6 +438,10 @@ const ERROR_CODE_TEXT = {
     ja: "マルチルートワークスペースには対応していません。",
     en: "Multi-root workspaces are not supported."
   },
+  PLATFORM_UNSUPPORTED: {
+    ja: "このOSは通常利用の対象外です。Linux配布物は開発・CI用です。",
+    en: "This OS is not supported for normal use. Linux artifacts are for development/CI."
+  },
   REMOTE_HOST_UNSUPPORTED: {
     ja: "リモート環境では利用できません。",
     en: "This does not run against a remote host."

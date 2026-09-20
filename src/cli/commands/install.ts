@@ -1,3 +1,4 @@
+import lockfile from "proper-lockfile";
 /**
  * `m365-agent install` -- the command behind the portable archive's `apl-setup` launcher
  * (docs/extension-less-onboarding.md §3.1, WP-B). Composes, in the panel's own order, exactly the
@@ -724,6 +725,7 @@ async function runSetupWithBrokerRecovery(
 }
 
 export async function runInstall(deps: CommandDeps, options: InstallCommandOptions): Promise<InstallReport> {
+  if (options.json) deps = { ...deps, stdout: deps.stderr };
   if (options.fromExtension && options.dev)
     throw new DomainError("INVALID_ARGUMENT", "--from-extension and --dev cannot be combined.");
   if (options.browser && !options.dryRun && !deps.prompter.interactive)
@@ -937,110 +939,400 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
     };
   }
 
-  /* -------------------------------------------------------------- stage */
-  const identity =
-    runtimeSource === "electron"
-      ? { command: nodeBinary, args: [path.join(home, "app", version, "dist", "cli", "index.js"), "serve"] }
-      : identityFor({ home, platform: deps.platform });
-  // P1-6: tracks how far staging got, so a failure after `stageVersion` can roll back the
-  // half-installed `app/<version>` (best effort) instead of leaving `self status`/`self use`
-  // pointing at a version with no runtime or launchers. Never set when this version was already
-  // staged in place (`install --dev` and the "already staged" branch below) -- there is nothing of
-  // ours to roll back in either case, and the former would delete the very checkout being run.
-  let stagedVersionPath: string | undefined;
-  let migratedRemovals: PlannedRemoval[];
+  await ensurePrivateDirectories([home]);
+  const release = await lockfile.lock(home, { realpath: true, retries: 0 });
   try {
-    deps.stdout(`${t("installStaging")}\n`);
-    // P1-12: current-user-only from the first byte written under `<home>`, on the same footing as
-    // `initializeLocalState`'s app-data root (src/config/init.ts) -- `<home>` is deliberately a
-    // separate tree (docs/extension-less-onboarding.md §4.2) so it needs its own privacy pass.
-    await ensurePrivateDirectories([home, path.join(home, "bin"), path.join(home, "app")]);
-    if (isDev) {
-      deps.stdout(`${t("installDevNotice")}\n`);
-    } else {
-      const alreadyStaged = path.resolve(packageRoot) === path.resolve(home, "app", version);
-      if (alreadyStaged) deps.stdout(`${t("installStagingSkipped")}\n`);
-      else {
-        await stageVersion({ sourceDir: packageRoot, home, version });
-        stagedVersionPath = path.join(home, "app", version);
+    if (
+      JSON.stringify(await readInstallJson(home).catch(() => undefined)) !== JSON.stringify(priorInstallJson)
+    )
+      throw new DomainError(
+        "CONCURRENT_REQUEST",
+        "The installation changed while awaiting confirmation. Review a new install plan."
+      );
+    /* -------------------------------------------------------------- stage */
+    const identity =
+      runtimeSource === "electron"
+        ? { command: nodeBinary, args: [path.join(home, "app", version, "dist", "cli", "index.js"), "serve"] }
+        : identityFor({ home, platform: deps.platform });
+    // P1-6: tracks how far staging got, so a failure after `stageVersion` can roll back the
+    // half-installed `app/<version>` (best effort) instead of leaving `self status`/`self use`
+    // pointing at a version with no runtime or launchers. Never set when this version was already
+    // staged in place (`install --dev` and the "already staged" branch below) -- there is nothing of
+    // ours to roll back in either case, and the former would delete the very checkout being run.
+    let stagedVersionPath: string | undefined;
+    let migratedRemovals: PlannedRemoval[];
+    try {
+      deps.stdout(`${t("installStaging")}\n`);
+      // P1-12: current-user-only from the first byte written under `<home>`, on the same footing as
+      // `initializeLocalState`'s app-data root (src/config/init.ts) -- `<home>` is deliberately a
+      // separate tree (docs/extension-less-onboarding.md §4.2) so it needs its own privacy pass.
+      await ensurePrivateDirectories([home, path.join(home, "bin"), path.join(home, "app")]);
+      if (isDev) {
+        deps.stdout(`${t("installDevNotice")}\n`);
+      } else {
+        const alreadyStaged = path.resolve(packageRoot) === path.resolve(home, "app", version);
+        if (alreadyStaged) deps.stdout(`${t("installStagingSkipped")}\n`);
+        else {
+          await stageVersion({ sourceDir: packageRoot, home, version });
+          stagedVersionPath = path.join(home, "app", version);
+        }
       }
-    }
-    if (runtimeSource !== "electron" && !keepRuntime)
-      await installRuntime({
-        nodeBinary,
+      if (runtimeSource !== "electron" && !keepRuntime)
+        await installRuntime({
+          nodeBinary,
+          home,
+          platform: deps.platform,
+          ...(deps.exec ? { exec: deps.exec } : {})
+        });
+      // P1-5: a bundled runtime's version is only knowable by asking the binary we just copied.
+      // `process.version` is right for the "system Node" case (that *is* the binary being recorded)
+      // and would be a lie for the bundled one.
+      const nodeVersion =
+        runtimeSource === "bundled"
+          ? await probeRuntimeVersion(identity.command, deps.exec)
+          : process.version.replace(/^v/, "");
+      await writeLaunchers({
+        home,
+        version,
+        platform: deps.platform,
+        ...(runtimeSource === "electron" ? { electronBinary: nodeBinary } : {}),
+        ...(isDev ? { devEntry: path.join(packageRoot, "dist", "cli", "index.js") } : {})
+      });
+
+      const existingInstallJson = priorInstallJson;
+      // §4.4: an `install.json` written before the user-scope defaults existed recorded the bare
+      // vendor tokens `"vscode"`/`"claude"`, meaning the workspace/project-scope file it defaulted to
+      // back then -- map them onto their explicit spellings so the historical record is not silently
+      // dropped from `migrateLegacyEntries`'s bookkeeping.
+      const clientsWritten = new Set(
+        [...(existingInstallJson?.clients ?? [])].map((token) =>
+          token === "vscode" ? "vscode-workspace" : token === "claude" ? "claude-project" : token
+        )
+      );
+      if (selection.vscodeUser) clientsWritten.add("vscode-user");
+      if (selection.vscodeWorkspace) clientsWritten.add("vscode-workspace");
+      if (selection.claudeUser) clientsWritten.add("claude-user");
+      if (selection.claudeProject) clientsWritten.add("claude-project");
+      if (selection.codex) clientsWritten.add("codex");
+      const workspacesRecorded = new Set(existingInstallJson?.workspaces ?? []);
+      for (const workspace of workspaces) workspacesRecorded.add(workspace);
+      await writeInstallJson(home, {
+        version,
+        installedBy: isDev ? "source" : options.fromExtension ? "vsix" : "archive",
+        runtime: {
+          // §4.7 C2 `install --dev`: `install.json` records the *original* running binary, not the
+          // copy at `<home>/bin/node` (which still exists -- installRuntime() above always makes
+          // one -- so a host that only ever spawns `<home>/bin/node` still has something real to run).
+          path: isDev ? process.execPath : identity.command,
+          source: runtimeSource,
+          ...(nodeVersion ? { nodeVersion } : {})
+        },
+        identity,
+        clients: [...clientsWritten].sort(),
+        workspaces: [...workspacesRecorded].sort(),
+        platform: deps.platform,
+        updatedAt: new Date().toISOString()
+      });
+
+      // ISSUE-11 (docs/validation-log-2026-09-14-windows-round3.md S2): from here on, every broker
+      // this same `install` process spawns (its own `SetupController.runSetup()` below, and
+      // `restartPreExistingBroker`'s recovery retry) must run the machine install this run just
+      // staged -- `<home>/app/<version>/dist/broker/process.js` with `<home>/bin/node(.exe)` -- never
+      // this running process's own tree. Without this, `spawnBundledBroker()`'s default
+      // (`import.meta.url`-relative) entry resolves to wherever *this* process's own code lives (a
+      // portable extraction folder, for instance), so the freshly installed machine's `doctor` keeps
+      // reporting `install.brokerInstallRoot` even after a successful install. Skipped for `--dev`
+      // (nothing was staged to point at -- `spawnBundledBroker()`'s default already resolves to this
+      // same checkout) and for the electron runtime (only reachable via `--from-extension`, which
+      // never runs `SetupController` in this loop at all -- see the `options.fromExtension` branch
+      // below).
+      if (!isDev && runtimeSource !== "electron")
+        setBrokerSpawnTarget({
+          entry: path.join(home, "app", version, "dist", "broker", "process.js"),
+          node: identity.command
+        });
+
+      const userScopeDefinition = machineDefinition({
         home,
         platform: deps.platform,
-        ...(deps.exec ? { exec: deps.exec } : {})
-      });
-    // P1-5: a bundled runtime's version is only knowable by asking the binary we just copied.
-    // `process.version` is right for the "system Node" case (that *is* the binary being recorded)
-    // and would be a lie for the bundled one.
-    const nodeVersion =
-      runtimeSource === "bundled"
-        ? await probeRuntimeVersion(identity.command, deps.exec)
-        : process.version.replace(/^v/, "");
-    await writeLaunchers({
-      home,
-      version,
-      platform: deps.platform,
-      ...(runtimeSource === "electron" ? { electronBinary: nodeBinary } : {}),
-      ...(isDev ? { devEntry: path.join(packageRoot, "dist", "cli", "index.js") } : {})
-    });
-
-    const existingInstallJson = priorInstallJson;
-    // §4.4: an `install.json` written before the user-scope defaults existed recorded the bare
-    // vendor tokens `"vscode"`/`"claude"`, meaning the workspace/project-scope file it defaulted to
-    // back then -- map them onto their explicit spellings so the historical record is not silently
-    // dropped from `migrateLegacyEntries`'s bookkeeping.
-    const clientsWritten = new Set(
-      [...(existingInstallJson?.clients ?? [])].map((token) =>
-        token === "vscode" ? "vscode-workspace" : token === "claude" ? "claude-project" : token
-      )
-    );
-    if (selection.vscodeUser) clientsWritten.add("vscode-user");
-    if (selection.vscodeWorkspace) clientsWritten.add("vscode-workspace");
-    if (selection.claudeUser) clientsWritten.add("claude-user");
-    if (selection.claudeProject) clientsWritten.add("claude-project");
-    if (selection.codex) clientsWritten.add("codex");
-    const workspacesRecorded = new Set(existingInstallJson?.workspaces ?? []);
-    for (const workspace of workspaces) workspacesRecorded.add(workspace);
-    await writeInstallJson(home, {
-      version,
-      installedBy: isDev ? "source" : options.fromExtension ? "vsix" : "archive",
-      runtime: {
-        // §4.7 C2 `install --dev`: `install.json` records the *original* running binary, not the
-        // copy at `<home>/bin/node` (which still exists -- installRuntime() above always makes
-        // one -- so a host that only ever spawns `<home>/bin/node` still has something real to run).
-        path: isDev ? process.execPath : identity.command,
-        source: runtimeSource,
-        ...(nodeVersion ? { nodeVersion } : {})
-      },
-      identity,
-      clients: [...clientsWritten].sort(),
-      workspaces: [...workspacesRecorded].sort(),
-      platform: deps.platform,
-      updatedAt: new Date().toISOString()
-    });
-
-    // ISSUE-11 (docs/validation-log-2026-09-14-windows-round3.md S2): from here on, every broker
-    // this same `install` process spawns (its own `SetupController.runSetup()` below, and
-    // `restartPreExistingBroker`'s recovery retry) must run the machine install this run just
-    // staged -- `<home>/app/<version>/dist/broker/process.js` with `<home>/bin/node(.exe)` -- never
-    // this running process's own tree. Without this, `spawnBundledBroker()`'s default
-    // (`import.meta.url`-relative) entry resolves to wherever *this* process's own code lives (a
-    // portable extraction folder, for instance), so the freshly installed machine's `doctor` keeps
-    // reporting `install.brokerInstallRoot` even after a successful install. Skipped for `--dev`
-    // (nothing was staged to point at -- `spawnBundledBroker()`'s default already resolves to this
-    // same checkout) and for the electron runtime (only reachable via `--from-extension`, which
-    // never runs `SetupController` in this loop at all -- see the `options.fromExtension` branch
-    // below).
-    if (!isDev && runtimeSource !== "electron")
-      setBrokerSpawnTarget({
-        entry: path.join(home, "app", version, "dist", "broker", "process.js"),
-        node: identity.command
+        version,
+        appDataOverride: deps.env.M365_AGENT_APP_DATA,
+        identity,
+        electron: runtimeSource === "electron"
       });
 
-    const userScopeDefinition = machineDefinition({
+      // §4.7 C7: converge every workspace this machine has ever recorded (not only the ones passed
+      // this run) onto the identity above, before this run's own Save writes below.
+      await migrateLegacyEntries({
+        definition: userScopeDefinition,
+        homeDirectory: deps.homedir(),
+        workspaces: workspacesRecorded,
+        clientsWritten,
+        variables: integrationVariablesFor({
+          env: deps.env,
+          platform: deps.platform,
+          homedir: deps.homedir()
+        }),
+        vscodeUserDirectory,
+        claudeCliAvailable,
+        exec: deps.exec
+      });
+
+      // §4.3 item 4: for *this run's* workspaces only, remove a managed/legacy `.vscode/mcp.json` /
+      // `.mcp.json` entry whose opt-in is not selected this time -- e.g. a prior version's default
+      // write -- so VS Code stops asking to trust the folder and Claude Code stops asking to approve
+      // the project server. Never touches a foreign entry.
+      migratedRemovals = await demoteUnselectedWorkspaceFiles({
+        workspaces,
+        selection,
+        definition: userScopeDefinition,
+        homeDirectory: deps.homedir(),
+        variables: integrationVariablesFor({
+          env: deps.env,
+          platform: deps.platform,
+          homedir: deps.homedir()
+        })
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const { code: verifyErrorCode, remediation: verifyErrorRemediation } = domainErrorMeta(error);
+      // P1-6: `stageVersion` itself succeeded (we own `stagedVersionPath`) but a later step in this
+      // block failed -- best-effort delete the half-installed version rather than leaving it for
+      // `self status`/`self use` to discover in a broken state.
+      if (stagedVersionPath)
+        await fs.rm(stagedVersionPath, { recursive: true, force: true }).catch(() => undefined);
+      const remainingVersions = await listVersions(home).catch(() => []);
+      const launchersRemain = await pathExists(path.join(home, "bin", "apl.js"));
+      const partial =
+        remainingVersions.length > 0
+          ? `versions still on disk: ${remainingVersions.join(", ")}`
+          : launchersRemain
+            ? "bin/apl.js from a previous install remains on disk"
+            : undefined;
+      return {
+        dryRun: false,
+        confirmed: true,
+        version,
+        home,
+        runtime: { path: identity.command, source: runtimeSource },
+        clients: [],
+        workspaces: [],
+        uninstallCommand: "m365-agent self uninstall",
+        verified: false,
+        verifyError: partial ? `${message} (partial install left: ${partial})` : message,
+        ...(verifyErrorCode ? { verifyErrorCode } : {}),
+        ...(verifyErrorRemediation ? { verifyErrorRemediation } : {}),
+        migrations: [],
+        instructions: [],
+        exitCode: partial ? 3 : 1
+      };
+    }
+
+    /* -------------------------------------------------------------- agents + clients, per workspace */
+    const ownBrokerEntry = path.join(packageRoot, "dist", "broker", "process.js");
+    const brokerEntry = await resolveBrokerEntry(home, ownBrokerEntry);
+    const integrations = toIntegrationFlags(selection);
+    const clientFiles = new Map<ClientId, Set<string>>(CLIENT_IDS.map((id) => [id, new Set<string>()]));
+    const workspaceReports: InstallWorkspaceReport[] = [];
+    let discoverySnapshot: PanelState | undefined;
+
+    for (const workspace of workspaces) {
+      if (options.fromExtension) {
+        const files = [path.join(workspace, ".m365-agents.json")];
+        // `--from-extension` reuses whatever workspace/project-scope files the VSIX already wrote
+        // (its own settings, `agentpicklink.integrations.*`, are unchanged in meaning); the
+        // user-scope `vscodeUser`/`claudeUser` writers below run independently of this loop.
+        for (const id of CLIENT_IDS) {
+          const file =
+            id === "vscode"
+              ? path.join(workspace, ".vscode", "mcp.json")
+              : id === "claude"
+                ? path.join(workspace, ".mcp.json")
+                : path.join(deps.homedir(), ".codex", "config.toml");
+          const isSelected =
+            id === "vscode"
+              ? selection.vscodeWorkspace
+              : id === "claude"
+                ? selection.claudeProject
+                : selection.codex;
+          if (isSelected && (await pathExists(file))) {
+            clientFiles.get(id)!.add(file);
+            files.push(file);
+          }
+        }
+        workspaceReports.push({
+          root: workspace,
+          agentsRegistered: 0,
+          agentsFailed: 0,
+          files: (
+            await Promise.all(files.map(async (file) => ((await pathExists(file)) ? file : undefined)))
+          ).filter((file): file is string => !!file)
+        });
+        continue;
+      }
+      deps.stdout(`${t("installAgentsStep").replace("{workspace}", workspace)}\n`);
+      const service = deps.createSetupService(deps, () => workspace);
+      // §3.1's Consent rule (P0-3): the *unwrapped* prompter -- `--yes` must never reach the
+      // roster/widening confirms below, only the install-plan confirm already answered above.
+      const hostOptions: TerminalSetupHostOptions = {
+        locale,
+        version,
+        paths: deps.paths,
+        installHome: home,
+        platform: deps.platform,
+        workspaceRoot: workspace,
+        brokerEntry,
+        out: (line) => deps.stdout(`${line}\n`),
+        prompter: deps.prompter,
+        env: deps.env,
+        homedir: deps.homedir,
+        yes: !!options.yes,
+        approveAgents: !!options.approveAgents,
+        allowActionsPossible: !!options.allowActionsPossible,
+        verboseOut: options.verbose ? (text) => deps.stderr(`${text}\n`) : undefined
+      };
+      const host = options.browser
+        ? await runBrowserSetup(
+            deps,
+            hostOptions,
+            packageRoot,
+            !!options.noOpen,
+            discoverySnapshot,
+            integrations
+          )
+        : await createTerminalSetupHost(hostOptions);
+      let workspaceError: string | undefined;
+      // ISSUE-03 (docs/validation-log-2026-09-14-windows.md): metadata alongside `workspaceError`, so
+      // the text report can show a code + remediation line via `describeErrorCode` instead of only a
+      // message -- see `InstallWorkspaceReport.errorCode`'s doc comment.
+      let workspaceErrorCode: string | undefined;
+      let workspaceErrorRemediation: string | undefined;
+      // WP-D: captured from the pre-Save discovery snapshot below -- SetupController.save() clears
+      // `discoverySummary` once it reaches "done", so this has to be read before `controller.save()`
+      // runs, not from the workspace report's own later `host.lastPanelState()` calls.
+      let discoveryPartial: true | undefined;
+      let discoveryFailedCount: number | undefined;
+      if (!options.browser) {
+        const controller = new SetupController(host, () => service);
+        if (discoverySnapshot) await controller.reuseDiscovery(discoverySnapshot);
+        else await runSetupWithBrokerRecovery(controller, host, deps, brokerPreExisting, t);
+        const state = host.lastPanelState();
+        if (state?.phase !== "error") discoverySnapshot = state;
+        if (state?.discoverySummary?.partial) {
+          discoveryPartial = true;
+          discoveryFailedCount = state.discoverySummary.failedCount;
+        }
+        if (state?.phase === "error" && state.error) {
+          // ISSUE-03/ISSUE-06: `runSetup`/`reuseDiscovery` already failed (sign-in, discovery, a stale
+          // broker restart that never came back...) before a single candidate was fetched. Report that
+          // real cause directly rather than falling through to `selectAgents()` below, which would
+          // otherwise mask it behind a confusing "no interactive terminal"/"unknown agent alias"
+          // (candidates is always empty here) -- see docs/validation-log-2026-09-14-windows.md's
+          // `BROWSER_START_FAILED / AGENT_NOT_FOUND` pairing.
+          workspaceError = state.error.message;
+          workspaceErrorCode = state.error.code;
+          workspaceErrorRemediation = state.error.remediation;
+        } else {
+          const candidates = state?.candidates ?? [];
+          const candidatesByKey = new Map(candidates.map((candidate) => [candidate.key, candidate]));
+          const preSelected = state?.selectedKeys ?? [];
+          const selectedKeys = await selectAgents(
+            deps,
+            locale,
+            candidates,
+            preSelected,
+            options.agents,
+            !!options.yes
+          );
+
+          // P0-1: mirror media/setup.js's own default (~334-335) -- an already-registered agent keeps
+          // its registered capability class unless something explicitly says otherwise. Sending `{ key }`
+          // alone would make buildApplyPlan() default to "knowledge-only" and silently downgrade a
+          // registered actions-possible agent on every later re-run.
+          let agentInputs = selectedKeys.map((key) => ({
+            key,
+            actionsPossible: candidatesByKey.get(key)?.registered?.capabilityClass === "actions-possible"
+          }));
+
+          // §3.1's Consent rule (P0-3): non-interactively, without --allow-actions-possible, an
+          // actions-possible candidate is dropped from the plan (named here) before the capability-
+          // widening consent would even be needed. Interactively, the terminal's own confirm() dialog is
+          // always shown regardless of this flag, so nothing is dropped there.
+          if (!deps.prompter.interactive && !options.allowActionsPossible) {
+            const dropped = agentInputs.filter((agent) => agent.actionsPossible);
+            if (dropped.length > 0) {
+              const names = dropped.map((agent) => candidatesByKey.get(agent.key)?.displayName ?? agent.key);
+              deps.stderr(`${t("installActionsPossibleDropped").replace("{names}", names.join(", "))}\n`);
+              agentInputs = agentInputs.filter((agent) => !agent.actionsPossible);
+            }
+          }
+
+          // §3.1's Consent rule (P0-3): --yes never answers the roster approval; non-interactively,
+          // without --approve-agents, a non-empty roster fails closed here (rather than only inside
+          // TerminalSetupHost.confirm(), which would refuse identically but without a place to name the
+          // missing flag).
+          if (!deps.prompter.interactive && !options.approveAgents && agentInputs.length > 0) {
+            workspaceError = t("installApproveAgentsRequired");
+            deps.stderr(`${workspaceError}\n`);
+          } else {
+            await controller.save({
+              agents: agentInputs,
+              downloadHosts: [...(state?.status?.config.downloadHosts ?? [])],
+              acceptDownloads: state?.status?.config.acceptDownloads ?? true,
+              integrations
+            });
+            // P0-2: `SetupController.save()` swallows its own errors into `PanelState.phase === "error"`
+            // (via `exclusive()`) and also returns early with no summary at all when the roster
+            // confirmation was declined -- neither path throws, so both have to be detected by
+            // re-reading the host's own state rather than trusting that reaching this line means Save
+            // actually completed. An *empty* plan is `save()`'s own benign "nothing selected" branch
+            // (also no summary, by design -- see setup-controller.ts) and is never a failure on its own,
+            // which is exactly the outcome of the actions-possible drop above.
+            if (agentInputs.length > 0) {
+              const savedState = host.lastPanelState();
+              if (!host.savedSummary() || savedState?.phase === "error") {
+                workspaceError = savedState?.error?.message ?? t("installSaveFailed");
+                workspaceErrorCode = savedState?.error?.code;
+                workspaceErrorRemediation = savedState?.error?.remediation;
+              }
+            }
+          }
+        }
+
+        controller.dispose();
+      }
+      if (options.browser) discoverySnapshot = host.lastPanelState();
+      const summary = host.savedSummary();
+      for (const file of summary?.written ?? []) {
+        for (const id of CLIENT_IDS)
+          if (isClientFile(id, file, workspace, deps.homedir())) clientFiles.get(id)!.add(file);
+      }
+      // P0-2/P2: never claim `.m365-agents.json` was written unless it actually exists (a declined
+      // or failed-closed Save never creates it); a written client file is attributed to this
+      // workspace only when it genuinely resolves inside it (P2: `path.relative`, rejecting `..`,
+      // rather than a bare `startsWith` that a sibling directory sharing a name prefix could pass).
+      const workspaceFile = path.join(workspace, ".m365-agents.json");
+      const files = [
+        ...((await pathExists(workspaceFile)) ? [workspaceFile] : []),
+        ...[...(summary?.written ?? [])].filter((file) => isWithinWorkspace(file, workspace))
+      ];
+      workspaceReports.push({
+        root: workspace,
+        agentsRegistered: summary?.registered ?? 0,
+        agentsFailed: summary?.failed ?? 0,
+        files: [...new Set(files)],
+        ...(workspaceError ? { error: workspaceError } : {}),
+        ...(workspaceErrorCode ? { errorCode: workspaceErrorCode } : {}),
+        ...(workspaceErrorRemediation ? { errorRemediation: workspaceErrorRemediation } : {}),
+        ...(discoveryPartial ? { partial: discoveryPartial, failedCount: discoveryFailedCount } : {})
+      });
+    }
+
+    /* -------------------------------------------------------------- vscode-user / claude-user (§4.4, once) */
+    // Both are per-machine, workspace-independent files (§4.4: no `cwd`; the Claude Code entry is
+    // scoped by `claude mcp ... --scope user` / the top-level key of `~/.claude.json`), so each is
+    // written at most once per `install` run regardless of how many workspaces were given.
+    const userScopeDefinitionForReport = machineDefinition({
       home,
       platform: deps.platform,
       version,
@@ -1048,446 +1340,177 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       identity,
       electron: runtimeSource === "electron"
     });
+    let vscodeUserSummary: IntegrationSummary | undefined;
+    if (selection.vscodeUser) {
+      if (!vscodeUserDirectory)
+        vscodeUserSummary = { written: [], skipped: [t("installVscodeUserSkippedNoUserDir")] };
+      else {
+        // ISSUE-2026-09-14-14: create it now, current-user-default permissions (this is VS Code's own
+        // directory tree, not one of AgentPickLink's sensitive stores, so `ensurePrivateDirectory`'s
+        // forced 0700/ACL lockdown does not apply here -- a plain, recursive mkdir matches what VS
+        // Code itself would create on first run).
+        if (vscodeUserDirNeedsCreate) {
+          await fs.mkdir(vscodeUserDirectory, { recursive: true });
+          deps.stdout(`${t("installVscodeUserDirCreated")}\n`);
+        }
+        vscodeUserSummary = await applyIntegrations(
+          { definition: userScopeDefinitionForReport, homeDirectory: deps.homedir(), vscodeUserDirectory },
+          { codex: false, claudeCode: false, vscodeMcpJson: false, vscodeUser: true }
+        );
+      }
+      for (const line of [...vscodeUserSummary.skipped, ...(vscodeUserSummary.warnings ?? [])])
+        deps.stderr(`${line}\n`);
+    }
+    let claudeUserSummary: IntegrationSummary | undefined;
+    if (selection.claudeUser) {
+      claudeUserSummary = await applyIntegrations(
+        {
+          definition: userScopeDefinitionForReport,
+          homeDirectory: deps.homedir(),
+          claudeCliAvailable,
+          exec: deps.exec
+        },
+        { codex: false, claudeCode: false, vscodeMcpJson: false, claudeUser: true }
+      );
+      for (const line of claudeUserSummary.skipped) deps.stderr(`${line}\n`);
+    }
 
-    // §4.7 C7: converge every workspace this machine has ever recorded (not only the ones passed
-    // this run) onto the identity above, before this run's own Save writes below.
-    await migrateLegacyEntries({
-      definition: userScopeDefinition,
-      homeDirectory: deps.homedir(),
-      workspaces: workspacesRecorded,
-      clientsWritten,
-      variables: integrationVariablesFor({ env: deps.env, platform: deps.platform, homedir: deps.homedir() }),
-      vscodeUserDirectory,
-      claudeCliAvailable,
-      exec: deps.exec
-    });
+    /* -------------------------------------------------------------- verify */
+    let verified = false;
+    let verifyError: string | undefined;
+    let verifyErrorCode: string | undefined;
+    let verifyErrorRemediation: string | undefined;
+    const doctorReports: NonNullable<InstallReport["doctor"]> = [];
+    const verifyWorkspace = workspaces[0];
+    try {
+      deps.stdout(`${t("installVerifying")}\n`);
+      // P2: the identity's own env (the ownership marker + build stamp) plus a small, curated
+      // passthrough of the OS-level variables a spawned Node actually needs -- never the whole
+      // `process.env`, which the verify child has no business inheriting wholesale.
+      const verifyDefinition = machineDefinition({
+        home,
+        platform: deps.platform,
+        version,
+        appDataOverride: deps.env.M365_AGENT_APP_DATA,
+        identity,
+        electron: runtimeSource === "electron"
+      });
+      const result = await deps.mcpHandshake({
+        command: verifyDefinition.command,
+        args: verifyDefinition.args,
+        env: { ...essentialEnvPassthrough(deps.env), ...verifyDefinition.env },
+        cwd: verifyWorkspace,
+        timeoutMs: 20_000
+      });
+      // P2: exactly these three tools -- neither missing nor an unexpected extra/duplicate.
+      const expectedTools = new Set(["m365_agent_ask", "m365_agent_list", "m365_agent_session"]);
+      const gotTools = new Set(result.tools);
+      verified =
+        gotTools.size === result.tools.length &&
+        gotTools.size === expectedTools.size &&
+        [...expectedTools].every((tool) => gotTools.has(tool));
+      if (!verified)
+        verifyError = `Expected tools ${[...expectedTools].join(", ")}; got ${result.tools.join(", ")}`;
+    } catch (error) {
+      verifyError = error instanceof Error ? error.message : String(error);
+      ({ code: verifyErrorCode, remediation: verifyErrorRemediation } = domainErrorMeta(error));
+    }
+    for (const workspace of workspaces) {
+      try {
+        const scopedDeps = {
+          ...deps,
+          root: () => workspace,
+          env: { ...deps.env, M365_AGENT_INSTALL_ROOT: home }
+        };
+        const diagnosis = await (deps.diagnose ?? runDoctor)(scopedDeps);
+        const findings = Array.isArray(diagnosis.findings)
+          ? diagnosis.findings.filter((item): item is string => typeof item === "string")
+          : [];
+        doctorReports.push({ workspace, ok: diagnosis.ok === true, findings });
+        if (diagnosis.ok !== true) {
+          verified = false;
+          verifyError ??= t("installDoctorFailed");
+        }
+      } catch {
+        doctorReports.push({ workspace, ok: false, findings: ["doctor.failed"] });
+        verified = false;
+        verifyError ??= t("installDoctorFailed");
+      }
+    }
+    if (!verified) deps.stderr(`${t("installVerifyFailed")}\n`);
 
-    // §4.3 item 4: for *this run's* workspaces only, remove a managed/legacy `.vscode/mcp.json` /
-    // `.mcp.json` entry whose opt-in is not selected this time -- e.g. a prior version's default
-    // write -- so VS Code stops asking to trust the folder and Claude Code stops asking to approve
-    // the project server. Never touches a foreign entry.
-    migratedRemovals = await demoteUnselectedWorkspaceFiles({
-      workspaces,
-      selection,
-      definition: userScopeDefinition,
-      homeDirectory: deps.homedir(),
-      variables: integrationVariablesFor({ env: deps.env, platform: deps.platform, homedir: deps.homedir() })
+    /* -------------------------------------------------------------- report */
+    // P1-8: the fallback snippet must carry the full definition (the ownership marker and the build
+    // stamp), not bare command/args -- otherwise a manually-applied snippet is a foreign entry
+    // forever (§4.7 C6: no marker means it never converges on a later `apl-setup` run).
+    const fallbackDefinition = userScopeDefinitionForReport;
+    const snippetTokenFor = (id: ClientId): "vscode-workspace" | "claude-project" | "codex" =>
+      id === "vscode" ? "vscode-workspace" : id === "claude" ? "claude-project" : "codex";
+    const clientReports: InstallClientReport[] = CLIENT_IDS.map((id) => {
+      const files = [...(clientFiles.get(id) ?? [])];
+      const blocked = policies.find((finding) => finding.client === id && finding.blocks);
+      const selected = selectedFor(id);
+      return {
+        id,
+        detected: !!detected.find((entry) => entry.id === id)?.installed,
+        ...(blocked ? { policyBlocked: { policy: blocked.policy, value: blocked.value } } : {}),
+        selected,
+        files,
+        ...(selected && files.length === 0 && !blocked
+          ? { snippet: snippetFor(snippetTokenFor(id), fallbackDefinition) }
+          : {})
+      };
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const { code: verifyErrorCode, remediation: verifyErrorRemediation } = domainErrorMeta(error);
-    // P1-6: `stageVersion` itself succeeded (we own `stagedVersionPath`) but a later step in this
-    // block failed -- best-effort delete the half-installed version rather than leaving it for
-    // `self status`/`self use` to discover in a broken state.
-    if (stagedVersionPath)
-      await fs.rm(stagedVersionPath, { recursive: true, force: true }).catch(() => undefined);
-    const remainingVersions = await listVersions(home).catch(() => []);
-    const launchersRemain = await pathExists(path.join(home, "bin", "apl.js"));
-    const partial =
-      remainingVersions.length > 0
-        ? `versions still on disk: ${remainingVersions.join(", ")}`
-        : launchersRemain
-          ? "bin/apl.js from a previous install remains on disk"
-          : undefined;
+    const vscodeUserWritten = (vscodeUserSummary?.written.length ?? 0) > 0;
+    const claudeUserWritten = (claudeUserSummary?.written.length ?? 0) > 0;
+    const vscodeWorkspaceWritten = clientReports.find((client) => client.id === "vscode")!.files.length > 0;
+    const claudeProjectWritten = clientReports.find((client) => client.id === "claude")!.files.length > 0;
+    const anyClientWritten =
+      clientReports.some((client) => client.files.length > 0) || vscodeUserWritten || claudeUserWritten;
+    const instructions = [
+      t("installNextStepsHeader"),
+      ...(vscodeUserWritten || vscodeWorkspaceWritten ? [t("installNextStepsVscode")] : []),
+      ...(claudeUserWritten || claudeProjectWritten ? [t("installNextStepsClaude")] : []),
+      ...(selection.codex ? [t("installNextStepsCodex")] : []),
+      t("installNextStepsIncident")
+    ];
+
+    // P0-2: any workspace whose Save did not actually complete forces exit 3, on the same footing as
+    // a failed verify.
+    const anyWorkspaceError = workspaceReports.some((workspace) => workspace.error);
+    const exitCode: InstallReport["exitCode"] = !verified || anyWorkspaceError ? 3 : anyClientWritten ? 0 : 2;
+    // item 1: when this run recorded a BROWSER_START_FAILED (staging/verify or any workspace's own
+    // Save), print broker.log's path and its last 20 lines (metadata only) alongside the failure.
+    const browserStartFailed =
+      verifyErrorCode === "BROWSER_START_FAILED" ||
+      workspaceReports.some((workspace) => workspace.errorCode === "BROWSER_START_FAILED");
+    const brokerLog = browserStartFailed
+      ? { path: brokerLogPath(deps.paths.logs), tail: await readBrokerLogTail(deps.paths.logs, 20) }
+      : undefined;
     return {
       dryRun: false,
       confirmed: true,
       version,
       home,
       runtime: { path: identity.command, source: runtimeSource },
-      clients: [],
-      workspaces: [],
+      clients: clientReports,
+      ...(vscodeUserSummary ? { vscodeUser: vscodeUserSummary } : {}),
+      ...(claudeUserSummary ? { claudeUser: claudeUserSummary } : {}),
+      workspaces: workspaceReports,
       uninstallCommand: "m365-agent self uninstall",
-      verified: false,
-      verifyError: partial ? `${message} (partial install left: ${partial})` : message,
+      verified,
+      doctor: doctorReports,
+      ...(verifyError ? { verifyError } : {}),
       ...(verifyErrorCode ? { verifyErrorCode } : {}),
       ...(verifyErrorRemediation ? { verifyErrorRemediation } : {}),
-      migrations: [],
-      instructions: [],
-      exitCode: partial ? 3 : 1
+      migrations: migratedRemovals.map(({ workspace, file }) => ({ workspace, file })),
+      instructions,
+      ...(brokerLog ? { brokerLog } : {}),
+      exitCode
     };
+  } finally {
+    await release();
   }
-
-  /* -------------------------------------------------------------- agents + clients, per workspace */
-  const ownBrokerEntry = path.join(packageRoot, "dist", "broker", "process.js");
-  const brokerEntry = await resolveBrokerEntry(home, ownBrokerEntry);
-  const integrations = toIntegrationFlags(selection);
-  const clientFiles = new Map<ClientId, Set<string>>(CLIENT_IDS.map((id) => [id, new Set<string>()]));
-  const workspaceReports: InstallWorkspaceReport[] = [];
-  let discoverySnapshot: PanelState | undefined;
-
-  for (const workspace of workspaces) {
-    if (options.fromExtension) {
-      const files = [path.join(workspace, ".m365-agents.json")];
-      // `--from-extension` reuses whatever workspace/project-scope files the VSIX already wrote
-      // (its own settings, `agentpicklink.integrations.*`, are unchanged in meaning); the
-      // user-scope `vscodeUser`/`claudeUser` writers below run independently of this loop.
-      for (const id of CLIENT_IDS) {
-        const file =
-          id === "vscode"
-            ? path.join(workspace, ".vscode", "mcp.json")
-            : id === "claude"
-              ? path.join(workspace, ".mcp.json")
-              : path.join(deps.homedir(), ".codex", "config.toml");
-        const isSelected =
-          id === "vscode"
-            ? selection.vscodeWorkspace
-            : id === "claude"
-              ? selection.claudeProject
-              : selection.codex;
-        if (isSelected && (await pathExists(file))) {
-          clientFiles.get(id)!.add(file);
-          files.push(file);
-        }
-      }
-      workspaceReports.push({
-        root: workspace,
-        agentsRegistered: 0,
-        agentsFailed: 0,
-        files: (
-          await Promise.all(files.map(async (file) => ((await pathExists(file)) ? file : undefined)))
-        ).filter((file): file is string => !!file)
-      });
-      continue;
-    }
-    deps.stdout(`${t("installAgentsStep").replace("{workspace}", workspace)}\n`);
-    const service = deps.createSetupService(deps, () => workspace);
-    // §3.1's Consent rule (P0-3): the *unwrapped* prompter -- `--yes` must never reach the
-    // roster/widening confirms below, only the install-plan confirm already answered above.
-    const hostOptions: TerminalSetupHostOptions = {
-      locale,
-      version,
-      paths: deps.paths,
-      installHome: home,
-      platform: deps.platform,
-      workspaceRoot: workspace,
-      brokerEntry,
-      out: (line) => deps.stdout(`${line}\n`),
-      prompter: deps.prompter,
-      env: deps.env,
-      homedir: deps.homedir,
-      yes: !!options.yes,
-      approveAgents: !!options.approveAgents,
-      allowActionsPossible: !!options.allowActionsPossible,
-      verboseOut: options.verbose ? (text) => deps.stderr(`${text}\n`) : undefined
-    };
-    const host = options.browser
-      ? await runBrowserSetup(
-          deps,
-          hostOptions,
-          packageRoot,
-          !!options.noOpen,
-          discoverySnapshot,
-          integrations
-        )
-      : await createTerminalSetupHost(hostOptions);
-    let workspaceError: string | undefined;
-    // ISSUE-03 (docs/validation-log-2026-09-14-windows.md): metadata alongside `workspaceError`, so
-    // the text report can show a code + remediation line via `describeErrorCode` instead of only a
-    // message -- see `InstallWorkspaceReport.errorCode`'s doc comment.
-    let workspaceErrorCode: string | undefined;
-    let workspaceErrorRemediation: string | undefined;
-    // WP-D: captured from the pre-Save discovery snapshot below -- SetupController.save() clears
-    // `discoverySummary` once it reaches "done", so this has to be read before `controller.save()`
-    // runs, not from the workspace report's own later `host.lastPanelState()` calls.
-    let discoveryPartial: true | undefined;
-    let discoveryFailedCount: number | undefined;
-    if (!options.browser) {
-      const controller = new SetupController(host, () => service);
-      if (discoverySnapshot) await controller.reuseDiscovery(discoverySnapshot);
-      else await runSetupWithBrokerRecovery(controller, host, deps, brokerPreExisting, t);
-      const state = host.lastPanelState();
-      if (state?.phase !== "error") discoverySnapshot = state;
-      if (state?.discoverySummary?.partial) {
-        discoveryPartial = true;
-        discoveryFailedCount = state.discoverySummary.failedCount;
-      }
-      if (state?.phase === "error" && state.error) {
-        // ISSUE-03/ISSUE-06: `runSetup`/`reuseDiscovery` already failed (sign-in, discovery, a stale
-        // broker restart that never came back...) before a single candidate was fetched. Report that
-        // real cause directly rather than falling through to `selectAgents()` below, which would
-        // otherwise mask it behind a confusing "no interactive terminal"/"unknown agent alias"
-        // (candidates is always empty here) -- see docs/validation-log-2026-09-14-windows.md's
-        // `BROWSER_START_FAILED / AGENT_NOT_FOUND` pairing.
-        workspaceError = state.error.message;
-        workspaceErrorCode = state.error.code;
-        workspaceErrorRemediation = state.error.remediation;
-      } else {
-        const candidates = state?.candidates ?? [];
-        const candidatesByKey = new Map(candidates.map((candidate) => [candidate.key, candidate]));
-        const preSelected = state?.selectedKeys ?? [];
-        const selectedKeys = await selectAgents(
-          deps,
-          locale,
-          candidates,
-          preSelected,
-          options.agents,
-          !!options.yes
-        );
-
-        // P0-1: mirror media/setup.js's own default (~334-335) -- an already-registered agent keeps
-        // its registered capability class unless something explicitly says otherwise. Sending `{ key }`
-        // alone would make buildApplyPlan() default to "knowledge-only" and silently downgrade a
-        // registered actions-possible agent on every later re-run.
-        let agentInputs = selectedKeys.map((key) => ({
-          key,
-          actionsPossible: candidatesByKey.get(key)?.registered?.capabilityClass === "actions-possible"
-        }));
-
-        // §3.1's Consent rule (P0-3): non-interactively, without --allow-actions-possible, an
-        // actions-possible candidate is dropped from the plan (named here) before the capability-
-        // widening consent would even be needed. Interactively, the terminal's own confirm() dialog is
-        // always shown regardless of this flag, so nothing is dropped there.
-        if (!deps.prompter.interactive && !options.allowActionsPossible) {
-          const dropped = agentInputs.filter((agent) => agent.actionsPossible);
-          if (dropped.length > 0) {
-            const names = dropped.map((agent) => candidatesByKey.get(agent.key)?.displayName ?? agent.key);
-            deps.stderr(`${t("installActionsPossibleDropped").replace("{names}", names.join(", "))}\n`);
-            agentInputs = agentInputs.filter((agent) => !agent.actionsPossible);
-          }
-        }
-
-        // §3.1's Consent rule (P0-3): --yes never answers the roster approval; non-interactively,
-        // without --approve-agents, a non-empty roster fails closed here (rather than only inside
-        // TerminalSetupHost.confirm(), which would refuse identically but without a place to name the
-        // missing flag).
-        if (!deps.prompter.interactive && !options.approveAgents && agentInputs.length > 0) {
-          workspaceError = t("installApproveAgentsRequired");
-          deps.stderr(`${workspaceError}\n`);
-        } else {
-          await controller.save({
-            agents: agentInputs,
-            downloadHosts: [...(state?.status?.config.downloadHosts ?? [])],
-            acceptDownloads: state?.status?.config.acceptDownloads ?? true,
-            integrations
-          });
-          // P0-2: `SetupController.save()` swallows its own errors into `PanelState.phase === "error"`
-          // (via `exclusive()`) and also returns early with no summary at all when the roster
-          // confirmation was declined -- neither path throws, so both have to be detected by
-          // re-reading the host's own state rather than trusting that reaching this line means Save
-          // actually completed. An *empty* plan is `save()`'s own benign "nothing selected" branch
-          // (also no summary, by design -- see setup-controller.ts) and is never a failure on its own,
-          // which is exactly the outcome of the actions-possible drop above.
-          if (agentInputs.length > 0) {
-            const savedState = host.lastPanelState();
-            if (!host.savedSummary() || savedState?.phase === "error") {
-              workspaceError = savedState?.error?.message ?? t("installSaveFailed");
-              workspaceErrorCode = savedState?.error?.code;
-              workspaceErrorRemediation = savedState?.error?.remediation;
-            }
-          }
-        }
-      }
-
-      controller.dispose();
-    }
-    if (options.browser) discoverySnapshot = host.lastPanelState();
-    const summary = host.savedSummary();
-    for (const file of summary?.written ?? []) {
-      for (const id of CLIENT_IDS)
-        if (isClientFile(id, file, workspace, deps.homedir())) clientFiles.get(id)!.add(file);
-    }
-    // P0-2/P2: never claim `.m365-agents.json` was written unless it actually exists (a declined
-    // or failed-closed Save never creates it); a written client file is attributed to this
-    // workspace only when it genuinely resolves inside it (P2: `path.relative`, rejecting `..`,
-    // rather than a bare `startsWith` that a sibling directory sharing a name prefix could pass).
-    const workspaceFile = path.join(workspace, ".m365-agents.json");
-    const files = [
-      ...((await pathExists(workspaceFile)) ? [workspaceFile] : []),
-      ...[...(summary?.written ?? [])].filter((file) => isWithinWorkspace(file, workspace))
-    ];
-    workspaceReports.push({
-      root: workspace,
-      agentsRegistered: summary?.registered ?? 0,
-      agentsFailed: summary?.failed ?? 0,
-      files: [...new Set(files)],
-      ...(workspaceError ? { error: workspaceError } : {}),
-      ...(workspaceErrorCode ? { errorCode: workspaceErrorCode } : {}),
-      ...(workspaceErrorRemediation ? { errorRemediation: workspaceErrorRemediation } : {}),
-      ...(discoveryPartial ? { partial: discoveryPartial, failedCount: discoveryFailedCount } : {})
-    });
-  }
-
-  /* -------------------------------------------------------------- vscode-user / claude-user (§4.4, once) */
-  // Both are per-machine, workspace-independent files (§4.4: no `cwd`; the Claude Code entry is
-  // scoped by `claude mcp ... --scope user` / the top-level key of `~/.claude.json`), so each is
-  // written at most once per `install` run regardless of how many workspaces were given.
-  const userScopeDefinitionForReport = machineDefinition({
-    home,
-    platform: deps.platform,
-    version,
-    appDataOverride: deps.env.M365_AGENT_APP_DATA,
-    identity,
-    electron: runtimeSource === "electron"
-  });
-  let vscodeUserSummary: IntegrationSummary | undefined;
-  if (selection.vscodeUser) {
-    if (!vscodeUserDirectory)
-      vscodeUserSummary = { written: [], skipped: [t("installVscodeUserSkippedNoUserDir")] };
-    else {
-      // ISSUE-2026-09-14-14: create it now, current-user-default permissions (this is VS Code's own
-      // directory tree, not one of AgentPickLink's sensitive stores, so `ensurePrivateDirectory`'s
-      // forced 0700/ACL lockdown does not apply here -- a plain, recursive mkdir matches what VS
-      // Code itself would create on first run).
-      if (vscodeUserDirNeedsCreate) {
-        await fs.mkdir(vscodeUserDirectory, { recursive: true });
-        deps.stdout(`${t("installVscodeUserDirCreated")}\n`);
-      }
-      vscodeUserSummary = await applyIntegrations(
-        { definition: userScopeDefinitionForReport, homeDirectory: deps.homedir(), vscodeUserDirectory },
-        { codex: false, claudeCode: false, vscodeMcpJson: false, vscodeUser: true }
-      );
-    }
-    for (const line of [...vscodeUserSummary.skipped, ...(vscodeUserSummary.warnings ?? [])])
-      deps.stderr(`${line}\n`);
-  }
-  let claudeUserSummary: IntegrationSummary | undefined;
-  if (selection.claudeUser) {
-    claudeUserSummary = await applyIntegrations(
-      {
-        definition: userScopeDefinitionForReport,
-        homeDirectory: deps.homedir(),
-        claudeCliAvailable,
-        exec: deps.exec
-      },
-      { codex: false, claudeCode: false, vscodeMcpJson: false, claudeUser: true }
-    );
-    for (const line of claudeUserSummary.skipped) deps.stderr(`${line}\n`);
-  }
-
-  /* -------------------------------------------------------------- verify */
-  let verified = false;
-  let verifyError: string | undefined;
-  let verifyErrorCode: string | undefined;
-  let verifyErrorRemediation: string | undefined;
-  const doctorReports: NonNullable<InstallReport["doctor"]> = [];
-  const verifyWorkspace = workspaces[0];
-  try {
-    deps.stdout(`${t("installVerifying")}\n`);
-    // P2: the identity's own env (the ownership marker + build stamp) plus a small, curated
-    // passthrough of the OS-level variables a spawned Node actually needs -- never the whole
-    // `process.env`, which the verify child has no business inheriting wholesale.
-    const verifyDefinition = machineDefinition({
-      home,
-      platform: deps.platform,
-      version,
-      appDataOverride: deps.env.M365_AGENT_APP_DATA,
-      identity,
-      electron: runtimeSource === "electron"
-    });
-    const result = await deps.mcpHandshake({
-      command: verifyDefinition.command,
-      args: verifyDefinition.args,
-      env: { ...essentialEnvPassthrough(deps.env), ...verifyDefinition.env },
-      cwd: verifyWorkspace,
-      timeoutMs: 20_000
-    });
-    // P2: exactly these three tools -- neither missing nor an unexpected extra/duplicate.
-    const expectedTools = new Set(["m365_agent_ask", "m365_agent_list", "m365_agent_session"]);
-    const gotTools = new Set(result.tools);
-    verified =
-      gotTools.size === result.tools.length &&
-      gotTools.size === expectedTools.size &&
-      [...expectedTools].every((tool) => gotTools.has(tool));
-    if (!verified)
-      verifyError = `Expected tools ${[...expectedTools].join(", ")}; got ${result.tools.join(", ")}`;
-  } catch (error) {
-    verifyError = error instanceof Error ? error.message : String(error);
-    ({ code: verifyErrorCode, remediation: verifyErrorRemediation } = domainErrorMeta(error));
-  }
-  for (const workspace of workspaces) {
-    try {
-      const scopedDeps = {
-        ...deps,
-        root: () => workspace,
-        env: { ...deps.env, M365_AGENT_INSTALL_ROOT: home }
-      };
-      const diagnosis = await (deps.diagnose ?? runDoctor)(scopedDeps);
-      const findings = Array.isArray(diagnosis.findings)
-        ? diagnosis.findings.filter((item): item is string => typeof item === "string")
-        : [];
-      doctorReports.push({ workspace, ok: diagnosis.ok === true, findings });
-      if (diagnosis.ok !== true) {
-        verified = false;
-        verifyError ??= t("installDoctorFailed");
-      }
-    } catch {
-      doctorReports.push({ workspace, ok: false, findings: ["doctor.failed"] });
-      verified = false;
-      verifyError ??= t("installDoctorFailed");
-    }
-  }
-  if (!verified) deps.stderr(`${t("installVerifyFailed")}\n`);
-
-  /* -------------------------------------------------------------- report */
-  // P1-8: the fallback snippet must carry the full definition (the ownership marker and the build
-  // stamp), not bare command/args -- otherwise a manually-applied snippet is a foreign entry
-  // forever (§4.7 C6: no marker means it never converges on a later `apl-setup` run).
-  const fallbackDefinition = userScopeDefinitionForReport;
-  const snippetTokenFor = (id: ClientId): "vscode-workspace" | "claude-project" | "codex" =>
-    id === "vscode" ? "vscode-workspace" : id === "claude" ? "claude-project" : "codex";
-  const clientReports: InstallClientReport[] = CLIENT_IDS.map((id) => {
-    const files = [...(clientFiles.get(id) ?? [])];
-    const blocked = policies.find((finding) => finding.client === id && finding.blocks);
-    const selected = selectedFor(id);
-    return {
-      id,
-      detected: !!detected.find((entry) => entry.id === id)?.installed,
-      ...(blocked ? { policyBlocked: { policy: blocked.policy, value: blocked.value } } : {}),
-      selected,
-      files,
-      ...(selected && files.length === 0 && !blocked
-        ? { snippet: snippetFor(snippetTokenFor(id), fallbackDefinition) }
-        : {})
-    };
-  });
-  const vscodeUserWritten = (vscodeUserSummary?.written.length ?? 0) > 0;
-  const claudeUserWritten = (claudeUserSummary?.written.length ?? 0) > 0;
-  const vscodeWorkspaceWritten = clientReports.find((client) => client.id === "vscode")!.files.length > 0;
-  const claudeProjectWritten = clientReports.find((client) => client.id === "claude")!.files.length > 0;
-  const anyClientWritten =
-    clientReports.some((client) => client.files.length > 0) || vscodeUserWritten || claudeUserWritten;
-  const instructions = [
-    t("installNextStepsHeader"),
-    ...(vscodeUserWritten || vscodeWorkspaceWritten ? [t("installNextStepsVscode")] : []),
-    ...(claudeUserWritten || claudeProjectWritten ? [t("installNextStepsClaude")] : []),
-    ...(selection.codex ? [t("installNextStepsCodex")] : []),
-    t("installNextStepsIncident")
-  ];
-
-  // P0-2: any workspace whose Save did not actually complete forces exit 3, on the same footing as
-  // a failed verify.
-  const anyWorkspaceError = workspaceReports.some((workspace) => workspace.error);
-  const exitCode: InstallReport["exitCode"] = !verified || anyWorkspaceError ? 3 : anyClientWritten ? 0 : 2;
-  // item 1: when this run recorded a BROWSER_START_FAILED (staging/verify or any workspace's own
-  // Save), print broker.log's path and its last 20 lines (metadata only) alongside the failure.
-  const browserStartFailed =
-    verifyErrorCode === "BROWSER_START_FAILED" ||
-    workspaceReports.some((workspace) => workspace.errorCode === "BROWSER_START_FAILED");
-  const brokerLog = browserStartFailed
-    ? { path: brokerLogPath(deps.paths.logs), tail: await readBrokerLogTail(deps.paths.logs, 20) }
-    : undefined;
-  return {
-    dryRun: false,
-    confirmed: true,
-    version,
-    home,
-    runtime: { path: identity.command, source: runtimeSource },
-    clients: clientReports,
-    ...(vscodeUserSummary ? { vscodeUser: vscodeUserSummary } : {}),
-    ...(claudeUserSummary ? { claudeUser: claudeUserSummary } : {}),
-    workspaces: workspaceReports,
-    uninstallCommand: "m365-agent self uninstall",
-    verified,
-    doctor: doctorReports,
-    ...(verifyError ? { verifyError } : {}),
-    ...(verifyErrorCode ? { verifyErrorCode } : {}),
-    ...(verifyErrorRemediation ? { verifyErrorRemediation } : {}),
-    migrations: migratedRemovals.map(({ workspace, file }) => ({ workspace, file })),
-    instructions,
-    ...(brokerLog ? { brokerLog } : {}),
-    exitCode
-  };
 }
 
 function isClientFile(id: ClientId, file: string, workspace: string, homedir: string): boolean {

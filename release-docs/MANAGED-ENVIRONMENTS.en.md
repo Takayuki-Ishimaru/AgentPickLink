@@ -4,11 +4,11 @@
 
 This page is for IT/security administrators evaluating or deploying AgentPickLink's **extension-less
 install path**: a portable archive that a user downloads from the GitHub Release, extracts, and runs once
-(`apl-setup <workspace>`) instead of installing the VS Code extension. This path is implemented in
-**v0.2.0**. Installation, upgrade, rollback, coexistence with the VSIX and uninstall were verified on a
-Windows 11 x64 machine with a work account between 2026-09-13 and 2026-09-17. Environment-dependent
-acceptance checks, including SmartScreen, AppLocker / WDAC and native runs on Windows ARM64 and Linux, must
-be completed separately before distribution.
+(`apl-setup <workspace>`) instead of installing the VS Code extension. It describes v0.2.1.
+Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and
+Linux is for development/CI only. Check execution controls such as SmartScreen and AppLocker / WDAC,
+and tenant restrictions, in your deployment environment. See the
+[supported environments and validation scope](RELEASE-CHECKLIST.md) for this version.
 
 ## What gets registered, and with what identity
 
@@ -47,6 +47,7 @@ example onto a path your execution-control policy already approves (see below).
 ```
 <home>/
   bin/node | bin/node.exe   the bundled runtime (see "Runtime provenance" below)
+  bin/package.json          CommonJS configuration for the launcher
   bin/apl.js                launcher that imports the current app/<version>/dist/cli/index.js
   bin/apl | bin/apl.cmd     human-facing shim for `doctor`, `self`, `integrations`; never spawned by hosts
   app/<version>/            the installed package; older versions are kept until `apl self prune`
@@ -81,8 +82,7 @@ from local disk.
 - **Bundled Node.js.** The version currently pinned by the release you downloaded is reported by
   `apl doctor` and recorded in `install.json`. It is the official binary from `nodejs.org`, verified against
   `nodejs.org`'s own `SHASUMS256.txt` at archive-build time — not a custom or re-built binary.
-- **Code signing.** On Windows, the bundled `node.exe` is Authenticode-signed; Node.js 24.21.0 x64 was verified on Windows 11 on 2026-09-13 using `Get-AuthenticodeSignature`
-  (status `Valid`, publisher **OpenJS Foundation**). Recheck each downloaded runtime, for example with
+- **Code signing.** On Windows, the bundled `node.exe` is Authenticode-signed by **OpenJS Foundation**. Recheck each downloaded runtime, for example with
   Sysinternals `sigcheck -a bin\node.exe`. On macOS, the bundled `node` binary is code-signed; verify with
   `codesign -dv --verbose=4 bin/node`.
 - **Archive integrity.** Every GitHub Release includes a `SHA256SUMS` file alongside the archives. Verify

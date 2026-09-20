@@ -8,7 +8,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runSelfPrune, runSelfStatus, runSelfUninstall, runSelfUse } from "../../src/cli/commands/self.js";
 import { vscodeUserDir } from "../../src/services/client-detection.js";
-import { identityFor, writeInstallJson } from "../../src/services/install-home.js";
+import { identityFor, writeInstallJson, writeLaunchers } from "../../src/services/install-home.js";
 import {
   mergeClaudeMcpJson,
   mergeClaudeUserMcpJson,
@@ -32,6 +32,16 @@ async function makeHome(): Promise<string> {
 }
 
 async function stageVersionDir(home: string, version: string): Promise<void> {
+  await mkdir(path.join(home, "app", version, "dist", "cli"), { recursive: true });
+  await writeFile(
+    path.join(home, "app", version, "package.json"),
+    JSON.stringify({ name: "agent-pick-link", version, type: "module" })
+  );
+  await writeFile(
+    path.join(home, "app", version, "dist", "cli", "index.js"),
+    "export function runCli() {}\n"
+  );
+  await writeLaunchers({ home, version, platform: process.platform });
   await mkdir(path.join(home, "app", version, "dist", "broker"), { recursive: true });
   await writeFile(path.join(home, "app", version, "dist", "broker", "process.js"), "// stub\n", "utf8");
 }
@@ -350,7 +360,7 @@ describe("self uninstall", () => {
     expect(execCalls).toContainEqual(["mcp", "remove", "m365-agents", "--scope", "user"]);
   });
 
-  it("also removes the app-data root when --purge-data is given and confirmed", async () => {
+  it("removes recognized app data while retaining the election lock when --purge-data is confirmed", async () => {
     const home = await makeHome();
     const paths = await makeTempPaths();
     const osHome = await mkdtemp(path.join(os.tmpdir(), "apl-self-oshome-"));
@@ -359,7 +369,21 @@ describe("self uninstall", () => {
       homedir: () => osHome,
       prompter: makeScriptedPrompter({ interactive: true, confirmAnswer: true })
     });
+    await stageVersionDir(home, "1.0.0");
+    const identity = identityFor({ home, platform: deps.platform });
+    await writeInstallJson(home, {
+      version: "1.0.0",
+      installedBy: "archive",
+      runtime: { path: identity.command, source: "bundled" },
+      identity,
+      clients: [],
+      workspaces: [],
+      platform: deps.platform,
+      updatedAt: new Date().toISOString()
+    });
     await mkdir(paths.root, { recursive: true });
+    const { defaultGlobalConfig } = await import("../../src/config/global-config.js");
+    await writeFile(paths.config, JSON.stringify(defaultGlobalConfig(paths.profile)));
     await writeFile(paths.registry, "version: 1\nagents: []\n", "utf8");
 
     const result = await runSelfUninstall(deps, { home, purgeData: true });

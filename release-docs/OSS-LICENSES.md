@@ -5,7 +5,7 @@
 AgentPickLink 本体は [MIT ライセンス](../LICENSE) の OSS です。依存ソフトウェアのライセンスは変更しません。
 The AgentPickLink project is MIT licensed. Third-party software retains its original license terms.
 
-この一覧は v0.2.0 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
+この一覧は v0.2.1 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
 This inventory uses the names, pinned versions and license declarations in the lockfile. It includes direct, transitive and platform-specific optional dependencies. Not every entry is installed on every platform or shipped in the VSIX; separate installation paths have separate rows.
 
 実行時に配布するソフトウェアの著作権表示・ライセンス全文・同梱コンポーネントの通知は [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) に収録しています。VSIX 内の各パッケージの LICENSE / NOTICE も保持しています。
@@ -29,6 +29,7 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 | [commander](https://www.npmjs.com/package/commander/v/14.0.3)                                      | 14.0.3  | MIT        | Runtime     | Direct     |
 | [esbuild](https://www.npmjs.com/package/esbuild/v/0.28.2)                                          | 0.28.2  | MIT        | Development | Direct     |
 | [eslint](https://www.npmjs.com/package/eslint/v/10.9.1)                                            | 10.9.1  | MIT        | Development | Direct     |
+| [jsonc-parser](https://www.npmjs.com/package/jsonc-parser/v/3.3.1)                                 | 3.3.1   | MIT        | Runtime     | Direct     |
 | [playwright-core](https://www.npmjs.com/package/playwright-core/v/1.62.1)                          | 1.62.1  | Apache-2.0 | Runtime     | Direct     |
 | [prettier](https://www.npmjs.com/package/prettier/v/3.9.6)                                         | 3.9.6   | MIT        | Development | Direct     |
 | [proper-lockfile](https://www.npmjs.com/package/proper-lockfile/v/4.1.2)                           | 4.1.2   | MIT        | Runtime     | Direct     |
@@ -430,7 +431,6 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [json-schema-traverse](https://www.npmjs.com/package/json-schema-traverse/v/0.4.1)                                                  | 0.4.1   | MIT                                 | Development | Transitive |
 | [json-stable-stringify-without-jsonify](https://www.npmjs.com/package/json-stable-stringify-without-jsonify/v/1.0.1)                | 1.0.1   | MIT                                 | Development | Transitive |
 | [json5](https://www.npmjs.com/package/json5/v/2.2.3)                                                                                | 2.2.3   | MIT                                 | Development | Transitive |
-| [jsonc-parser](https://www.npmjs.com/package/jsonc-parser/v/3.3.1)                                                                  | 3.3.1   | MIT                                 | Development | Transitive |
 | [jsonfile](https://www.npmjs.com/package/jsonfile/v/6.2.1)                                                                          | 6.2.1   | MIT                                 | Development | Transitive |
 | [jsonwebtoken](https://www.npmjs.com/package/jsonwebtoken/v/9.0.3)                                                                  | 9.0.3   | MIT                                 | Development | Transitive |
 | [jwa](https://www.npmjs.com/package/jwa/v/2.0.1)                                                                                    | 2.0.1   | MIT                                 | Development | Transitive |

@@ -1,5 +1,62 @@
 # リリースノート
 
+## v0.2.1 Beta
+
+### 主な変更
+
+- **アンインストール時の確認を強化しました。** インストール情報と削除対象のファイルを照合し、対象の接続プロセスが終了したことを確認してから削除します。別のインストールが使う連携設定や、無関係なファイルを保持します。
+- **VS Code の設定を保持します。** MCP 登録の追加・更新・除去で、JSONC のコメント、末尾カンマ、他のサーバーや設定を保持します。構文に問題がある設定は上書きせず、エラーを表示します。
+- **ブラウザーセットアップのエラー表示を改善しました。** 接続の拒否、セッションの期限切れ、処理の競合、サーバーエラー、通信断を表示し、復旧方法を案内します。処理中の重複操作を抑制し、結果が不明な操作は自動再送しません。
+- **セットアップの準備状態を確認しやすくしました。** サインイン、エージェントの選択、承認、クライアント連携を個別に表示します。設定の保存完了と、エージェントから実際に回答を取得できることを区別します。
+- **CLI をスクリプトから利用しやすくしました。** `--json` の結果を stdout の単一 JSON オブジェクトにし、進捗と確認は stderr に出力します。`doctor` の終了コードは正常 `0`、問題あり `1`、診断実行失敗 `2` です。ヘルプ・バージョン表示と MCP 通信用の `serve` は、この JSON 出力の対象外です。
+- **ランチャーとバージョン切り替えを修正しました。** ESM プロジェクト内のインストール先でも `apl` が起動します。不正なバージョン名や不完全なパッケージへの切り替えを拒否し、更新・切り替え・削除の同時実行による競合を防ぎます。
+- **AI クライアント向けの案内を整理しました。** 初期案内を簡潔にし、生成ファイルの形式ごとの確認方法を MCP リソース `apl://guidance/file-generation` で参照できるようにしました。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.1.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。
+
+ポータブル版を使う場合は、お使いの OS・CPU 向けのアーカイブを展開し、そのフォルダーで `apl-setup <ワークスペース>` を実行してください。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+アンインストール時にインストール情報の破損が報告された場合は、同じ場所へ再インストールして修復してから削除してください。`--yes` は操作確認だけを省略し、削除対象の検証は省略しません。`--purge-data` は共有データを使用中の別の接続プロセスがある場合、削除を拒否します。
+
+### 配布物
+
+- `agent-pick-link-0.2.1.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.1-win-x64.zip` / `AgentPickLink-0.2.1-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.1-darwin-arm64.tgz` / `AgentPickLink-0.2.1-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.1-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.1-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux の通常利用は対象外で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。WSL、Remote SSH、Dev Containers、Codespaces、マルチルートのワークスペース、無人運転には対応しません。
+
+この版では Windows 実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。自動テストやローカルの接続確認は、テナントごとの動作を保証するものではありません。詳しくは [対応環境と検証範囲](RELEASE-CHECKLIST.md)、導入手順は [README](README.md) を参照してください。
+
+### English
+
+- **Safer uninstall.** Validate installation metadata and owned files, wait for the matching connection process to exit, and preserve unrelated files and settings belonging to other installations.
+- **Preserve VS Code settings.** Adding, updating, or removing MCP entries retains JSONC comments, trailing commas, other servers, and unrelated settings. Invalid configuration is reported without overwriting it.
+- **Clearer browser setup errors.** Show access denial, expired sessions, conflicts, server errors, and connection failures with recovery guidance. Prevent duplicate pending operations and never automatically resend operations with an uncertain result.
+- **Clearer setup readiness.** Show sign-in, agent selection, approval, and client integration separately. Saving settings does not imply that a live agent response has been verified.
+- **Consistent CLI output.** `--json` returns one JSON object on stdout, with progress and prompts on stderr. `doctor` exits `0` for healthy, `1` for findings, and `2` for execution failure. Help, version display, and the MCP-only `serve` command are excluded from this JSON contract.
+- **Reliable launchers and version changes.** Run the launcher from installation paths inside ESM projects, reject invalid version names and incomplete packages, and coordinate concurrent updates, version changes, and removal.
+- **Focused AI client guidance.** Keep initial instructions concise and expose format-specific generated-file checks through the `apl://guidance/file-generation` MCP resource.
+
+To update, install `agent-pick-link-0.2.1.vsix`, reload VS Code, and restart external clients' MCP connections. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused.
+
+If uninstall reports damaged installation metadata, reinstall to the same location before removing it. `--yes` skips confirmation only. `--purge-data` refuses to remove shared data while another connection process uses it.
+
+Downloads include the VSIX, portable archives for Windows x64 / ARM64 and macOS Apple Silicon / Intel, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+This beta primarily targets Windows 11 with Edge; macOS is for development and verification. Linux is not supported for normal use, and standard `serve` returns `PLATFORM_UNSUPPORTED`. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, and unattended operation remain unsupported.
+
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for this version. Automated tests and local connection checks do not establish tenant compatibility. See the [English README](README.en.md) and [validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.0 Beta
 
 ### 主な変更

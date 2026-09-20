@@ -1,3 +1,4 @@
+import { parseVscodeSettings } from "../../services/jsonc-settings.js";
 import { access, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -138,7 +139,7 @@ function looksLikeDuplicate(entry: unknown): boolean {
 function jsonDuplicateKeys(text: string, containerKey: "servers" | "mcpServers"): string[] {
   let document: unknown;
   try {
-    document = JSON.parse(text);
+    document = containerKey === "servers" ? parseVscodeSettings(text).value : JSON.parse(text);
   } catch {
     return [];
   }
@@ -399,7 +400,7 @@ export async function runDoctor(
         topologyReady ? "BROKER_UNAVAILABLE" : "REMOTE_HOST_UNSUPPORTED",
         topologyReady
           ? "The broker could not be started."
-          : "Optional browser checks require the supported local Windows topology.",
+          : "Optional browser checks require a supported local desktop topology.",
         topologyReady
       )
     );

@@ -2,7 +2,11 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { expect, it } from "vitest";
 import type { FrontendBrokerPort } from "../../src/frontend/broker-port.js";
 import { createSdkServer } from "../../src/frontend/mcp-server.js";
-import { FILE_GENERATION_INSTRUCTIONS } from "../../src/frontend/file-generation-guidance.js";
+import {
+  FILE_GENERATION_INSTRUCTIONS,
+  CORE_INSTRUCTIONS,
+  FILE_GENERATION_GUIDANCE_URI
+} from "../../src/frontend/file-generation-guidance.js";
 
 it("delivers portability guidance during MCP negotiation without rewriting the caller's message", async () => {
   const messages: string[] = [];
@@ -37,7 +41,10 @@ it("delivers portability guidance during MCP negotiation without rewriting the c
   try {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
-    expect(client.getInstructions()).toBe(FILE_GENERATION_INSTRUCTIONS);
+    expect(client.getInstructions()).toBe(CORE_INSTRUCTIONS);
+    expect(CORE_INSTRUCTIONS.length).toBeLessThan(900);
+    const guidance = await client.readResource({ uri: FILE_GENERATION_GUIDANCE_URI });
+    expect(guidance.contents[0]).toMatchObject({ text: FILE_GENERATION_INSTRUCTIONS });
     const message = "日本語の表をPDFにしてください。内容は変更しないでください。";
     const result = await client.callTool({
       name: "m365_agent_ask",
