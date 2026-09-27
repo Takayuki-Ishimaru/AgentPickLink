@@ -988,7 +988,8 @@ describe("SetupService.restartBroker", () => {
             throw new Error(
               "connect() must not be called when the previous broker never released its endpoint"
             );
-          }
+          },
+          restartFallbackTimeoutMs: 300
         })
       );
 
@@ -996,12 +997,13 @@ describe("SetupService.restartBroker", () => {
       // with `prepare()`'s genuine filesystem I/O (via `initializeLocalState`), and fake timers
       // (which only intercept `setTimeout`, not libuv's I/O completion) cannot reliably drive a
       // promise chain that also depends on real I/O to progress -- it hangs waiting for the real
-      // work while nothing is left to advance the fake clock. This test therefore genuinely waits
-      // out the ~10s deadline; the generous timeout below covers CI scheduling slack.
+      // work while nothing is left to advance the fake clock. The 10s production deadline is
+      // shrunk to 300ms instead, which still runs several of the loop's 50ms retries.
       await expect(service.restartBroker()).rejects.toMatchObject({
         code: "BROKER_UNAVAILABLE",
         options: { remediation: "run: m365-agent broker restart" }
       });
+      expect(existingCalls).toBeGreaterThan(2);
     },
     process.platform === "win32" ? 60_000 : 15_000
   );

@@ -130,6 +130,9 @@ export type SetupDeps = {
   root: () => string;
   /** Browser detection seam (defaults to HealthService.browser); injected so tests stay deterministic. */
   detectBrowser?: (channel: string) => Promise<BrowserDetection>;
+  /** How long `restartBroker()` waits for a previous broker without the `stopping` marker to
+   * release its endpoint (default 10 s); tests shrink it instead of waiting it out. */
+  restartFallbackTimeoutMs?: number;
 };
 
 export type AgentCandidate = {
@@ -878,7 +881,10 @@ export class SetupService {
     // response budget. Older descriptors have no state marker, so retain the short bounded
     // fallback rather than waiting indefinitely on a wedged installed broker.
     const deadline =
-      Date.now() + (stoppingDescriptor?.state === "stopping" ? BROKER_STOP_TIMEOUT_MS : 10_000);
+      Date.now() +
+      (stoppingDescriptor?.state === "stopping"
+        ? BROKER_STOP_TIMEOUT_MS
+        : (this.deps.restartFallbackTimeoutMs ?? 10_000));
     let gone = false;
     while (Date.now() < deadline) {
       let probe: IpcClient | undefined;

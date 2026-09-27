@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { getStaticTOMLValue, parseTOML } from "toml-eslint-parser";
 import { DomainError } from "../../domain/errors.js";
 import type { ToolError } from "../../frontend/schemas.js";
+import type { IpcClient } from "../../ipc/client.js";
 import {
   checkClientPolicies,
   defaultClientPolicyIo,
@@ -18,10 +19,10 @@ import {
   MCP_SERVER_NAME,
   expandIntegrationValue,
   integrationEntryStatus,
-  parseCodexEntry,
-  parseJsonEntry,
-  type IntegrationEntryStatus,
-  type IntegrationKind
+  readIntegrationEntry,
+  type IntegrationFileStatus,
+  type IntegrationKind,
+  type ParsedIntegrationEntry
 } from "../../services/integrations.js";
 import { compareVersions } from "../../services/update-checker.js";
 import { brokerLogPath, readBrokerLogTail } from "../../observability/broker-log.js";
@@ -171,7 +172,8 @@ function codexDuplicateKeys(text: string): string[] {
 export type DoctorClientFileReport = {
   client: DoctorClientId;
   file: string;
-  status: IntegrationEntryStatus;
+  /** `"invalid"`: the file exists but cannot be parsed (a `client.<id>` finding). */
+  status: IntegrationFileStatus;
   /** `undefined` when the entry is absent; otherwise whether its recorded `command` exists on
    * this machine -- `false` means "written on another machine or user; re-run apl-setup" (§4.7
    * C9's `doctor` row). */
@@ -286,16 +288,16 @@ async function checkInstallConsistency(deps: CommandDeps): Promise<DoctorInstall
       const text = await readIfPresent(file);
       if (text === undefined) return { client, file, status: "absent", duplicateKeys: [] };
       const kind = kindFor(client);
-      const status: IntegrationEntryStatus = definition
+      let entry: ParsedIntegrationEntry | undefined;
+      try {
+        entry = readIntegrationEntry(text, kind);
+      } catch {
+        // Reported, not thrown: one unparseable client file used to abort the whole diagnosis.
+        return { client, file, status: "invalid", duplicateKeys: [] };
+      }
+      const status: IntegrationFileStatus = definition
         ? integrationEntryStatus(text, kind, definition, variables)
         : "absent";
-      const entry =
-        kind === "codex"
-          ? parseCodexEntry(text)?.command
-          : parseJsonEntry(
-              text,
-              kind as Extract<IntegrationKind, "claudeCode" | "vscodeMcpJson" | "vscodeUser" | "claudeUser">
-            )?.command;
       const duplicateKeys =
         kind === "codex"
           ? codexDuplicateKeys(text)
@@ -307,7 +309,9 @@ async function checkInstallConsistency(deps: CommandDeps): Promise<DoctorInstall
         client,
         file,
         status,
-        ...(status !== "absent" ? { commandResolvable: await commandResolves(entry, kind, variables) } : {}),
+        ...(status !== "absent"
+          ? { commandResolvable: await commandResolves(entry?.command, kind, variables) }
+          : {}),
         duplicateKeys
       };
     })
@@ -356,6 +360,25 @@ function isWithin(root: string, target: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/** A live broker's `broker.health` answer, or `{ error }` when the RPC itself failed -- the same
+ * `error` field the not-live broker report carries. */
+async function brokerHealth(broker: IpcClient): Promise<Record<string, unknown>> {
+  try {
+    return (await broker.call("broker.health", {})) as Record<string, unknown>;
+  } catch (value) {
+    return { error: toToolError(value) };
+  }
+}
+
+/** An optional probe's answer, or its failure as the ToolError the report records in its place. */
+async function answerOrError(call: Promise<unknown>): Promise<unknown> {
+  try {
+    return await call;
+  } catch (value) {
+    return toToolError(value);
+  }
+}
+
 /**
  * §30.5. Delegates every local prerequisite/configuration check to the shared HealthService
  * (also used by the broker's `broker.health`) so `doctor` and the broker can never drift apart.
@@ -372,45 +395,50 @@ export async function runDoctor(
   result.installConsistency = await checkInstallConsistency(deps);
   // Read before connecting: connectExistingBroker cleans up a stale descriptor it rejects.
   const descriptor = await health.descriptorState();
-  let broker;
+  let broker: IpcClient | undefined;
   let brokerFailure: ToolError | undefined;
+  // v0.2.3 re-evaluation, finding A: the connection is closed in `finally` whatever the RPCs below
+  // do -- an open IPC socket kept the CLI process alive after it had printed an error -- and a
+  // failed RPC is recorded as that item's ToolError (`broker.error`/`authentication.error`/
+  // `agent.error` in doctorFindings) instead of discarding the whole report.
   try {
-    broker = await deps.connectExistingBroker(deps.paths);
-  } catch (value) {
-    brokerFailure = toToolError(value);
-  }
-  result.broker = broker
-    ? {
-        live: true,
-        descriptorPresent: true,
-        ...((await broker.call("broker.health", {})) as Record<string, unknown>)
-      }
-    : { live: false, ...descriptor, ...(brokerFailure ? { error: brokerFailure } : {}) };
-  if ((options?.auth || options?.agent) && topologyReady && !broker) {
     try {
-      broker = await deps.connectOrStartDefaultBroker(deps.paths);
+      broker = await deps.connectExistingBroker(deps.paths);
     } catch (value) {
       brokerFailure = toToolError(value);
     }
+    result.broker = broker
+      ? { live: true, descriptorPresent: true, ...(await brokerHealth(broker)) }
+      : { live: false, ...descriptor, ...(brokerFailure ? { error: brokerFailure } : {}) };
+    if ((options?.auth || options?.agent) && topologyReady && !broker) {
+      try {
+        broker = await deps.connectOrStartDefaultBroker(deps.paths);
+      } catch (value) {
+        brokerFailure = toToolError(value);
+      }
+    }
+    const unavailable =
+      brokerFailure ??
+      toToolError(
+        new DomainError(
+          topologyReady ? "BROKER_UNAVAILABLE" : "REMOTE_HOST_UNSUPPORTED",
+          topologyReady
+            ? "The broker could not be started."
+            : "Optional browser checks require a supported local desktop topology.",
+          topologyReady
+        )
+      );
+    if (options?.auth)
+      result.authentication = broker
+        ? await answerOrError(broker.call("browser.authState", {}))
+        : unavailable;
+    if (options?.agent)
+      result.agent = broker
+        ? await answerOrError(broker.call("agent.validate", { agent: options.agent, sendTestMessage: false }))
+        : unavailable;
+  } finally {
+    broker?.close();
   }
-  const unavailable =
-    brokerFailure ??
-    toToolError(
-      new DomainError(
-        topologyReady ? "BROKER_UNAVAILABLE" : "REMOTE_HOST_UNSUPPORTED",
-        topologyReady
-          ? "The broker could not be started."
-          : "Optional browser checks require a supported local desktop topology.",
-        topologyReady
-      )
-    );
-  if (options?.auth)
-    result.authentication = broker ? await broker.call("browser.authState", {}) : unavailable;
-  if (options?.agent)
-    result.agent = broker
-      ? await broker.call("agent.validate", { agent: options.agent, sendTestMessage: false })
-      : unavailable;
-  broker?.close();
   // item 1: when a BROWSER_START_FAILED was recorded anywhere in this run (a live incident, or a
   // broker/authentication/agent-validate call that itself failed with that code), print
   // broker.log's path and its last 20 lines (metadata only) so a report is diagnosable without a
@@ -452,6 +480,10 @@ export function doctorFindings(report: Record<string, unknown>): string[] {
     else if (agent.valid === false) findings.push("agent.invalid");
     else if (agent.valid !== true) findings.push("agent.unknown");
   }
+  // A running broker whose `broker.health` RPC failed. No running broker at all stays neutral:
+  // the next command that needs one starts it.
+  const broker = object(report.broker);
+  if (broker.live === true && broker.error) findings.push("broker.error");
   for (const [name, fields] of Object.entries({
     topology: ["supported"],
     node: ["supported"],

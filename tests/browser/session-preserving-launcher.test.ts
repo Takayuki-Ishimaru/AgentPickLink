@@ -18,8 +18,12 @@ const executable = [
   "/usr/bin/google-chrome"
 ].find((candidate): candidate is string => !!candidate && existsSync(candidate));
 
+// Tests that open a visible browser window run only with M365_AGENT_TEST_HEADED=1 on a developer
+// machine, so a routine run neither puts windows on the screen nor pays for a headed browser.
+const HEADED = process.env.M365_AGENT_TEST_HEADED === "1";
+
 describe.skipIf(!executable || !!process.env.CI)("session-preserving launcher", () => {
-  it.skipIf(process.platform !== "win32")(
+  it.skipIf(process.platform !== "win32" || !HEADED)(
     "hides only its own Windows browser and keeps new tabs hidden",
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), "apl-native-hide-"));
@@ -86,75 +90,79 @@ describe.skipIf(!executable || !!process.env.CI)("session-preserving launcher", 
     120_000
   );
 
-  it("denies sign-in downloads, then saves automation downloads and cleans staging on close", async () => {
-    const profile = await mkdtemp(path.join(os.tmpdir(), "apl-retained-downloads-"));
-    const server = http.createServer((req, res) => {
-      if (req.url === "/download") {
-        res.writeHead(200, {
-          "Content-Disposition": 'attachment; filename="test.txt"',
-          "Content-Type": "text/plain"
-        });
-        res.end("synthetic attachment bytes");
-      } else {
-        res.setHeader("Content-Type", "text/html");
-        res.end('<a href="/download">Download</a>');
-      }
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("fixture port missing");
-    const origin = `http://127.0.0.1:${address.port}`;
-    const hiddenPids: number[] = [];
-    let loginPageClosedAtFirstHide: boolean | undefined;
-    const launcher = createBrowserLauncher(chromium, async (pid) => {
-      if (hiddenPids.length === 0) loginPageClosedAtFirstHide = context?.pages()[0]?.isClosed();
-      hiddenPids.push(pid);
-    });
-    let context: (BrowserContext & BrowserContextLike) | undefined;
-    try {
-      context = (await launcher.launchInteractiveContext!(
-        profile,
-        {
-          executablePath: executable,
-          headless: false,
-          timeout: 15_000
-        },
-        { headless: false, acceptDownloads: true }
-      )) as BrowserContext & BrowserContextLike;
-      const page = context.pages()[0];
-      await page.goto(origin);
-      const denied = page.waitForEvent("download", { timeout: 5_000 });
-      await page.getByRole("link", { name: "Download" }).click();
-      expect(await (await denied).failure()).toBeTruthy();
-      const staging = (await readdir(profile)).filter((name) => name.startsWith(".apl-downloads-"));
-      expect(staging).toHaveLength(1);
-      expect(await readdir(path.join(profile, staging[0]))).toEqual([]);
+  it.skipIf(!HEADED)(
+    "denies sign-in downloads, then saves automation downloads and cleans staging on close",
+    async () => {
+      const profile = await mkdtemp(path.join(os.tmpdir(), "apl-retained-downloads-"));
+      const server = http.createServer((req, res) => {
+        if (req.url === "/download") {
+          res.writeHead(200, {
+            "Content-Disposition": 'attachment; filename="test.txt"',
+            "Content-Type": "text/plain"
+          });
+          res.end("synthetic attachment bytes");
+        } else {
+          res.setHeader("Content-Type", "text/html");
+          res.end('<a href="/download">Download</a>');
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("fixture port missing");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const hiddenPids: number[] = [];
+      let loginPageClosedAtFirstHide: boolean | undefined;
+      const launcher = createBrowserLauncher(chromium, async (pid) => {
+        if (hiddenPids.length === 0) loginPageClosedAtFirstHide = context?.pages()[0]?.isClosed();
+        hiddenPids.push(pid);
+      });
+      let context: (BrowserContext & BrowserContextLike) | undefined;
+      try {
+        context = (await launcher.launchInteractiveContext!(
+          profile,
+          {
+            executablePath: executable,
+            headless: false,
+            timeout: 15_000
+          },
+          { headless: false, acceptDownloads: true }
+        )) as BrowserContext & BrowserContextLike;
+        const page = context.pages()[0];
+        await page.goto(origin);
+        const denied = page.waitForEvent("download", { timeout: 5_000 });
+        await page.getByRole("link", { name: "Download" }).click();
+        expect(await (await denied).failure()).toBeTruthy();
+        const staging = (await readdir(profile)).filter((name) => name.startsWith(".apl-downloads-"));
+        expect(staging).toHaveLength(1);
+        expect(await readdir(path.join(profile, staging[0]))).toEqual([]);
 
-      await context.completeInteractiveLogin!();
-      expect(page.isClosed()).toBe(true);
-      expect(loginPageClosedAtFirstHide).toBe(false);
-      const work = await context.newPage();
-      await work.goto(origin);
-      const allowed = work.waitForEvent("download", { timeout: 5_000 });
-      await work.getByRole("link", { name: "Download" }).click();
-      const download = await allowed;
-      expect(await download.failure()).toBeNull();
-      const saved = await download.path();
-      expect(saved).toBeTruthy();
-      expect(await readFile(saved!, "utf8")).toBe("synthetic attachment bytes");
-      expect(hiddenPids.length).toBeGreaterThan(1);
-      expect(new Set(hiddenPids).size).toBe(1);
-      await context.close();
-      context = undefined;
-      expect(existsSync(path.join(profile, staging[0]))).toBe(false);
-    } finally {
-      await context?.close();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      );
-      await rm(profile, { recursive: true, force: true });
-    }
-  }, 45_000);
+        await context.completeInteractiveLogin!();
+        expect(page.isClosed()).toBe(true);
+        expect(loginPageClosedAtFirstHide).toBe(false);
+        const work = await context.newPage();
+        await work.goto(origin);
+        const allowed = work.waitForEvent("download", { timeout: 5_000 });
+        await work.getByRole("link", { name: "Download" }).click();
+        const download = await allowed;
+        expect(await download.failure()).toBeNull();
+        const saved = await download.path();
+        expect(saved).toBeTruthy();
+        expect(await readFile(saved!, "utf8")).toBe("synthetic attachment bytes");
+        expect(hiddenPids.length).toBeGreaterThan(1);
+        expect(new Set(hiddenPids).size).toBe(1);
+        await context.close();
+        context = undefined;
+        expect(existsSync(path.join(profile, staging[0]))).toBe(false);
+      } finally {
+        await context?.close();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        );
+        await rm(profile, { recursive: true, force: true });
+      }
+    },
+    45_000
+  );
 
   it("rejects the handoff when native hiding fails", async () => {
     const profile = await mkdtemp(path.join(os.tmpdir(), "apl-hide-failed-"));

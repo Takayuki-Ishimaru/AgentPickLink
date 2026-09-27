@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
-import { chromium } from "playwright-core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { chromium, type Browser } from "playwright-core";
 import { AgentDiscovery } from "../../src/transports/browser/agent-discovery.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import type { BrowserManager } from "../../src/transports/browser/browser-manager.js";
@@ -19,10 +19,19 @@ const executable = [
   "/usr/bin/google-chrome"
 ].find((candidate): candidate is string => !!candidate && existsSync(candidate));
 
+// One browser for the whole file; every test gets its own context, so cookies, storage, routes and
+// exposed functions stay isolated without paying a cold browser start per test.
+let browser: Browser | undefined;
+beforeAll(async () => {
+  if (executable) browser = await chromium.launch({ executablePath: executable, headless: true });
+}, 30_000);
+afterAll(async () => {
+  await browser?.close();
+});
+
 describe.skipIf(!executable)("agent description discovery through a real browser", () => {
   it("reuses fresh descriptions, expires them, and cancels only the discovery page", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
-    const context = await browser.newContext();
+    const context = await browser!.newContext();
     const otherPage = await context.newPage();
     let details = 0;
     let delay = false;
@@ -95,16 +104,16 @@ describe.skipIf(!executable)("agent description discovery through a real browser
       expect(pages.size).toBe(0);
       expect(otherPage.isClosed()).toBe(false);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 60_000);
 
   it(
     "waits for cold metadata for every rail agent even when the store yielded no descriptions",
     async () => {
-      const browser = await chromium.launch({ executablePath: executable, headless: true });
+      const context = await browser!.newContext();
       try {
-        const page = await browser.newPage();
+        const page = await context.newPage();
         const origin = "http://127.0.0.1:9";
         const visits: string[] = [];
         await page.route(`${origin}/**`, async (route) => {
@@ -144,7 +153,7 @@ describe.skipIf(!executable)("agent description discovery through a real browser
         expect(result.warnings).toContain("description-retry:attempted=4 recovered=4");
         expect(page.isClosed()).toBe(true);
       } finally {
-        await browser.close();
+        await context.close();
       }
     },
     process.platform === "win32" ? 60_000 : 15_000
@@ -153,9 +162,9 @@ describe.skipIf(!executable)("agent description discovery through a real browser
   it.each([false, true])(
     "bounds retries and closes the page when missing metadata recovers: %s",
     async (recover) => {
-      const browser = await chromium.launch({ executablePath: executable, headless: true });
+      const context = await browser!.newContext();
       try {
-        const page = await browser.newPage();
+        const page = await context.newPage();
         const actions: string[] = [];
         await page.exposeFunction("recordAction", (action: string) => actions.push(action));
         const origin = "http://127.0.0.1:9";
@@ -244,7 +253,7 @@ describe.skipIf(!executable)("agent description discovery through a real browser
         expect(closed).toBe(1);
         expect(page.isClosed()).toBe(true);
       } finally {
-        await browser.close();
+        await context.close();
       }
     },
     process.platform === "win32" ? 60_000 : 30_000
@@ -282,9 +291,9 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
   }
 
   it("retries a store card whose dialog only opens on a second click, resolves it, and counts the retry as recovered (not partial)", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -320,14 +329,14 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(result.warnings.some((line) => line.startsWith("store-expansion-failed"))).toBe(false);
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
   it("scrolls a store list to the card that exists only once it has actually scrolled into view", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -367,14 +376,14 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(result.warnings.find((line) => line.startsWith("store-catalog:"))).toMatch(/\bscroll=[1-9]\d*/);
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
   it("never resolves a card whose details dialog offers nothing but forbidden controls", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const actions: string[] = [];
       await page.exposeFunction("recordAction", (action: string) => actions.push(action));
       const origin = "http://127.0.0.1:9";
@@ -404,14 +413,14 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(catalogue).toContain("retried=0");
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
   it("recovers a card whose click target a rail re-render replaces between marking and clicking", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -453,7 +462,7 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(result.warnings.find((line) => line.startsWith("store-catalog:"))).toContain("retried=1");
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
@@ -469,9 +478,9 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
    * even after its one bounded retry is a real, *known* loss (`none=1`).
    */
   it('an end-of-list "load more" that stays visible and enabled but yields nothing is not a failure', async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -505,14 +514,14 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(result.warnings.some((line) => line.startsWith("store-expansion-failed"))).toBe(false);
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
   it('a "load more" timeout while items are still arriving is a real, unknown-count failure', async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -559,14 +568,14 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(completeness).toEqual({ partial: true, failedCount: 1, failedCountKnown: false });
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 
   it("a card that never resolves even after its one bounded retry is a real, known loss (none=1)", async () => {
-    const browser = await chromium.launch({ executablePath: executable, headless: true });
+    const context = await browser!.newContext();
     try {
-      const page = await browser.newPage();
+      const page = await context.newPage();
       const origin = "http://127.0.0.1:9";
       await page.route(`${origin}/**`, async (route) => {
         const pathname = new URL(route.request().url()).pathname;
@@ -593,7 +602,7 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
       expect(completeness).toEqual({ partial: true, failedCount: 1, failedCountKnown: true });
       expect(page.isClosed()).toBe(true);
     } finally {
-      await browser.close();
+      await context.close();
     }
   }, 20_000);
 });

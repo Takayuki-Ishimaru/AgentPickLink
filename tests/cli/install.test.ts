@@ -1219,7 +1219,7 @@ describe("install P1-6: partial staging", () => {
     });
 
     // Force a deterministic failure *after* stageVersion has already copied app/2.0.0 into place
-    // (installRuntime/writeLaunchers always succeed here -- process.execPath is a real binary and
+    // (installRuntime/writeLaunchers always succeed here -- deps.runtimeExecutable is a real file and
     // <home>/bin is freshly created): pre-create install.json as a directory, so writeInstallJson's
     // atomicWrite -- a rename onto that path -- fails with EISDIR.
     await mkdir(path.join(home, "install.json"), { recursive: true });

@@ -536,12 +536,45 @@ function classifyEntry(entry: ParsedIntegrationEntry | undefined): IntegrationEn
 }
 
 /**
+ * The `m365-agents` entry of a client file, read with `kind`'s own parser: `undefined` when the file
+ * has none (a blank file included, which every writer treats as empty), and a thrown error when
+ * the file cannot be parsed at all.
+ */
+export function readIntegrationEntry(
+  existingText: string,
+  kind: IntegrationKind
+): ParsedIntegrationEntry | undefined {
+  if (existingText.trim() === "") return undefined;
+  return kind === "codex" ? parseCodexEntry(existingText) : parseJsonEntry(existingText, kind);
+}
+
+/** `IntegrationEntryStatus`, plus `"invalid"` for an existing file that cannot be parsed. */
+export type IntegrationFileStatus = IntegrationEntryStatus | "invalid";
+
+/** `integrationEntryStatus` for callers that report a file's state (`integrations status`) rather
+ * than decide whether to write it: an unparseable file is `"invalid"`, not `"absent"`. */
+export function integrationFileStatus(
+  existingText: string,
+  kind: IntegrationKind,
+  definition: IntegrationDefinition,
+  variables?: IntegrationVariables
+): IntegrationFileStatus {
+  try {
+    readIntegrationEntry(existingText, kind);
+  } catch {
+    return "invalid";
+  }
+  return integrationEntryStatus(existingText, kind, definition, variables);
+}
+
+/**
  * `"absent"` (no `m365-agents` entry in this file), `"managed"` (carries the ownership marker),
  * `"legacy"` (a pre-marker AgentPickLink shape, or -- since a hand-copied or older entry can
  * already match today's identity byte-for-byte without ever having carried the marker -- one whose
  * `command`/`args` already equal `definition`), or `"foreign"` (anything else). An unparseable file
  * is reported `"absent"`: it has nothing this module can classify, and Save-time writing already
- * reports that failure on its own (see `applyIntegrations`).
+ * reports that failure on its own (see `applyIntegrations`); removal checks it first (see
+ * `assertRemovable`).
  */
 export function integrationEntryStatus(
   existingText: string,
@@ -551,7 +584,7 @@ export function integrationEntryStatus(
 ): IntegrationEntryStatus {
   let entry: ParsedIntegrationEntry | undefined;
   try {
-    entry = kind === "codex" ? parseCodexEntry(existingText) : parseJsonEntry(existingText, kind);
+    entry = readIntegrationEntry(existingText, kind);
   } catch {
     return "absent";
   }
@@ -581,7 +614,7 @@ export function integrationNeedsRefresh(
 ): boolean {
   let stored: ParsedIntegrationEntry | undefined;
   try {
-    stored = kind === "codex" ? parseCodexEntry(existingText) : parseJsonEntry(existingText, kind);
+    stored = readIntegrationEntry(existingText, kind);
   } catch {
     return false;
   }
@@ -1069,6 +1102,24 @@ function refuseForeign(
     );
 }
 
+/**
+ * v0.2.3 re-evaluation, finding B: `integrationEntryStatus` reports an unparseable file as
+ * `"absent"`, which on removal meant "nothing to remove" -- a successful no-op although the entry
+ * may still be in the file. `removeIntegrations` checks parseability first instead; the error it
+ * throws has no `code`, so it is recorded as `"invalid-configuration"` and the file stays as is. A
+ * missing file, and a parseable one without the entry, remain idempotent successes.
+ */
+function assertRemovable(existing: string, kind: IntegrationKind): void {
+  try {
+    readIntegrationEntry(existing, kind);
+  } catch (error) {
+    throw new Error(
+      `cannot be parsed, so the m365-agents entry could not be checked or removed; left untouched. ${truncateError(error)}`,
+      { cause: error }
+    );
+  }
+}
+
 function removeJsonServerEntry(existing: string, kind: JsonIntegrationKind, opts: RemoveOptions): string {
   const containerKey = containerKeyFor(kind);
   const file = jsonFileLabel(kind);
@@ -1352,7 +1403,8 @@ async function applyClaudeUser(
  * Removes the `claudeUser` integration: `claude mcp remove m365-agents --scope user` when the
  * vendor CLI is available (falling back to the direct file edit on failure), otherwise the direct
  * file edit (`removeClaudeUserMcpJson`) -- same ownership/backup rules as `applyClaudeUser` above.
- * A file with no `m365-agents` entry at all is left alone, matching every other remover here.
+ * A file with no `m365-agents` entry at all is left alone, and an unparseable one is a failure,
+ * matching every other remover here.
  */
 async function removeClaudeUser(
   context: Pick<IntegrationContext, "definition" | "homeDirectory" | "claudeCliAvailable" | "exec">,
@@ -1363,6 +1415,7 @@ async function removeClaudeUser(
   try {
     const existing = await readIfPresent(file);
     if (existing === undefined) return;
+    assertRemovable(existing, "claudeUser");
     const status = integrationEntryStatus(existing, "claudeUser", context.definition);
     if (status === "absent") return;
     if (opts.requireIdentityMatch && integrationNeedsRefresh(existing, context.definition, "claudeUser")) {
@@ -1657,7 +1710,8 @@ async function backupOnce(file: string, content: string): Promise<void> {
  * The inverse of `applyIntegrations`: deletes the `m365-agents` entry from every enabled
  * integration's file (`removeCodexConfigToml`/`removeClaudeMcpJson`/`removeVscodeMcpJson`), used by
  * `self uninstall` and `integrations remove`. A file that does not exist, or has no `m365-agents`
- * entry, is left alone and is not reported as a failure. A `"foreign"` entry (§4.7 C6) is reported
+ * entry, is left alone and is not reported as a failure; one that cannot be parsed is left alone
+ * and reported as a failed `"invalid-configuration"` issue. A `"foreign"` entry (§4.7 C6) is reported
  * in `skipped` and left untouched unless `opts.force` is set, in which case its original bytes are
  * preserved once at `<file>.apl-backup` before it is removed.
  */
@@ -1679,6 +1733,7 @@ export async function removeIntegrations(
     try {
       const existing = await readIfPresent(file);
       if (existing === undefined) return;
+      assertRemovable(existing, kind);
       const status = integrationEntryStatus(existing, kind, context.definition, context.variables);
       if (status === "absent") return;
       if (

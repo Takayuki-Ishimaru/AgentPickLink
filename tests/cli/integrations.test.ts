@@ -1,7 +1,7 @@
 /**
  * `m365-agent integrations write|status|remove|snippet` (docs/extension-less-onboarding.md §4.3).
  */
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -444,5 +444,72 @@ describe("integrations write / remove: ok / errors (APL-REVIEW-02)", () => {
     expect((omitted.clients as Array<{ client: string }>).map((entry) => entry.client)).toEqual(
       expectedClients
     );
+  });
+});
+
+describe("integrations remove / status: an unparseable file (v0.2.3 re-evaluation, finding B)", () => {
+  it.each(["vscode-workspace", "claude-project", "codex", "vscode-user", "claude-user"] as const)(
+    "%s: remove fails with invalid-configuration and leaves the file byte-identical; status reports invalid",
+    async (client) => {
+      const paths = await makeTempPaths();
+      const workspace = await makeWorkspace();
+      const osHome = await makeOsHome();
+      const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+      const file = ((await runIntegrationsWrite(deps, { client, workspace })).written as string[])[0];
+      const valid = await readFile(file, "utf8");
+      const broken = `${valid}\nBROKEN_CONFIG_TOKEN\n`;
+      await writeFile(file, broken, "utf8");
+
+      const result = await runIntegrationsRemove(deps, { client, workspace });
+
+      expect(result).toMatchObject({ ok: false, removed: [], skipped: [] });
+      expect(result.errors).toEqual([
+        { client, file, code: "invalid-configuration", message: expect.stringContaining("cannot be parsed") }
+      ]);
+      expect(await readFile(file, "utf8")).toBe(broken);
+      const status = await runIntegrationsStatus(deps, { client, workspace });
+      expect(status.clients).toEqual([{ client, file, status: "invalid", needsRefresh: false }]);
+
+      // Controls: restored to valid content the entry is removed; removing again (a valid file with
+      // no entry) and removing once the file is gone stay idempotent successes.
+      await writeFile(file, valid, "utf8");
+      expect(await runIntegrationsRemove(deps, { client, workspace })).toMatchObject({
+        ok: true,
+        removed: [file],
+        errors: []
+      });
+      expect(await readFile(file, "utf8")).not.toContain("m365-agents");
+      expect(await runIntegrationsRemove(deps, { client, workspace })).toMatchObject({
+        ok: true,
+        removed: [],
+        errors: []
+      });
+      await rm(file);
+      expect(await runIntegrationsRemove(deps, { client, workspace })).toMatchObject({
+        ok: true,
+        removed: [],
+        errors: []
+      });
+    }
+  );
+
+  it.each([
+    ["vscode-workspace", [".vscode", "mcp.json"]],
+    ["claude-project", [".mcp.json"]]
+  ] as const)("%s: a blank file has nothing to remove and reports absent", async (client, segments) => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+    const file = path.join(workspace, ...segments);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "\n", "utf8");
+
+    const result = await runIntegrationsRemove(deps, { client, workspace });
+
+    expect(result).toMatchObject({ ok: true, removed: [], skipped: [], errors: [] });
+    expect(await readFile(file, "utf8")).toBe("\n");
+    const status = await runIntegrationsStatus(deps, { client, workspace });
+    expect(status.clients).toEqual([{ client, file, status: "absent", needsRefresh: false }]);
   });
 });

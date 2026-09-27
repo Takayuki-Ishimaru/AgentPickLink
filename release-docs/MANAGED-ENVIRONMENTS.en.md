@@ -4,7 +4,7 @@
 
 This page is for IT/security administrators evaluating or deploying AgentPickLink's **extension-less
 install path**: a portable archive that a user downloads from the GitHub Release, extracts, and runs once
-(`apl-setup <workspace>`) instead of installing the VS Code extension. It describes v0.2.3.
+(`apl-setup <workspace>`) instead of installing the VS Code extension. It describes v0.2.4.
 Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and
 Linux is for development/CI only. Check execution controls such as SmartScreen and AppLocker / WDAC,
 and tenant restrictions, in your deployment environment. See the

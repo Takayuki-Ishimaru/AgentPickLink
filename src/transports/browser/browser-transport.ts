@@ -17,7 +17,7 @@ import type {
   TransportDevMode,
   TransportHealth
 } from "../transport.js";
-import { AgentDiscovery } from "./agent-discovery.js";
+import { AgentDiscovery, type AgentDiscoveryOptions } from "./agent-discovery.js";
 import { AgentNavigator } from "./agent-navigator.js";
 import { AttachmentSaver } from "./attachment-saver.js";
 import { AuthDetector } from "./auth-detector.js";
@@ -71,6 +71,12 @@ export interface BrowserTransportOptions {
   pollIntervalMs?: number;
   /** Extra quiet time before an unchanged response counts as complete with no streaming signal. */
   quietStreamingGraceMs?: number;
+  /** Agent discovery's own waits (see `AgentDiscoveryOptions`); production keeps its defaults. The
+   * mock-application browser tests shrink them instead of waiting out ~20 s per discovery. */
+  discovery?: Pick<
+    AgentDiscoveryOptions,
+    "rowsSettleMs" | "storeWaitMs" | "storeItemWaitMs" | "descriptionWaitMs" | "relocateDelayMs"
+  >;
   acceptDownloads?: boolean;
   /** Optional browser knobs, passed straight through to the persistent context. */
   userAgent?: string;
@@ -206,7 +212,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
       appHosts: this.appHosts,
       authHosts: this.signInHosts,
       neutralAppUrl: this.neutralAppUrl,
-      navigationTimeoutMs: this.navigationTimeoutMs
+      navigationTimeoutMs: this.navigationTimeoutMs,
+      ...options.discovery
     });
     this.driver = new ConversationDriver(
       this.navigator,

@@ -278,6 +278,46 @@ describe("self uninstall", () => {
     await expect(readFile(path.join(home, "bin", "apl.js"), "utf8")).rejects.toThrow();
   });
 
+  it("reports an unparseable client file in skippedIntegrations and leaves it byte-identical, while still uninstalling", async () => {
+    const home = await makeHome();
+    const paths = await makeTempPaths();
+    const osHome = await mkdtemp(path.join(os.tmpdir(), "apl-self-oshome-"));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "apl-self-ws-"));
+    const { deps } = makeCommandDeps({
+      paths,
+      homedir: () => osHome,
+      prompter: makeScriptedPrompter({ interactive: true, confirmAnswer: true })
+    });
+    await stageVersionDir(home, "1.0.0");
+    const identity = identityFor({ home, platform: deps.platform });
+    await writeInstallJson(home, {
+      version: "1.0.0",
+      installedBy: "archive",
+      runtime: { path: identity.command, source: "bundled" },
+      identity,
+      clients: ["claude"],
+      workspaces: [workspace],
+      platform: deps.platform,
+      updatedAt: new Date().toISOString()
+    });
+    const managedDefinition = {
+      command: identity.command,
+      args: identity.args,
+      env: { M365_AGENT_MANAGED: "1" }
+    };
+    const file = path.join(workspace, ".mcp.json");
+    const broken = `${mergeClaudeMcpJson(undefined, managedDefinition)}\nBROKEN_CONFIG_TOKEN\n`;
+    await writeFile(file, broken, "utf8");
+
+    const result = await runSelfUninstall(deps, { home });
+
+    expect(result.uninstalled).toBe(true);
+    expect(result.removedIntegrations).toEqual([]);
+    expect(result.skippedIntegrations).toContainEqual(expect.stringContaining(`${file}: cannot be parsed`));
+    expect(await readFile(file, "utf8")).toBe(broken);
+    await expect(readFile(path.join(home, "install.json"), "utf8")).rejects.toThrow();
+  });
+
   it("removes the vscodeUser entry from the VS Code user-profile mcp.json", async () => {
     const home = await makeHome();
     const paths = await makeTempPaths();

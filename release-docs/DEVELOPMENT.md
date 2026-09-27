@@ -1,10 +1,10 @@
 # 開発者向けガイド
 
-v0.2.3 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
+v0.2.4 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
 
 ## 準備
 
-Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.3-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
+Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.4-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
 
 ```sh
 npm ci
@@ -15,9 +15,9 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-生成物は `dist-vsix/agent-pick-link-0.2.3.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
+生成物は `dist-vsix/agent-pick-link-0.2.4.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
 
-ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。
+ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。`npm test` は実ブラウザーを使うテストを最後に 1 ファイルずつ実行します。実ブラウザーを使わないテストだけを実行する場合は `npm run test:unit`、実ブラウザーのテストだけを実行する場合は `npm run test:browser` を使用します。
 
 ## テストの環境差
 
@@ -25,7 +25,9 @@ npm run package:vsix
 
 ブラウザーを使用するテストには、インストール済みの Edge または Chrome が必要です。標準のインストール先以外を使用する場合は、環境変数 `M365_AGENT_TEST_BROWSER` に実行ファイルの絶対パスを指定してください。ブラウザーが見つからない場合、そのテストはスキップされます。
 
-Windows のストレージ・権限テストは Windows でのみ実行されます。対話ウィンドウを開く一部のテストは、`CI` 環境変数が設定された環境ではスキップされます。テスト成功だけで、全 OS や実テナントの動作確認を代替することはできません。
+Windows のストレージ・権限テストは Windows でのみ実行されます。画面にウィンドウを開くテストは既定ではスキップされます。実行する場合は環境変数 `M365_AGENT_TEST_HEADED=1` を指定してください（`CI` 環境変数が設定された環境では常にスキップされます）。テスト成功だけで、全 OS や実テナントの動作確認を代替することはできません。
+
+テストが一時フォルダーに作成したディレクトリは、各テストファイルの終了時と、テスト実行全体の終了時に削除されます。
 
 ## ソースの構成
 
@@ -66,7 +68,7 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 ```sh
 mkdir -p output/portable-pack
 npm pack --pack-destination output/portable-pack
-node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.3.tgz --platform host --out output/portable --smoke
+node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.4.tgz --platform host --out output/portable --smoke
 ```
 
 `--platform` には `win-x64`、`win-arm64`、`darwin-arm64`、`darwin-x64`、`linux-x64` を複数指定できます。Node.js は `scripts/assemble-portable.mjs` の `PINNED_NODE_VERSION`（24.21.0）を nodejs.org から取得し、公式の `SHASUMS256.txt` と照合します。`--cache <dir>` で取得済みのランタイムを再利用し、`--node-version` で版を上書きできます。出力先には `AgentPickLink-<版>-<platform>.zip` / `.tgz` と、各アーカイブの SHA-256 を記録した `SHA256SUMS` が作成されます。`--smoke` は実行中の OS と一致するアーカイブを展開し、同梱 Node.js で CLI と MCP 接続、ローカル接続プロセスの起動・停止を確認します。他の OS 向けアーカイブは、それぞれの OS で `npm run smoke:package -- <展開先> --node <展開先>/runtime/node` を実行して確認してください。

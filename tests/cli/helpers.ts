@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -105,6 +105,21 @@ export async function makeWorkspaceRoot(
   return root;
 }
 
+/** The default `runtimeExecutable`: the binary `install` copies to `<home>/bin/node` when no
+ * bundled runtime exists. It used to be `process.execPath` -- about 120 MB for an official Node
+ * build (the release gates run on one), so each staged install wrote a full copy. On POSIX a
+ * script that answers `--version` like Node does is all these tests ever run; Windows needs a
+ * real PE image, so it keeps the running binary. Pass `runtimeExecutable` to override. */
+let lightRuntime: string | undefined;
+function lightRuntimeExecutable(): string {
+  if (process.platform === "win32") return process.execPath;
+  if (!lightRuntime) {
+    lightRuntime = path.join(mkdtempSync(path.join(os.tmpdir(), "apl-light-runtime-")), "node");
+    writeFileSync(lightRuntime, `#!/bin/sh\necho "${process.version}"\n`, { mode: 0o755 });
+  }
+  return lightRuntime;
+}
+
 /** Builds a CommandDeps for a test, plus the stderr/stdout lines it captured (unless a test
  * overrides `stderr`/`stdout` itself, in which case these arrays simply stay empty). */
 export function makeCommandDeps(overrides: Partial<CommandDeps> & { paths: AppPaths }): {
@@ -121,6 +136,7 @@ export function makeCommandDeps(overrides: Partial<CommandDeps> & { paths: AppPa
   const defaultHome = mkdtempSync(path.join(os.tmpdir(), "apl-cli-home-"));
   const base: CommandDeps = {
     diagnose: async () => ({ ok: true, findings: [] }),
+    runtimeExecutable: lightRuntimeExecutable(),
     paths: overrides.paths,
     root: () => "/repo",
     env: {},

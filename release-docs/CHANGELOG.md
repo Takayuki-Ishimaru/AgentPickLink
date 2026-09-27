@@ -1,5 +1,52 @@
 # リリースノート
 
+## v0.2.4 Beta
+
+### 主な変更
+
+- **診断がエラー表示後に終了しない問題を修正しました。** `doctor --auth` / `--agent` でブラウザーを起動できない場合や接続エラーが起きた場合に、エラー表示後もコマンドが終了しないことがありました。接続を閉じ、失敗した検査は該当項目に理由を含む診断結果として返します（`ok: false`、終了コード `1`）。
+- **壊れた連携設定があっても診断を続けます。** `doctor` は解析できないクライアント設定を `invalid` として報告し、他の検査を続けます。空の設定ファイルは設定なしとして扱います。`integrations status` でも解析できない設定を `invalid` と確認できます。
+- **解析できない設定の削除を成功扱いしません。** `integrations remove` は該当ファイルを変更せず、`errors` の `invalid-configuration` と終了コード `1` で報告します。`--force` を付けても解析エラーは回避できません。`self uninstall` は削除できない連携設定を理由付きの `skippedIntegrations` に記録し、アンインストールを続行します。
+
+スクリプトから `doctor` を使う場合、接続・認証・エージェント検査の失敗は通常の診断結果と終了コード `1` で判定してください。終了コード `2` は診断結果自体を作れない場合です。解析できない連携設定は構文を修正してから削除を再実行してください。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.4.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+### 配布物
+
+- `agent-pick-link-0.2.4.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.4-win-x64.zip` / `AgentPickLink-0.2.4-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.4-darwin-arm64.tgz` / `AgentPickLink-0.2.4-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.4-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.4-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+この版では Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。セットアップの保存完了や `doctor` の正常判定は、実際の回答・生成ファイル取得を保証するものではありません。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed diagnostics staying open after an error.** `doctor --auth` / `--agent` could remain running after a browser startup failure or a connection error. The connection is now closed, and failed checks return a normal diagnostic result with the reason in the affected item (`ok: false`, exit `1`).
+- **Malformed client settings no longer stop the whole diagnosis.** `doctor` reports an unparseable client configuration as `invalid` and continues other checks. Blank files count as no configuration. `integrations status` also reports unparseable settings as `invalid`.
+- **Removing unparseable settings is no longer reported as success.** `integrations remove` leaves the file unchanged and reports `invalid-configuration` in `errors` with exit `1`. `--force` does not bypass parsing errors. `self uninstall` records settings it could not remove in `skippedIntegrations`, with a reason, and continues uninstalling.
+
+Scripts calling `doctor` should handle connection, authentication and agent-check failures through the normal diagnostic report and exit `1`. Exit `2` is reserved for failures that prevent creating the report itself. Fix malformed client configuration syntax before retrying removal.
+
+To update, install `agent-pick-link-0.2.4.vsix`, reload VS Code, and restart external clients' MCP connections. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals and the dedicated browser profile can be reused.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Edge is the primary target; macOS is for development and verification. Linux is for development/CI only. Additional Windows desktop, live-tenant and actual VS Code interface checks have not been performed for this version. Setup completion and a healthy doctor result do not verify live answers or generated files. See the [English README](README.en.md) and [validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.3 Beta
 
 ### 主な変更

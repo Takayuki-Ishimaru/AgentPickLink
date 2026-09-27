@@ -21,7 +21,7 @@ import {
 import { persistedEnvironment } from "../../services/env-policy.js";
 import {
   applyIntegrations,
-  integrationEntryStatus,
+  integrationFileStatus,
   integrationNeedsRefresh,
   integrationVerdict,
   removeIntegrations,
@@ -169,7 +169,7 @@ export async function resolveStandaloneDefinition(
   };
 }
 
-/** Everything `applyIntegrations`/`removeIntegrations`/`integrationEntryStatus` need for a
+/** Everything `applyIntegrations`/`removeIntegrations`/`integrationFileStatus` need for a
  * standalone run: the identity, §4.7 C9's variable prefixes (so a committed workspace file
  * resolves for a teammate on the same OS), and the VS Code user directory for the opt-in
  * `vscodeUser` client -- `undefined` when it does not exist on this machine, so that writer skips
@@ -261,7 +261,7 @@ export async function runIntegrationsStatus(
       const status =
         text === undefined
           ? "absent"
-          : integrationEntryStatus(text, kind, context.definition, context.variables);
+          : integrationFileStatus(text, kind, context.definition, context.variables);
       const needsRefresh =
         text !== undefined
           ? integrationNeedsRefresh(text, context.definition, kind, context.variables)

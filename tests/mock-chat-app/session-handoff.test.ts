@@ -26,6 +26,21 @@ const executable = [
   "/usr/bin/google-chrome"
 ].find((candidate): candidate is string => !!candidate && existsSync(candidate));
 
+// Discovery's production waits are sized for Microsoft 365; the local mock renders at once. Above
+// all, the agent-page description wait defaults to the navigation timeout, and the mock's agents
+// without a description kept every discovery here polling for one until its whole 20 s budget ran
+// out (the `storeWaitMs` these tests used to pass was never forwarded by BrowserTransport).
+const FAST_DISCOVERY = {
+  rowsSettleMs: 1_000,
+  storeWaitMs: 1_000,
+  storeItemWaitMs: 1_000,
+  descriptionWaitMs: 1_000
+};
+// The sign-in handoff describes open a visible browser window. They never run on CI (no desktop)
+// and, on a developer machine, only with M365_AGENT_TEST_HEADED=1: a routine run should neither
+// put windows on the screen nor pay for a headed browser.
+const HEADED = process.env.M365_AGENT_TEST_HEADED === "1" && !process.env.CI;
+
 let app: MockChatApp;
 
 beforeAll(async () => {
@@ -144,7 +159,8 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       authHosts: ["localhost"],
       allowInsecureLoopback: true,
       neutralAppUrl: `${app.origin}/chat/spa?delayMs=1500`,
-      navigationTimeoutMs: 20_000
+      navigationTimeoutMs: 20_000,
+      discovery: FAST_DISCOVERY
     });
 
     const result = await shell.discoverAgents(20_000);
@@ -171,7 +187,7 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       allowInsecureLoopback: true,
       neutralAppUrl: `${app.origin}/chat?store=page`,
       navigationTimeoutMs: 20_000,
-      storeWaitMs: 1_000
+      discovery: FAST_DISCOVERY
     });
 
     const result = await storeLanding.discoverAgents(60_000);
@@ -216,7 +232,7 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       allowInsecureLoopback: true,
       neutralAppUrl: `${app.origin}/chat?store=page&storeHint=1`,
       navigationTimeoutMs: 20_000,
-      storeWaitMs: 1_000
+      discovery: FAST_DISCOVERY
     });
 
     const result = await hinted.discoverAgents(60_000);
@@ -255,7 +271,7 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       allowInsecureLoopback: true,
       neutralAppUrl: `${app.origin}/chat?store=page`,
       navigationTimeoutMs: 20_000,
-      storeWaitMs: 1_000
+      discovery: FAST_DISCOVERY
     });
 
     const first = await storeLanding.discoverAgents(60_000);
@@ -281,7 +297,8 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       authHosts: [],
       allowInsecureLoopback: true,
       neutralAppUrl: `${app.origin}/chat?storeRole=menuitem`,
-      navigationTimeoutMs: 20_000
+      navigationTimeoutMs: 20_000,
+      discovery: FAST_DISCOVERY
     });
 
     const result = await menuItemVariant.discoverAgents(20_000);
@@ -334,9 +351,9 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
   }, 45_000);
 });
 
-// The one test that opens a visible window. Skipped on CI; on a developer machine the mock sign-in
-// page completes by itself, so no human interaction is needed.
-describe.skipIf(!executable || !!process.env.CI)("interactive sign-in handoff", () => {
+// Opens a visible window (see HEADED). The mock sign-in page completes by itself, so no human
+// interaction is needed.
+describe.skipIf(!executable || !HEADED)("interactive sign-in handoff", () => {
   let transport: BrowserTransport;
 
   beforeAll(async () => {
@@ -514,8 +531,8 @@ describe.skipIf(!executable || !!process.env.CI)("interactive sign-in handoff", 
 
 // The real-tenant sequence: the application host serves its shell first, decides client-side
 // whether to render or to hand off to sign-in, and the relaunched hidden context sees the same
-// shell before the chat has rendered. Skipped on CI like the handoff above (visible window).
-describe.skipIf(!executable || !!process.env.CI)(
+// shell before the chat has rendered. Opt-in like the handoff above (visible window).
+describe.skipIf(!executable || !HEADED)(
   "interactive sign-in handoff through an application-host shell",
   () => {
     let transport: BrowserTransport;
@@ -599,6 +616,7 @@ async function makeTransport(
     responseTimeoutMs: 20_000,
     stabilityWindowMs: 100,
     pollIntervalMs: 25,
+    discovery: FAST_DISCOVERY,
     ...overrides
   });
   return { transport, manager };

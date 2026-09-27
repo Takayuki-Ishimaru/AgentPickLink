@@ -192,6 +192,41 @@ describe("doctor > installConsistency (§4.7 C12)", () => {
     expect(codex.commandResolvable).toBeUndefined();
   });
 
+  it("reports an unparseable client file as invalid (a finding) instead of aborting, and a blank one as absent", async () => {
+    const paths = await makeTempPaths();
+    const osHome = await makeIsolatedHome();
+    const workspace = await makeWorkspace();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome, root: () => workspace });
+    const definition = await resolveStandaloneDefinition(deps);
+    await writeFile(
+      path.join(workspace, ".mcp.json"),
+      `${mergeClaudeMcpJson(undefined, definition)}\nBROKEN_CONFIG_TOKEN\n`,
+      "utf8"
+    );
+    await mkdir(path.join(workspace, ".vscode"), { recursive: true });
+    await writeFile(path.join(workspace, ".vscode", "mcp.json"), "", "utf8");
+    await mkdir(path.join(osHome, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(osHome, ".codex", "config.toml"),
+      "[mcp_servers.m365-agents]\nBROKEN\n",
+      "utf8"
+    );
+
+    const result = await runDoctor(deps);
+
+    const clients = (result.installConsistency as { clients: Array<Record<string, unknown>> }).clients;
+    expect(clients.find((c) => c.client === "claude-project")).toEqual({
+      client: "claude-project",
+      file: path.join(workspace, ".mcp.json"),
+      status: "invalid",
+      duplicateKeys: []
+    });
+    expect(clients.find((c) => c.client === "codex")).toMatchObject({ status: "invalid" });
+    expect(clients.find((c) => c.client === "vscode-workspace")).toMatchObject({ status: "absent" });
+    expect(result.findings).toEqual(expect.arrayContaining(["client.claude-project", "client.codex"]));
+    expect(result.findings).not.toContain("client.vscode-workspace");
+  });
+
   it("flags a differently named entry pointing at AgentPickLink as a duplicate", async () => {
     const paths = await makeTempPaths();
     const osHome = await makeIsolatedHome();

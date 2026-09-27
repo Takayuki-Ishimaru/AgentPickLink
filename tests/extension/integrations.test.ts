@@ -8,6 +8,7 @@ import {
   applyIntegrations,
   expandIntegrationValue,
   integrationEntryStatus,
+  integrationFileStatus,
   integrationNeedsRefresh,
   mergeClaudeMcpJson,
   mergeClaudeUserMcpJson,
@@ -16,6 +17,7 @@ import {
   mergeVscodeUserMcpJson,
   parseCodexEntry,
   parseJsonEntry,
+  readIntegrationEntry,
   refreshStaleIntegrations,
   removeClaudeMcpJson,
   removeClaudeUserMcpJson,
@@ -1381,5 +1383,114 @@ describe("ISSUE-02: JSON writers preserve every other byte", () => {
   it("is idempotent (merging the same definition twice yields byte-identical output)", () => {
     const once = mergeVscodeMcpJson(windowsStyleFixture, block);
     expect(mergeVscodeMcpJson(once, block)).toBe(once);
+  });
+});
+
+/* ------------------------------------------ v0.2.3 re-evaluation, finding B: unparseable files */
+
+describe("readIntegrationEntry / integrationFileStatus", () => {
+  const kinds = ["codex", "claudeCode", "vscodeMcpJson", "vscodeUser", "claudeUser"] as const;
+
+  it.each(kinds)("%s: a blank file has no entry and is absent, not invalid", (kind) => {
+    expect(readIntegrationEntry("", kind)).toBeUndefined();
+    expect(readIntegrationEntry(" \n\t\n", kind)).toBeUndefined();
+    expect(integrationFileStatus("\n", kind, block)).toBe("absent");
+  });
+
+  it.each(kinds)(
+    "%s: an unparseable file throws and is invalid (integrationEntryStatus keeps absent)",
+    (kind) => {
+      const text = "{ broken\nBROKEN_CONFIG_TOKEN\n";
+      expect(() => readIntegrationEntry(text, kind)).toThrow();
+      expect(integrationFileStatus(text, kind, block)).toBe("invalid");
+      expect(integrationEntryStatus(text, kind, block)).toBe("absent");
+    }
+  );
+
+  it("classifies a parseable file exactly like integrationEntryStatus", () => {
+    const json = mergeVscodeMcpJson(undefined, managed);
+    expect(integrationFileStatus(json, "vscodeMcpJson", block)).toBe("managed");
+    expect(integrationFileStatus(JSON.stringify({ servers: {} }), "vscodeMcpJson", block)).toBe("absent");
+  });
+});
+
+describe("removeIntegrations: an unparseable file is a failure, never 'nothing to remove'", () => {
+  it("fails every unparseable target with invalid-configuration, including self uninstall's requireIdentityMatch path, and writes nothing", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-remove-invalid-"));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "apl-remove-invalid-ws-"));
+    const userDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-remove-invalid-user-"));
+    const context = {
+      definition: managed,
+      homeDirectory: home,
+      workspaceRoot: workspace,
+      vscodeUserDirectory: userDirectory
+    };
+    const settings = {
+      codex: true,
+      claudeCode: true,
+      vscodeMcpJson: true,
+      vscodeUser: true,
+      claudeUser: true
+    };
+    await applyIntegrations(context, settings);
+    const files = [
+      path.join(home, ".codex", "config.toml"),
+      path.join(workspace, ".mcp.json"),
+      path.join(workspace, ".vscode", "mcp.json"),
+      path.join(userDirectory, "mcp.json"),
+      path.join(home, ".claude.json")
+    ];
+    const broken = new Map<string, string>();
+    for (const file of files) {
+      const text = `${await readFile(file, "utf8")}\nBROKEN_CONFIG_TOKEN\n`;
+      await writeFile(file, text, "utf8");
+      broken.set(file, text);
+    }
+
+    for (const opts of [{}, { requireIdentityMatch: true }, { force: true }]) {
+      const summary = await removeIntegrations(context, settings, opts);
+
+      expect(summary.written).toEqual([]);
+      expect(summary.issues?.map((issue) => [issue.file, issue.code, issue.failed]).sort()).toEqual(
+        files.map((file) => [file, "invalid-configuration", true]).sort()
+      );
+      for (const issue of summary.issues ?? []) expect(issue.message).toContain("cannot be parsed");
+      for (const file of files) expect(await readFile(file, "utf8")).toBe(broken.get(file));
+    }
+    expect((await readdir(workspace)).filter((name) => name.includes(".apl-backup"))).toEqual([]);
+  });
+
+  it("never runs the claude vendor CLI for an unparseable ~/.claude.json", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-clu-remove-invalid-"));
+    const broken = `${mergeClaudeUserMcpJson(undefined, managed)}\nBROKEN_CONFIG_TOKEN\n`;
+    await writeFile(path.join(home, ".claude.json"), broken, "utf8");
+    const exec = vi.fn(async () => ({ stdout: "" }));
+
+    const summary = await removeIntegrations(
+      { definition: managed, homeDirectory: home, claudeCliAvailable: true, exec },
+      { codex: false, claudeCode: false, vscodeMcpJson: false, claudeUser: true }
+    );
+
+    expect(exec).not.toHaveBeenCalled();
+    expect(summary.written).toEqual([]);
+    expect(summary.issues).toEqual([
+      expect.objectContaining({ kind: "claudeUser", code: "invalid-configuration", failed: true })
+    ]);
+    expect(await readFile(path.join(home, ".claude.json"), "utf8")).toBe(broken);
+  });
+
+  it("keeps a blank file an idempotent success", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-remove-blank-"));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "apl-remove-blank-ws-"));
+    await mkdir(path.join(workspace, ".vscode"), { recursive: true });
+    await writeFile(path.join(workspace, ".vscode", "mcp.json"), "", "utf8");
+    await writeFile(path.join(workspace, ".mcp.json"), "\n", "utf8");
+
+    const summary = await removeIntegrations(
+      { definition: managed, homeDirectory: home, workspaceRoot: workspace },
+      { codex: false, claudeCode: true, vscodeMcpJson: true }
+    );
+
+    expect(summary).toMatchObject({ written: [], skipped: [], issues: [] });
   });
 });
