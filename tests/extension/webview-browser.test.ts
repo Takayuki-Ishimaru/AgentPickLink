@@ -2,8 +2,10 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
-import type { PanelState } from "../../src/extension/protocol.js";
+import type { PanelState, SavePlanInput } from "../../src/extension/protocol.js";
+import { buildApplyPlan } from "../../src/extension/plan.js";
 import { candidate, setupStatus } from "./harness.js";
+import { DOWNLOAD_HOST_VECTORS } from "./download-host-vectors.js";
 
 const executable = [
   process.env.M365_AGENT_TEST_BROWSER,
@@ -269,4 +271,111 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
       expect(await page.locator("#completion-clients").innerText()).toBe("確認済み");
     }
   );
+  const sentSaves = async () =>
+    (await page.evaluate(() => (window as unknown as { sent: Array<{ type: string; plan?: unknown }> }).sent))
+      .filter((message) => message.type === "save")
+      .map((message) => message.plan as SavePlanInput);
+  const hostFeedback = () =>
+    page.evaluate(() => ({
+      hosts: (document.getElementById("download-host-preview")?.getAttribute("data-hosts") ?? "")
+        .split(",")
+        .filter(Boolean),
+      invalid: Array.from(document.querySelectorAll("#download-host-feedback li")).map((node) => ({
+        value: node.getAttribute("data-value"),
+        problem: node.getAttribute("data-problem")
+      }))
+    }));
+
+  // APL-REVIEW-04: the live check must reach the same verdict as the host's checkDownloadHosts().
+  it.each(DOWNLOAD_HOST_VECTORS)("checks download hosts like the host does: $text", async (vector) => {
+    await page.getByText("連携とファイルの設定", { exact: true }).click();
+    await page.locator("#download-hosts").fill(vector.text);
+    expect(await hostFeedback()).toEqual({ hosts: vector.hosts, invalid: vector.invalid });
+  });
+
+  it("explains an unusable download host next to the field and blocks Save until it is fixed", async () => {
+    await page.getByText("連携とファイルの設定", { exact: true }).click();
+    await page.locator("#download-hosts").fill("https://bad host/");
+    expect(await page.locator("#download-host-feedback .field-error").innerText()).toContain(
+      "「https://bad host/」: 空白を含んでいます"
+    );
+    expect(await page.locator("#download-host-preview").innerText()).toBe("保存されるホストはありません");
+    expect(await page.locator("#save-button").isEnabled()).toBe(false);
+    expect(await page.locator("#save-blocked-note").isVisible()).toBe(true);
+    // A state refresh re-renders the panel; the verdict and the typed text must survive it.
+    await post({ ...state, liveBrowser: { channel: "chrome", headless: true } });
+    expect(await page.locator("#download-hosts").inputValue()).toBe("https://bad host/");
+    expect(await page.locator("#save-button").isEnabled()).toBe(false);
+
+    await page.locator("#download-hosts").fill("https://Files.Example.com/docs, *.sharepoint.com");
+    expect(await page.locator("#download-host-feedback .field-error").count()).toBe(0);
+    expect(await page.locator("#download-host-preview").innerText()).toBe(
+      "保存されるホスト: *.sharepoint.com, files.example.com"
+    );
+    expect(await page.locator("#save-blocked-note").isVisible()).toBe(false);
+    await page.locator("#save-button").click();
+    expect((await sentSaves()).at(-1)?.downloadHosts).toEqual([
+      "https://Files.Example.com/docs",
+      "*.sharepoint.com"
+    ]);
+  });
+
+  it("shows a typed value verbatim even when it contains replacement patterns", async () => {
+    await page.getByText("連携とファイルの設定", { exact: true }).click();
+    await page.locator("#download-hosts").fill("bad $& $' host");
+    expect(await page.locator("#download-host-feedback li").innerText()).toBe(
+      "「bad $& $' host」: 空白を含んでいます"
+    );
+  });
+
+  it("opens the settings to show the host's refusal, only while the field holds the submitted text", async () => {
+    await post({
+      ...state,
+      status: { ...state.status!, config: { ...state.status!.config, downloadHosts: ["files.example.com"] } }
+    });
+    expect(await page.locator(".options-section").evaluate((node) => (node as HTMLDetailsElement).open)).toBe(
+      false
+    );
+    await page.locator("#save-button").click();
+    await post({
+      ...state,
+      status: { ...state.status!, config: { ...state.status!.config, downloadHosts: ["files.example.com"] } },
+      downloadHostIssues: [{ value: "files.example.com", problem: "invalid-host" }]
+    });
+    expect(await page.locator(".options-section").evaluate((node) => (node as HTMLDetailsElement).open)).toBe(
+      true
+    );
+    expect(await page.locator("#download-host-feedback .field-error").innerText()).toContain(
+      "「files.example.com」: ホスト名に使えない文字または形式です"
+    );
+    expect(await page.locator("#save-button").isEnabled()).toBe(false);
+    await page.locator("#download-hosts").fill("files.example.com, other.example.com");
+    expect(await page.locator("#download-host-feedback .field-error").count()).toBe(0);
+    expect(await page.locator("#save-button").isEnabled()).toBe(true);
+  });
+
+  // APL-REVIEW-03: what the panel submits for an agent registered with OLD_HINT, and what the plan
+  // builder makes of it (apply() and the read-back are covered in tests/unit/setup-service.test.ts).
+  it.each([
+    ["unedited", undefined, "OLD_HINT"],
+    ["changed", "NEW_HINT", "NEW_HINT"],
+    ["cleared", "", ""]
+  ] as const)("submits a %s usage hint as the user left it", async (_case, typed, planned) => {
+    const hinted: PanelState = {
+      ...state,
+      candidates: state.candidates.map((entry, index) =>
+        index === 0 ? { ...entry, registered: { ...entry.registered!, usageHint: "OLD_HINT" } } : entry
+      )
+    };
+    await post(hinted);
+    await page.getByRole("button", { name: "詳細:", exact: false }).first().click();
+    const field = page.locator('[id="usage-agent-0"]');
+    expect(await field.inputValue()).toBe("OLD_HINT");
+    if (typed !== undefined) await field.fill(typed);
+    await page.locator("#save-button").click();
+    const submitted = (await sentSaves()).at(-1)!;
+    expect(submitted.agents[0]).toMatchObject({ key: "agent-0", usageHint: typed ?? "OLD_HINT" });
+    const { plan } = buildApplyPlan(submitted, hinted.candidates);
+    expect(plan.agents[0].usageHint).toBe(planned);
+  });
 });

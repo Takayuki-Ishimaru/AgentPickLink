@@ -23,6 +23,7 @@ import { appPaths, type AppPaths } from "../../src/config/paths.js";
 import { writeDescriptor } from "../../src/broker/broker-descriptor.js";
 import { BROKER_PROTOCOL } from "../../src/ipc/protocol.js";
 import { noopPreparer } from "../cli/helpers.js";
+import { buildApplyPlan } from "../../src/services/setup-plan.js";
 
 /** A fake IpcClient: records every call, dispatches by method name from a script, and (when the
  * script entry carries `progress`) synchronously replays those progress events through
@@ -769,6 +770,80 @@ describe("SetupService.apply", () => {
       code: "AGENT_IDENTITY_UNVERIFIED"
     });
     expect((await loadRegistry(paths)).agents[0].verification.expectedDisplayName).toBe("Old control label");
+  });
+});
+
+/** APL-REVIEW-03: what the panel sends for an agent registered with `OLD_HINT` goes through the real
+ * plan builder and apply(), and the result is read back from disk and from status(). */
+describe("SetupService.apply usage hint round trip", () => {
+  const url = "https://m365.cloud.microsoft/chat/hinted";
+
+  async function saveFromPanel(panelHint: string | undefined) {
+    const paths = await makeTempPaths();
+    const root = await makeWorkspaceRoot();
+    await saveRegistry(paths, {
+      version: 1,
+      agents: [verifiedAgent("hinted", url, { displayName: "Hinted", usageHint: "OLD_HINT" })]
+    });
+    const service = new SetupService(
+      baseDeps(paths, { connectExisting: async () => undefined, root: () => root })
+    );
+    const candidates = (await service.status()).registry;
+    const { plan } = buildApplyPlan(
+      {
+        agents: [{ key: candidates[0].key, ...(panelHint === undefined ? {} : { usageHint: panelHint }) }],
+        downloadHosts: [],
+        acceptDownloads: false,
+        integrations: { codex: false, claudeCode: false, vscodeMcpJson: false }
+      },
+      candidates
+    );
+    await service.apply(plan);
+    return {
+      planned: plan.agents[0].usageHint,
+      stored: (await loadRegistry(paths)).agents[0].usageHint,
+      reread: (await service.status()).registry[0].registered?.usageHint,
+      file: await readFile(paths.registry, "utf8")
+    };
+  }
+
+  it.each([
+    ["unedited (the panel resends the registered hint)", "OLD_HINT"],
+    ["absent (the CLI sends no hint)", undefined]
+  ])("keeps the hint when it is %s", async (_case, panelHint) => {
+    const result = await saveFromPanel(panelHint);
+    expect(result.planned).toBe("OLD_HINT");
+    expect(result.stored).toBe("OLD_HINT");
+    expect(result.reread).toBe("OLD_HINT");
+  });
+
+  it("replaces the hint with a changed value", async () => {
+    const result = await saveFromPanel("  NEW_HINT  ");
+    expect(result.planned).toBe("NEW_HINT");
+    expect(result.stored).toBe("NEW_HINT");
+    expect(result.reread).toBe("NEW_HINT");
+    expect(result.file).not.toContain("OLD_HINT");
+  });
+
+  it.each(["", "   "])("removes the hint when the panel clears it (%j)", async (panelHint) => {
+    const result = await saveFromPanel(panelHint);
+    expect(result.planned).toBe("");
+    expect(result.stored).toBeUndefined();
+    expect(result.reread).toBeUndefined();
+    expect(result.file).not.toContain("OLD_HINT");
+    expect(result.file).not.toMatch(/usageHint/);
+  });
+
+  it("stores no hint for a newly verified agent whose hint field was left empty", async () => {
+    const paths = await makeTempPaths();
+    const root = await makeWorkspaceRoot();
+    const fresh = "https://m365.cloud.microsoft/chat/fresh";
+    const client = makeFakeIpcClient({ "agent.inspectUrl": () => captured(fresh, "Fresh") });
+    const service = new SetupService(
+      baseDeps(paths, { connect: async () => client as unknown as IpcClient, root: () => root })
+    );
+    await service.apply({ agents: [{ url: fresh, displayName: "Fresh", usageHint: "" }] });
+    expect((await loadRegistry(paths)).agents[0].usageHint).toBeUndefined();
   });
 });
 

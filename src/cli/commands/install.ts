@@ -46,6 +46,7 @@ import { persistedEnvironment } from "../../services/env-policy.js";
 import {
   applyIntegrations,
   integrationEntryStatus,
+  integrationVerdict,
   refreshStaleIntegrations,
   removeIntegrations,
   type IntegrationDefinition,
@@ -69,7 +70,7 @@ import { runBrowserSetup } from "../setup-server/browser-host.js";
 import type { TerminalSetupHost, TerminalSetupHostOptions } from "../setup-host-terminal.js";
 import { withYes } from "../ui/prompts.js";
 import { runDoctor } from "./doctor.js";
-import { snippetFor } from "./integrations.js";
+import { clientTokenFor, snippetFor } from "./integrations.js";
 
 export type InstallCommandOptions = {
   workspaces: string[];
@@ -185,6 +186,14 @@ export type InstallReport = {
    * recorded a BROWSER_START_FAILED (`verifyErrorCode` or any workspace's `errorCode`) -- so a
    * failure report is diagnosable without a separate file lookup. */
   brokerLog?: { path: string; tail: string[] };
+  /** APL-REVIEW-02: every failed issue (`IntegrationIssue.failed: true`) from a *selected* client's
+   * write, across every per-workspace Save plus the once-per-run `vscodeUser`/`claudeUser` writes
+   * (`integrationVerdict`, src/services/integrations.ts) -- so a script cannot see `exitCode` 0/2
+   * and believe a requested client was actually written when its file was left untouched (a
+   * malformed existing file, a foreign entry without `--force`, ...). Present only when non-empty;
+   * any entry here forces `exitCode` to `3`. `client` is the same canonical CLI token
+   * `integrations write`'s own `errors` use (`clientTokenFor`). */
+  clientErrors?: Array<{ client: string; file: string; code: string; message: string }>;
 };
 
 const CLIENT_IDS: readonly ClientId[] = ["vscode", "claude", "codex"];
@@ -1134,6 +1143,9 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
     const integrations = toIntegrationFlags(selection);
     const clientFiles = new Map<ClientId, Set<string>>(CLIENT_IDS.map((id) => [id, new Set<string>()]));
     const workspaceReports: InstallWorkspaceReport[] = [];
+    // APL-REVIEW-02: every failed issue from a selected client's write, across every workspace's
+    // Save plus the once-per-run vscodeUser/claudeUser writes below -- see `InstallReport.clientErrors`.
+    const clientErrors: NonNullable<InstallReport["clientErrors"]> = [];
     let discoverySnapshot: PanelState | undefined;
 
     for (const workspace of workspaces) {
@@ -1303,6 +1315,23 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       }
       if (options.browser) discoverySnapshot = host.lastPanelState();
       const summary = host.savedSummary();
+      // APL-REVIEW-02: fold this workspace's own Save failures (a selected `vscode-workspace`/
+      // `claude-project`/`codex` write that did not happen -- a malformed existing file, a foreign
+      // entry without --force, ...) into the run's `clientErrors`. `summary` is only ever set once
+      // `SetupController.save()` has patched `PanelState.integrations` to the flags it actually
+      // saved with (see that method), so read those back rather than this run's own `--clients`
+      // selection -- the browser flow lets the user change the checkboxes after this run seeded
+      // them, and by the time `summary` exists that Save has already used whatever they chose.
+      if (summary) {
+        const usedIntegrations = host.lastPanelState()?.integrations ?? integrations;
+        for (const issue of integrationVerdict(usedIntegrations, summary).errors)
+          clientErrors.push({
+            client: clientTokenFor(issue.kind),
+            file: issue.file,
+            code: issue.code,
+            message: issue.message
+          });
+      }
       for (const file of summary?.written ?? []) {
         for (const id of CLIENT_IDS)
           if (isClientFile(id, file, workspace, deps.homedir())) clientFiles.get(id)!.add(file);
@@ -1342,9 +1371,22 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
     });
     let vscodeUserSummary: IntegrationSummary | undefined;
     if (selection.vscodeUser) {
-      if (!vscodeUserDirectory)
-        vscodeUserSummary = { written: [], skipped: [t("installVscodeUserSkippedNoUserDir")] };
-      else {
+      if (!vscodeUserDirectory) {
+        const message = t("installVscodeUserSkippedNoUserDir");
+        vscodeUserSummary = {
+          written: [],
+          skipped: [message],
+          issues: [
+            {
+              kind: "vscodeUser",
+              file: "mcp.json (vscode-user)",
+              code: "user-directory-missing",
+              message,
+              failed: true
+            }
+          ]
+        };
+      } else {
         // ISSUE-2026-09-14-14: create it now, current-user-default permissions (this is VS Code's own
         // directory tree, not one of AgentPickLink's sensitive stores, so `ensurePrivateDirectory`'s
         // forced 0700/ACL lockdown does not apply here -- a plain, recursive mkdir matches what VS
@@ -1360,6 +1402,15 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       }
       for (const line of [...vscodeUserSummary.skipped, ...(vscodeUserSummary.warnings ?? [])])
         deps.stderr(`${line}\n`);
+      // APL-REVIEW-02: this per-machine write runs once per install, independent of any workspace's
+      // own Save -- fold its failures into `clientErrors` the same way.
+      for (const issue of integrationVerdict({ vscodeUser: true }, vscodeUserSummary).errors)
+        clientErrors.push({
+          client: clientTokenFor(issue.kind),
+          file: issue.file,
+          code: issue.code,
+          message: issue.message
+        });
     }
     let claudeUserSummary: IntegrationSummary | undefined;
     if (selection.claudeUser) {
@@ -1373,6 +1424,13 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         { codex: false, claudeCode: false, vscodeMcpJson: false, claudeUser: true }
       );
       for (const line of claudeUserSummary.skipped) deps.stderr(`${line}\n`);
+      for (const issue of integrationVerdict({ claudeUser: true }, claudeUserSummary).errors)
+        clientErrors.push({
+          client: clientTokenFor(issue.kind),
+          file: issue.file,
+          code: issue.code,
+          message: issue.message
+        });
     }
 
     /* -------------------------------------------------------------- verify */
@@ -1476,9 +1534,12 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
     ];
 
     // P0-2: any workspace whose Save did not actually complete forces exit 3, on the same footing as
-    // a failed verify.
+    // a failed verify. APL-REVIEW-02: so does a selected client whose write actually failed (as
+    // opposed to nothing having been selected/detected at all, which stays exit 2) -- a script that
+    // checks only the exit code must not believe a requested client was written when it was not.
     const anyWorkspaceError = workspaceReports.some((workspace) => workspace.error);
-    const exitCode: InstallReport["exitCode"] = !verified || anyWorkspaceError ? 3 : anyClientWritten ? 0 : 2;
+    const exitCode: InstallReport["exitCode"] =
+      !verified || anyWorkspaceError || clientErrors.length > 0 ? 3 : anyClientWritten ? 0 : 2;
     // item 1: when this run recorded a BROWSER_START_FAILED (staging/verify or any workspace's own
     // Save), print broker.log's path and its last 20 lines (metadata only) alongside the failure.
     const browserStartFailed =
@@ -1506,6 +1567,7 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       migrations: migratedRemovals.map(({ workspace, file }) => ({ workspace, file })),
       instructions,
       ...(brokerLog ? { brokerLog } : {}),
+      ...(clientErrors.length > 0 ? { clientErrors } : {}),
       exitCode
     };
   } finally {
@@ -1628,6 +1690,14 @@ export function formatInstallReport(report: InstallReport, locale: Locale = "en"
   }
   for (const removal of report.migrations)
     lines.push(`${report.dryRun ? "would remove" : "removed"}: ${removal.file}`);
+  // APL-REVIEW-02: printed only when a selected client's write actually failed (see runInstall's
+  // `clientErrors`) -- reuses the existing `<client>: <reason>` style of the `vscode-user`/
+  // `claude-user` lines above.
+  if (report.clientErrors && report.clientErrors.length > 0) {
+    lines.push(t("installClientErrorsHeader"));
+    for (const clientError of report.clientErrors)
+      lines.push(`  ${clientError.client}: ${clientError.message}`);
+  }
   // item 1: printed only when a BROWSER_START_FAILED was recorded (see runInstall's `brokerLog`).
   if (report.brokerLog) {
     lines.push(`broker.log: ${report.brokerLog.path}`);

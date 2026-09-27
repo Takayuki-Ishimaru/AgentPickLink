@@ -8,7 +8,7 @@
 
 [日本語](README.md) | [English](README.en.md)
 
-**v0.2.2 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.3 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,11 +16,12 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.2
+## What's new in v0.2.3
 
-- Old-version cleanup validates the retained package, launcher, and deletion targets, refusing unknown folders or inconsistent version records without deleting files.
-- Explicit authentication and agent checks contribute to doctor's overall result and exit status.
-- Setup completion checks immediately reflect agent counts and unsaved integration changes while preserving search and scroll position.
+- Fixed missing code, comparison operators and HTML examples when converting answers to Markdown.
+- `integrations write` / `remove` and `install` return a failure exit code and the reason when a requested client configuration could not be written or removed.
+- Usage hints can be cleared in the setup panel.
+- Unusable download hosts are explained under the field and block saving until they are fixed.
 
 See the [release notes](CHANGELOG.md) for details.
 
@@ -39,21 +40,21 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.2.vsix` from **Releases → v0.2.2 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.3.vsix` from **Releases → v0.2.3 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.2.vsix
+code --install-extension agent-pick-link-0.2.3.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
-### Updating from v0.2.1 or earlier
+### Updating from v0.2.2 or earlier
 
-Install the v0.2.2 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.3 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
 ## Install without the extension
 
@@ -140,7 +141,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.2-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.3-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -151,11 +152,11 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.2.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.3.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Some interactive browser tests are skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 
-With `--json`, command results are a single stdout JSON object; progress and prompts go to stderr (`serve` remains MCP-only; help/version display is excluded). `doctor` exits 0 for healthy, 1 for findings, and 2 for execution failure. `install` exits 0 for complete/dry-run, 1 for refusal/invalid arguments/installation failure, 2 for no client configured, and 3 for partial installation or verification failure.
+With `--json`, command results are a single stdout JSON object; progress and prompts go to stderr (`serve` remains MCP-only; help/version display is excluded). `doctor` exits 0 for healthy, 1 for findings, and 2 for execution failure. `install` exits 0 for complete/dry-run, 1 for refusal/invalid arguments/installation failure, 2 for no client configured, and 3 for partial installation, a selected client that could not be written (listed in `clientErrors`), or verification failure. `integrations write` / `remove` exit 0 when every requested client was applied and 1 when any could not be written or removed; the reasons are in `errors`, while `skipped` lists only entries that needed no change.
 
 `doctor --auth` also checks authentication; `doctor --agent <alias>` checks the specified agent's availability. Sign-in requirements, access denial, invalid agents and inconclusive results appear in `findings` and produce exit 1. Without these options, unperformed checks do not count as failures. Diagnostics never send an agent question and do not verify live answers or file retrieval.
 

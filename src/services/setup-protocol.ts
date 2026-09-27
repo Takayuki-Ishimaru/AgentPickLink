@@ -6,6 +6,7 @@
  * module from `src/extension/protocol.ts`.
  */
 import type { AgentCandidate, SetupStatus } from "./setup-service.js";
+import type { DownloadHostIssue } from "./setup-plan.js";
 import type { Incident } from "../observability/incidents.js";
 import type { ProgressPhase } from "../domain/progress.js";
 
@@ -113,6 +114,9 @@ export type PanelState = {
   /** G4: hostnames the broker suggested from the last `discover()` that are not already in
    * `status.config.downloadHosts` -- a pre-fill hint only, never saved on its own. */
   suggestedDownloadHosts?: string[];
+  /** APL-REVIEW-04: the "download hosts" entries the host refused on the last Save, with the
+   * reason. Nothing was saved; cleared by the next Save that gets past validation. */
+  downloadHostIssues?: DownloadHostIssue[];
   /** G5/G6, poller-driven -- see `LiveBrowserInfo`/`DevModeInfo` above. */
   liveBrowser?: LiveBrowserInfo;
   devMode?: DevModeInfo;

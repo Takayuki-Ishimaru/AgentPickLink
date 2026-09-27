@@ -237,8 +237,20 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
     .option("--workspace <path>", "workspace folder (default: the current directory)")
     .option("--force", "overwrite a foreign (not AgentPickLink-owned) entry too, after backing it up")
     .option(homeOption, homeOptionDescription);
+  // APL-REVIEW-02: `written: []` + `skipped: [...]` used to still exit 0, so a caller that only
+  // checks the exit code believed a requested integration exists. `runIntegrationsWrite` now
+  // reports `ok`. Handled per action rather than by widening `runCommand`/`isCliError` themselves:
+  // every other command routed through `runCommand` returns either a `ToolError`-shaped `CliResult`
+  // (already handled by `isCliError`) or a domain-specific object with no `ok` field (checked
+  // above -- init/login/logout/broker/agent-*/workspace-*/self all return no `ok` field); `doctor`
+  // is the one command whose result *does* carry `ok`, and it already bypasses `runCommand`
+  // entirely with its own dedicated action, so it is unaffected either way.
   write.action((opts: { client?: string; workspace?: string; force?: boolean; home?: string }) =>
-    runCommand(context(), () => api.integrations("write", opts))
+    runCommand(context(), async () => {
+      const result = await api.integrations("write", opts);
+      if (!isCliError(result)) process.exitCode = (result as { ok?: boolean }).ok === false ? 1 : 0;
+      return result;
+    })
   );
   const status = integrations
     .command("status")
@@ -255,7 +267,11 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
     .option("--force", "remove a foreign (not AgentPickLink-owned) entry too, after backing it up")
     .option(homeOption, homeOptionDescription);
   integrationsRemove.action((opts: { client?: string; workspace?: string; force?: boolean; home?: string }) =>
-    runCommand(context(), () => api.integrations("remove", opts))
+    runCommand(context(), async () => {
+      const result = await api.integrations("remove", opts);
+      if (!isCliError(result)) process.exitCode = (result as { ok?: boolean }).ok === false ? 1 : 0;
+      return result;
+    })
   );
   const snippet = integrations
     .command("snippet")

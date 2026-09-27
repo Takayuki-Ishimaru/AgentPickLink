@@ -190,7 +190,11 @@ export class ResponseExtractor {
         "RESPONSE_EXTRACTION_FAILED",
         "The latest assistant response could not be isolated from the chat UI."
       );
-    const text = htmlToMarkdown(payload.html || payload.text || "");
+    // A text-only payload is already plain text; parsing it as markup would drop `<...>` spans
+    // (APL-REVIEW-01).
+    const text = payload.html
+      ? htmlToMarkdown(payload.html)
+      : String(payload.text).replace(/\r\n?/g, "\n").trim();
     const bounded = truncate(text, this.maxCodePoints);
     const groupedCitations = parseGroupedCitationAttributes(payload.groupedCitationAttributes);
     const attachmentCandidates = extractAttachmentCandidates(

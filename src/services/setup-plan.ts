@@ -14,16 +14,54 @@ export type BuiltPlan = {
   plan: ApplyPlan;
   /** Keys the webview asked for that no longer exist in the candidate list. */
   unknownKeys: string[];
+  /** APL-REVIEW-04: typed download-host entries that cannot be allowlisted, with the reason. They
+   * are left out of `plan.downloadHosts`, so a caller must refuse to save while any remain. */
+  invalidDownloadHosts: DownloadHostIssue[];
 };
 
-/** Normalizes a host entry typed into the "download hosts" field: a bare host, a `*.` wildcard
- * (`*.sharepoint.com`, see src/domain/host-pattern.ts), or a URL whose host is wanted. */
-export function normalizeDownloadHost(value: string): string | undefined {
+/** Why a typed download-host entry cannot be allowlisted. */
+export type DownloadHostProblem = "whitespace" | "not-a-domain" | "invalid-wildcard" | "invalid-host";
+
+export type DownloadHostIssue = { value: string; problem: DownloadHostProblem };
+
+/** The verdict on the whole "download hosts" field: the normalized entries that would be saved and
+ * every entry that would not. media/setup.js mirrors this function for live feedback; the host
+ * re-runs it on Save and is the authority. Both are held to the same vectors by the tests. */
+export type DownloadHostCheck = { hosts: string[]; invalid: DownloadHostIssue[] };
+
+type DownloadHostResult = { host: string } | { problem: DownloadHostProblem } | undefined;
+
+/** `undefined` for a blank entry (an empty slot between commas is not an error). */
+function parseDownloadHost(value: string): DownloadHostResult {
   const trimmed = value.trim().toLowerCase();
   if (trimmed.length === 0) return undefined;
   const withoutScheme = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/.*$/, "");
   const host = withoutScheme.replace(/:\d+$/, "");
-  return host.includes(".") && isHostPattern(host) ? host : undefined;
+  if (host.includes(".") && isHostPattern(host)) return { host };
+  if (/\s/.test(host)) return { problem: "whitespace" };
+  if (host.includes("*")) return { problem: "invalid-wildcard" };
+  if (!host.includes(".")) return { problem: "not-a-domain" };
+  return { problem: "invalid-host" };
+}
+
+/** Normalizes a host entry typed into the "download hosts" field: a bare host, a `*.` wildcard
+ * (`*.sharepoint.com`, see src/domain/host-pattern.ts), or a URL whose host is wanted. */
+export function normalizeDownloadHost(value: string): string | undefined {
+  const result = parseDownloadHost(value);
+  return result && "host" in result ? result.host : undefined;
+}
+
+/** Checks every entry of the field, keeping the typed value of each rejected one for display. */
+export function checkDownloadHosts(values: readonly string[]): DownloadHostCheck {
+  const hosts = new Set<string>();
+  const invalid: DownloadHostIssue[] = [];
+  for (const value of values) {
+    const result = parseDownloadHost(value);
+    if (!result) continue;
+    if ("host" in result) hosts.add(result.host);
+    else invalid.push({ value: value.trim(), problem: result.problem });
+  }
+  return { hosts: [...hosts].sort(), invalid };
 }
 
 /**
@@ -58,25 +96,26 @@ export function buildApplyPlan(input: SavePlanInput, candidates: readonly AgentC
     const displayName = entry.displayName?.trim() || candidate.displayName.trim() || candidate.url;
     // Descriptions belong to Microsoft 365, never to webview edits or a stale local override.
     const description = candidate.description?.trim() ?? "";
-    const usageHint = entry.usageHint?.trim() || candidate.registered?.usageHint?.trim() || undefined;
+    // APL-REVIEW-03: an absent hint (the CLI never sends one) keeps the registered hint, but any
+    // string from the panel is the user's value -- an empty one means "clear it", so it must reach
+    // apply() as "" instead of falling back to the registered hint.
+    const usageHint =
+      entry.usageHint !== undefined ? entry.usageHint.trim() : candidate.registered?.usageHint?.trim();
     agents.push({
       url: candidate.url,
       ...(candidate.registered?.alias ? { alias: candidate.registered.alias } : {}),
       displayName,
       description,
-      ...(usageHint ? { usageHint } : {}),
+      ...(usageHint !== undefined ? { usageHint } : {}),
       ...(candidate.registered?.kind ? { kind: candidate.registered.kind } : {}),
       capabilityClass: entry.actionsPossible ? "actions-possible" : "knowledge-only"
     });
   }
-  const downloadHosts = [
-    ...new Set(
-      input.downloadHosts.map(normalizeDownloadHost).filter((host): host is string => host !== undefined)
-    )
-  ].sort();
+  const { hosts: downloadHosts, invalid: invalidDownloadHosts } = checkDownloadHosts(input.downloadHosts);
   return {
     plan: { agents, downloadHosts, acceptDownloads: input.acceptDownloads },
-    unknownKeys
+    unknownKeys,
+    invalidDownloadHosts
   };
 }
 

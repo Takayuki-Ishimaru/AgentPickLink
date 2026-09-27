@@ -1,5 +1,54 @@
 # リリースノート
 
+## v0.2.3 Beta
+
+### 主な変更
+
+- **回答中のコードや記号が欠落する問題を修正しました。** Markdown への変換時に、`Array<string>`、`a < b && c > d`、コード例中の `<script>` などが欠落する問題を修正しました。見出し・表・リスト・引用内の文字列も対象です。入れ子のリスト、表の列揃え、コードブロックの言語名の変換も改善しました。
+- **連携設定の書き込み失敗を成功扱いしません。** `integrations write` / `remove` は `ok` と `errors`（クライアント・ファイル・理由コード・メッセージ）を返し、要求したクライアントの設定を書き込み・削除できなかった場合は終了コード `1` です。`install` も、選択したクライアントの書き込みに失敗した場合は `clientErrors` を報告し、終了コード `3` になります。セットアップ画面の完了条件も同じ判定を使います。壊れた設定や他のツールが作成した項目は、これまでどおり上書きしません。
+- **使い方のヒントを空欄にして保存できます。** セットアップ画面でヒントを消して保存すると、登録情報からも削除されます。編集していないヒントは従来どおり保持します。
+- **ダウンロードを許可するホストの入力を検証します。** 使えない値は理由とともに入力欄の下に表示し、修正するまで保存しません。実際に保存されるホストも表示します。
+
+スクリプトから `integrations write` / `remove` を使う場合、書き込みや削除の失敗は `skipped` ではなく `errors` に入ります。終了コードまたは `ok` で判定してください。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.3.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+### 配布物
+
+- `agent-pick-link-0.2.3.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.3-win-x64.zip` / `AgentPickLink-0.2.3-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.3-darwin-arm64.tgz` / `AgentPickLink-0.2.3-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.3-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.3-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+この版では Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。回答の変換は Microsoft 365 の画面構造に合わせた試験用の回答で確認しており、実際の回答での確認は行っていません。セットアップの保存完了や `doctor` の正常判定は、実際の回答・生成ファイル取得を保証するものではありません。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed missing code and symbols in answers.** Fixed Markdown conversion losing text such as `Array<string>`, `a < b && c > d`, and `<script>` in code examples, including text inside headings, tables, lists and quotes. Conversion of nested lists, table column alignment and code-block language labels has also been improved.
+- **Failed client configuration writes are no longer reported as success.** `integrations write` / `remove` return `ok` and `errors` (client, file, reason code, message) and exit `1` when a requested client configuration could not be written or removed. `install` reports `clientErrors` and exits `3` when a selected client fails, and the setup panel's completion check uses the same verdict. Malformed settings and entries created by other tools are still never overwritten.
+- **Usage hints can be cleared.** Clearing a hint in the setup panel and saving removes it from the registration; unedited hints are kept.
+- **Download host input is validated.** Unusable entries are shown with their reason under the field and block saving until fixed; the hosts that will actually be saved are shown too.
+
+Scripts that call `integrations write` / `remove` now find failed writes and removals in `errors`, not `skipped`; check the exit code or `ok`.
+
+To update, install `agent-pick-link-0.2.3.vsix`, reload VS Code, and restart external clients' MCP connections. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals and the dedicated browser profile can be reused.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Edge is the primary target; macOS is for development and verification. Linux is for development/CI only. Additional Windows desktop, live-tenant and actual VS Code interface checks have not been performed for this version. Answer conversion was verified with test answers modelled on the Microsoft 365 page structure, not with live answers. Setup completion and a healthy doctor result do not verify live answers or generated files. See the [English README](README.en.md) and [validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.2 Beta
 
 ### 主な変更

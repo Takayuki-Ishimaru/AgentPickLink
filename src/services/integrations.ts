@@ -117,12 +117,46 @@ export type IntegrationContext = {
 export type IntegrationSummary = {
   /** Absolute paths that were written. */
   written: string[];
-  /** Human readable reasons an enabled integration was not written. */
+  /** Human readable reasons an enabled integration was not written. Unchanged in meaning by
+   * APL-REVIEW-02 below: every enabled integration that was not written/removed, benign or not --
+   * the setup panel and `install`'s plain-text report already display this as-is. */
   skipped: string[];
   /** Human readable notes about a file that *was* written -- currently only the `vscodeUser`
    * writer's "this entry used to point at another workspace" (§P2). Optional so the callers that
    * build a summary themselves keep compiling. */
   warnings?: string[];
+  /** APL-REVIEW-02 (P2): one entry per `skipped` line, in the same order, classifying it as a real
+   * failure of a requested write/remove (`failed: true`) or a benign no-op (`failed: false`) -- see
+   * `integrationVerdict` below, the single verdict the CLI exit code, `install` and the setup
+   * panel's completion row all share. Every summary this module and `install` build carries it;
+   * it stays optional for summary literals built elsewhere, which `integrationVerdict` treats as
+   * "every skipped line failed". */
+  issues?: IntegrationIssue[];
+};
+
+/**
+ * APL-REVIEW-02 (P2): why a requested write/remove did not happen, attached to the matching
+ * `IntegrationSummary.skipped` line so a caller can tell a benign no-op from a real failure without
+ * string-matching `message`.
+ */
+export type IntegrationIssueCode =
+  | "foreign-entry" // an m365-agents entry AgentPickLink did not write; --force needed
+  | "no-workspace" // workspace-scoped client but no workspace folder
+  | "user-directory-missing" // the VS Code user directory does not exist
+  | "other-installation" // removal with requireIdentityMatch: entry belongs to another installation
+  | "invalid-configuration" // existing file could not be parsed or merged safely; left unchanged
+  | "write-failed"; // I/O error or vendor CLI failure
+
+export type IntegrationIssue = {
+  kind: IntegrationKind;
+  file: string;
+  code: IntegrationIssueCode;
+  /** The exact same text as the matching `IntegrationSummary.skipped` entry. */
+  message: string;
+  /** `true`: a requested change did not happen. `false`: nothing needed doing (benign) -- on
+   * apply, every issue is `failed: true`; on remove, only `"user-directory-missing"` and
+   * `"other-installation"` are benign (see `integrationVerdict`'s doc comment). */
+  failed: boolean;
 };
 
 /* ------------------------------------------------------------- §4.7 C9 variable forms */
@@ -1184,6 +1218,46 @@ function claudeAddJsonArgs(definition: IntegrationDefinition): string[] {
   return ["mcp", "add-json", MCP_SERVER_NAME, json, "--scope", "user"];
 }
 
+/* ------------------------------------------------------------------ APL-REVIEW-02: issue tracking */
+
+/** The mutable summary shape every writer/remover below actually builds -- `IntegrationSummary`
+ * itself keeps `issues` optional (so a caller building a summary literal keeps compiling), but every
+ * writer/remover in this module always has one to push onto. */
+type MutableSummary = { written: string[]; skipped: string[]; issues: IntegrationIssue[] };
+
+/** Pushes `message` onto `summary.skipped` (unchanged in meaning -- see `IntegrationSummary.skipped`'s
+ * doc comment) and the matching `IntegrationIssue` onto `summary.issues`, in the same order, so the
+ * two arrays always line up one-to-one. */
+function recordSkip(
+  summary: MutableSummary,
+  kind: IntegrationKind,
+  file: string,
+  code: IntegrationIssueCode,
+  message: string,
+  failed: boolean
+): void {
+  summary.skipped.push(message);
+  summary.issues.push({ kind, file, code, message, failed });
+}
+
+/**
+ * Classifies a thrown value for `IntegrationIssue.code`, without ever string-matching `message`: an
+ * error carrying a string `code` property -- a Node errno such as `EACCES`/`EPERM` (a plain missing
+ * file is never reached here: `readIfPresent`'s own `ENOENT` handling already turns that into
+ * `existing === undefined`, never a thrown error) -- is `"write-failed"`; every other thrown `Error`
+ * -- the merge/parse refusals `parseVscodeSettings`/`mergeCodexConfigToml`/`setJsonMember` raise
+ * (invalid JSONC, "would change unrelated settings", "unsupported server shape", "unexpected
+ * shape", "not plain JSON", "does not contain a JSON object") -- is `"invalid-configuration"`.
+ * `vendorCli: true` (the `claude` CLI itself failed end to end) always reports `"write-failed"`
+ * regardless of what `error` looks like, since exec's own exit-code failures do not reliably carry a
+ * string `code`.
+ */
+function issueCodeForError(error: unknown, vendorCli = false): "write-failed" | "invalid-configuration" {
+  if (vendorCli) return "write-failed";
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" ? "write-failed" : "invalid-configuration";
+}
+
 /**
  * Writes the `claudeUser` integration: ownership is always decided by reading `~/.claude.json`
  * directly (the same file both write paths below ultimately target), so a foreign entry is refused
@@ -1199,7 +1273,7 @@ function claudeAddJsonArgs(definition: IntegrationDefinition): string[] {
 async function applyClaudeUser(
   context: Pick<IntegrationContext, "definition" | "homeDirectory" | "claudeCliAvailable" | "exec">,
   opts: ApplyIntegrationsOptions,
-  summary: { written: string[]; skipped: string[] }
+  summary: MutableSummary
 ): Promise<void> {
   const file = claudeUserFile(context.homeDirectory);
   try {
@@ -1208,8 +1282,13 @@ async function applyClaudeUser(
       const status = integrationEntryStatus(existing, "claudeUser", context.definition);
       if (status === "foreign") {
         if (!opts.force) {
-          summary.skipped.push(
-            `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to overwrite it).`
+          recordSkip(
+            summary,
+            "claudeUser",
+            file,
+            "foreign-entry",
+            `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to overwrite it).`,
+            true
           );
           return;
         }
@@ -1245,13 +1324,27 @@ async function applyClaudeUser(
         summary.written.push(file);
         return;
       } catch (fallbackError) {
-        summary.skipped.push(
-          `${file}: ${truncateError(fallbackError)} (vendor CLI: ${truncateError(error)})`
+        // Always "write-failed": this branch is only reached after the vendor CLI itself already
+        // failed end to end, regardless of what the direct-edit fallback's own error looks like.
+        recordSkip(
+          summary,
+          "claudeUser",
+          file,
+          "write-failed",
+          `${file}: ${truncateError(fallbackError)} (vendor CLI: ${truncateError(error)})`,
+          true
         );
         return;
       }
     }
-    summary.skipped.push(`${file}: ${truncateError(error)}`);
+    recordSkip(
+      summary,
+      "claudeUser",
+      file,
+      issueCodeForError(error),
+      `${file}: ${truncateError(error)}`,
+      true
+    );
   }
 }
 
@@ -1264,7 +1357,7 @@ async function applyClaudeUser(
 async function removeClaudeUser(
   context: Pick<IntegrationContext, "definition" | "homeDirectory" | "claudeCliAvailable" | "exec">,
   opts: RemoveOptions,
-  summary: { written: string[]; skipped: string[] }
+  summary: MutableSummary
 ): Promise<void> {
   const file = claudeUserFile(context.homeDirectory);
   try {
@@ -1273,12 +1366,26 @@ async function removeClaudeUser(
     const status = integrationEntryStatus(existing, "claudeUser", context.definition);
     if (status === "absent") return;
     if (opts.requireIdentityMatch && integrationNeedsRefresh(existing, context.definition, "claudeUser")) {
-      summary.skipped.push(`${file}: belongs to another installation; left untouched.`);
+      // Benign: see `integrationVerdict`'s doc comment -- removal found nothing wrong to fix, only
+      // an entry that belongs to a different installation and must not be touched by this one.
+      recordSkip(
+        summary,
+        "claudeUser",
+        file,
+        "other-installation",
+        `${file}: belongs to another installation; left untouched.`,
+        false
+      );
       return;
     }
     if (status === "foreign" && !opts.force) {
-      summary.skipped.push(
-        `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`
+      recordSkip(
+        summary,
+        "claudeUser",
+        file,
+        "foreign-entry",
+        `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`,
+        true
       );
       return;
     }
@@ -1296,7 +1403,14 @@ async function removeClaudeUser(
     await writeFile(file, removeClaudeUserMcpJson(existing, { force: true }), existing);
     summary.written.push(file);
   } catch (error) {
-    summary.skipped.push(`${file}: ${truncateError(error)}`);
+    recordSkip(
+      summary,
+      "claudeUser",
+      file,
+      issueCodeForError(error),
+      `${file}: ${truncateError(error)}`,
+      true
+    );
   }
 }
 
@@ -1321,10 +1435,11 @@ export async function applyIntegrations(
   settings: IntegrationSettings,
   opts: ApplyIntegrationsOptions = {}
 ): Promise<IntegrationSummary> {
-  const summary: IntegrationSummary & { warnings: string[] } = {
+  const summary: IntegrationSummary & { warnings: string[]; issues: IntegrationIssue[] } = {
     written: [],
     skipped: [],
-    warnings: []
+    warnings: [],
+    issues: []
   };
   const run = async (
     file: string,
@@ -1338,8 +1453,15 @@ export async function applyIntegrations(
         const status = integrationEntryStatus(existing, kind, definition, context.variables);
         if (status === "foreign") {
           if (!opts.force) {
-            summary.skipped.push(
-              `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to overwrite it).`
+            // APL-REVIEW-02: on apply, every issue is a failure of a requested write -- see
+            // `integrationVerdict`'s doc comment.
+            recordSkip(
+              summary,
+              kind,
+              file,
+              "foreign-entry",
+              `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to overwrite it).`,
+              true
             );
             return;
           }
@@ -1349,7 +1471,14 @@ export async function applyIntegrations(
       await writeFile(file, produce(existing), existing);
       summary.written.push(file);
     } catch (error) {
-      summary.skipped.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+      recordSkip(
+        summary,
+        kind,
+        file,
+        issueCodeForError(error),
+        `${file}: ${error instanceof Error ? error.message : String(error)}`,
+        true
+      );
     }
   };
 
@@ -1365,14 +1494,30 @@ export async function applyIntegrations(
     );
   }
   if (settings.claudeCode) {
-    if (!context.workspaceRoot) summary.skipped.push(".mcp.json: no workspace folder is open.");
+    if (!context.workspaceRoot)
+      recordSkip(
+        summary,
+        "claudeCode",
+        ".mcp.json",
+        "no-workspace",
+        ".mcp.json: no workspace folder is open.",
+        true
+      );
     else
       await run(path.join(context.workspaceRoot, ".mcp.json"), "claudeCode", context.definition, (existing) =>
         mergeClaudeMcpJson(existing, context.definition, context.variables)
       );
   }
   if (settings.vscodeMcpJson) {
-    if (!context.workspaceRoot) summary.skipped.push(".vscode/mcp.json: no workspace folder is open.");
+    if (!context.workspaceRoot)
+      recordSkip(
+        summary,
+        "vscodeMcpJson",
+        ".vscode/mcp.json",
+        "no-workspace",
+        ".vscode/mcp.json: no workspace folder is open.",
+        true
+      );
     else
       await run(
         path.join(context.workspaceRoot, ".vscode", "mcp.json"),
@@ -1383,8 +1528,13 @@ export async function applyIntegrations(
   }
   if (settings.vscodeUser) {
     if (!context.vscodeUserDirectory)
-      summary.skipped.push(
-        "mcp.json (vscode-user): the VS Code user directory was not found; run `apl integrations snippet --client vscode-user`."
+      recordSkip(
+        summary,
+        "vscodeUser",
+        "mcp.json (vscode-user)",
+        "user-directory-missing",
+        "mcp.json (vscode-user): the VS Code user directory was not found; run `apl integrations snippet --client vscode-user`.",
+        true
       );
     else {
       const file = path.join(context.vscodeUserDirectory, "mcp.json");
@@ -1516,7 +1666,11 @@ export async function removeIntegrations(
   settings: IntegrationSettings,
   opts: RemoveOptions = {}
 ): Promise<IntegrationSummary> {
-  const summary: IntegrationSummary = { written: [], skipped: [] };
+  const summary: IntegrationSummary & { issues: IntegrationIssue[] } = {
+    written: [],
+    skipped: [],
+    issues: []
+  };
   const run = async (
     file: string,
     kind: IntegrationKind,
@@ -1531,12 +1685,26 @@ export async function removeIntegrations(
         opts.requireIdentityMatch &&
         integrationNeedsRefresh(existing, context.definition, kind, context.variables)
       ) {
-        summary.skipped.push(`${file}: belongs to another installation; left untouched.`);
+        // Benign: see `integrationVerdict`'s doc comment -- there was nothing wrong to fix, only an
+        // entry this installation must leave to whichever one it actually belongs to.
+        recordSkip(
+          summary,
+          kind,
+          file,
+          "other-installation",
+          `${file}: belongs to another installation; left untouched.`,
+          false
+        );
         return;
       }
       if (status === "foreign" && !opts.force) {
-        summary.skipped.push(
-          `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`
+        recordSkip(
+          summary,
+          kind,
+          file,
+          "foreign-entry",
+          `${file}: has an m365-agents entry AgentPickLink did not write; left untouched (pass --force to remove it).`,
+          true
         );
         return;
       }
@@ -1547,18 +1715,41 @@ export async function removeIntegrations(
       await writeFile(file, remove(existing, { force: true }), existing);
       summary.written.push(file);
     } catch (error) {
-      summary.skipped.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+      recordSkip(
+        summary,
+        kind,
+        file,
+        issueCodeForError(error),
+        `${file}: ${error instanceof Error ? error.message : String(error)}`,
+        true
+      );
     }
   };
 
   if (settings.codex)
     await run(path.join(context.homeDirectory, ".codex", "config.toml"), "codex", removeCodexConfigToml);
   if (settings.claudeCode) {
-    if (!context.workspaceRoot) summary.skipped.push(".mcp.json: no workspace folder is open.");
+    if (!context.workspaceRoot)
+      recordSkip(
+        summary,
+        "claudeCode",
+        ".mcp.json",
+        "no-workspace",
+        ".mcp.json: no workspace folder is open.",
+        true
+      );
     else await run(path.join(context.workspaceRoot, ".mcp.json"), "claudeCode", removeClaudeMcpJson);
   }
   if (settings.vscodeMcpJson) {
-    if (!context.workspaceRoot) summary.skipped.push(".vscode/mcp.json: no workspace folder is open.");
+    if (!context.workspaceRoot)
+      recordSkip(
+        summary,
+        "vscodeMcpJson",
+        ".vscode/mcp.json",
+        "no-workspace",
+        ".vscode/mcp.json: no workspace folder is open.",
+        true
+      );
     else
       await run(
         path.join(context.workspaceRoot, ".vscode", "mcp.json"),
@@ -1568,9 +1759,77 @@ export async function removeIntegrations(
   }
   if (settings.vscodeUser) {
     if (!context.vscodeUserDirectory)
-      summary.skipped.push("mcp.json (vscode-user): the VS Code user directory was not found.");
+      // Benign: see `integrationVerdict`'s doc comment -- nothing was selected to remove in the
+      // first place, unlike a write's `"user-directory-missing"` (a requested target that could
+      // not be created).
+      recordSkip(
+        summary,
+        "vscodeUser",
+        "mcp.json (vscode-user)",
+        "user-directory-missing",
+        "mcp.json (vscode-user): the VS Code user directory was not found.",
+        false
+      );
     else await run(path.join(context.vscodeUserDirectory, "mcp.json"), "vscodeUser", removeVscodeUserMcpJson);
   }
   if (settings.claudeUser) await removeClaudeUser(context, opts, summary);
   return summary;
+}
+
+/**
+ * The single verdict the CLI exit code (`integrations write`/`remove`), `install`'s `clientErrors`
+ * and the setup panel's completion row (`PanelState.clientApplication`) all share, so a script that
+ * checks only the exit code, or a user reading only the completion row, never believes a requested
+ * integration exists when it does not (APL-REVIEW-02).
+ *
+ * `settings` accepts anything that looks like a partial map of `IntegrationKind` to a boolean flag --
+ * both the service layer's own `IntegrationSettings` (`codex`/`claudeCode`/`vscodeMcpJson` required,
+ * `vscodeUser`/`claudeUser` optional) and the CLI/panel's narrower `IntegrationFlags`
+ * (`{codex, claudeCode, vscodeMcpJson}`) satisfy `Partial<Record<IntegrationKind, boolean>>`
+ * structurally, so both callers can pass their own type directly.
+ *
+ * `state` is `"not-selected"` when no flag in `settings` is `true` (nothing was asked for, so nothing
+ * can have failed); otherwise `"complete"` when there is no failed issue, else `"partial"`. A
+ * *warning* (`IntegrationSummary.warnings`) never changes the verdict -- a warning is a note about a
+ * file that *was* written, not a skip. `ok` is `errors.length === 0`, independent of `state` (a
+ * `"not-selected"` run is trivially `ok`).
+ *
+ * `errors` is every issue with `failed: true`. A summary without `issues` (a bare
+ * `{written, skipped}` literal; nothing in this codebase builds one any more) fails closed: every
+ * `skipped` line counts as a failed `"write-failed"` issue, with `file` taken from the
+ * `${file}: ${reason}` shape of the line and `kind` a placeholder (`"vscodeUser"`), since such a
+ * literal cannot say which writer it came from. A new literal must attach its own `issues`.
+ */
+export function integrationVerdict(
+  settings: Partial<Record<IntegrationKind, boolean>>,
+  summary: IntegrationVerdictSummary
+): { state: "complete" | "partial" | "not-selected"; ok: boolean; errors: IntegrationIssue[] } {
+  const notSelected = !Object.values(settings).some(Boolean);
+  const errors = failedIssues(summary);
+  const ok = errors.length === 0;
+  return { state: notSelected ? "not-selected" : ok ? "complete" : "partial", ok, errors };
+}
+
+/** The minimal shape `integrationVerdict` needs from a summary -- satisfied by both
+ * `IntegrationSummary` (mutable `string[]`/`IntegrationIssue[]`, from `applyIntegrations`/
+ * `removeIntegrations`) and `SetupController`'s `SaveSummary` (`readonly` arrays, from
+ * `SetupController.save()`/`install`'s per-workspace host), so one verdict function serves the CLI,
+ * `install`, and the setup panel alike without either summary type depending on the other. */
+export type IntegrationVerdictSummary = {
+  skipped: readonly string[];
+  issues?: readonly IntegrationIssue[];
+};
+
+function failedIssues(summary: IntegrationVerdictSummary): IntegrationIssue[] {
+  if (summary.issues !== undefined) return summary.issues.filter((issue) => issue.failed);
+  return summary.skipped.map((message) => {
+    const separator = message.indexOf(": ");
+    return {
+      kind: "vscodeUser" as const,
+      file: separator === -1 ? message : message.slice(0, separator),
+      code: "write-failed" as const,
+      message,
+      failed: true
+    };
+  });
 }

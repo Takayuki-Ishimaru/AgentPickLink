@@ -385,6 +385,35 @@ label.check {
   margin-top: 4px;
 }
 
+/* APL-REVIEW-04: download-host entries that cannot be saved, right under the field. State-owned
+   like .notice--partial, so it takes the theme's validation colors rather than a Dawn one. */
+.field-error {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+  background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.12));
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+  font-size: 0.88em;
+}
+
+.field-error p {
+  margin: 0;
+}
+
+.field-error ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+#download-host-preview,
+#save-blocked-note {
+  margin: 4px 0 0;
+  font-size: 0.88em;
+  overflow-wrap: anywhere;
+}
+
 .agent-body {
   margin: 6px 0 2px 20px;
 }

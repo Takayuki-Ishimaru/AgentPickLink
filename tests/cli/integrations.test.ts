@@ -37,6 +37,9 @@ describe("integrations write / status", () => {
       workspace
     });
     expect(written.written).toHaveLength(2);
+    // APL-REVIEW-02: a clean write is `ok: true` with no errors.
+    expect(written.ok).toBe(true);
+    expect(written.errors).toEqual([]);
 
     const status = await runIntegrationsStatus(deps, {
       client: "vscode-workspace,claude-project,codex",
@@ -141,10 +144,25 @@ describe("integrations remove", () => {
 
     const refused = await runIntegrationsRemove(deps, { client: "vscode-workspace", workspace });
     expect(refused.removed).toEqual([]);
-    expect((refused.skipped as string[])[0]).toMatch(/foreign|force/i);
+    // APL-REVIEW-02: a foreign entry is a failure of the requested removal, not a benign skip -- it
+    // now surfaces in `errors` (and `ok: false`), and `skipped` no longer carries it.
+    expect(refused.ok).toBe(false);
+    expect(refused.skipped).toEqual([]);
+    const refusedErrors = refused.errors as Array<{
+      client: string;
+      file: string;
+      code: string;
+      message: string;
+    }>;
+    expect(refusedErrors).toHaveLength(1);
+    expect(refusedErrors[0].client).toBe("vscode-workspace");
+    expect(refusedErrors[0].code).toBe("foreign-entry");
+    expect(refusedErrors[0].message).toMatch(/foreign|force/i);
     expect(await readFile(path.join(workspace, ".vscode", "mcp.json"), "utf8")).toBe(foreign);
 
     const forced = await runIntegrationsRemove(deps, { client: "vscode-workspace", workspace, force: true });
+    expect(forced.ok).toBe(true);
+    expect(forced.errors).toEqual([]);
     expect(forced.removed).toEqual([path.join(workspace, ".vscode", "mcp.json")]);
     const afterJson = JSON.parse(await readFile(path.join(workspace, ".vscode", "mcp.json"), "utf8"));
     expect(afterJson.servers?.["m365-agents"]).toBeUndefined();
@@ -309,13 +327,122 @@ describe("integrations write ownership (§4.7 C6, P1-8)", () => {
 
     const refused = await runIntegrationsWrite(deps, { client: "vscode-workspace", workspace });
     expect(refused.written).toEqual([]);
-    expect((refused.skipped as string[])[0]).toContain("AgentPickLink did not write");
+    // APL-REVIEW-02: a foreign entry without --force is a failure of the requested write (`ok:
+    // false`), not a benign skip -- it now surfaces in `errors`, and `skipped` stays empty.
+    expect(refused.ok).toBe(false);
+    expect(refused.skipped).toEqual([]);
+    const refusedErrors = refused.errors as Array<{
+      client: string;
+      file: string;
+      code: string;
+      message: string;
+    }>;
+    expect(refusedErrors).toEqual([
+      {
+        client: "vscode-workspace",
+        file,
+        code: "foreign-entry",
+        message: expect.stringContaining("AgentPickLink did not write")
+      }
+    ]);
     expect(await readFile(file, "utf8")).toBe(foreign);
 
     const forced = await runIntegrationsWrite(deps, { client: "vscode-workspace", workspace, force: true });
+    expect(forced.ok).toBe(true);
+    expect(forced.errors).toEqual([]);
     expect(forced.written).toEqual([file]);
     expect(await readFile(`${file}.apl-backup`, "utf8")).toBe(foreign);
     const status = await runIntegrationsStatus(deps, { client: "vscode-workspace", workspace });
     expect((status.clients as Array<{ status: string }>)[0].status).toBe("managed");
+  });
+});
+
+describe("integrations write / remove: ok / errors (APL-REVIEW-02)", () => {
+  it("a malformed .vscode/mcp.json yields ok:false with a single invalid-configuration error, and the file is left byte-identical", async () => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+    const file = path.join(workspace, ".vscode", "mcp.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    const malformed = "// comment\n{ broken }\n";
+    await writeFile(file, malformed, "utf8");
+
+    const result = await runIntegrationsWrite(deps, { client: "vscode-workspace", workspace });
+
+    expect(result.ok).toBe(false);
+    expect(result.written).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    const errors = result.errors as Array<{ client: string; file: string; code: string; message: string }>;
+    expect(errors).toHaveLength(1);
+    expect(errors[0].client).toBe("vscode-workspace");
+    expect(errors[0].file).toBe(file);
+    expect(errors[0].code).toBe("invalid-configuration");
+    expect(errors[0].message).toContain("not written");
+    expect(await readFile(file, "utf8")).toBe(malformed);
+  });
+
+  it("a clean write is ok:true with no errors", async () => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+
+    const result = await runIntegrationsWrite(deps, { client: "vscode-workspace", workspace });
+
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.written).toEqual([path.join(workspace, ".vscode", "mcp.json")]);
+  });
+
+  it("remove is ok:true and reports a missing VS Code user directory as a benign skip, not an error", async () => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+
+    const result = await runIntegrationsRemove(deps, { client: "vscode-user", workspace });
+
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.removed).toEqual([]);
+    expect((result.skipped as string[])[0]).toContain("VS Code user directory was not found");
+  });
+
+  it("--client ',' (only separators) throws INVALID_ARGUMENT instead of silently writing nothing", async () => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+
+    await expect(runIntegrationsWrite(deps, { client: ",", workspace })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT"
+    });
+    await expect(runIntegrationsWrite(deps, { client: " , ", workspace })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT"
+    });
+    await expect(runIntegrationsRemove(deps, { client: ",", workspace })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT"
+    });
+  });
+
+  it("an omitted or empty --client still defaults to vscode,claude,codex (unchanged behaviour)", async () => {
+    const paths = await makeTempPaths();
+    const workspace = await makeWorkspace();
+    const osHome = await makeOsHome();
+    const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
+
+    // `status` only ever reads files (no vendor-CLI exec, unlike a `claude`/`claude-user` write), so
+    // this exercises parseClientList's defaulting without depending on whether a real `claude`
+    // binary happens to be on this machine's PATH.
+    const withEmptyString = await runIntegrationsStatus(deps, { client: "", workspace });
+    const omitted = await runIntegrationsStatus(deps, { workspace });
+    const expectedClients = ["vscode", "claude", "codex"];
+    expect((withEmptyString.clients as Array<{ client: string }>).map((entry) => entry.client)).toEqual(
+      expectedClients
+    );
+    expect((omitted.clients as Array<{ client: string }>).map((entry) => entry.client)).toEqual(
+      expectedClients
+    );
   });
 });

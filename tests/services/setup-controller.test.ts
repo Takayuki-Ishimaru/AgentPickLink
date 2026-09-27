@@ -426,6 +426,73 @@ describe("host-agnostic setup flow", () => {
   });
 });
 
+// APL-REVIEW-02: `clientApplication` now comes from `integrationVerdict()` (src/services/
+// integrations.ts) instead of `save()`'s own inline `skipped.length || warnings?.length` check --
+// these pin down the two outcomes a script/user actually cares about: a selected integration whose
+// write failed reports "partial" (never a silent "complete"), and a clean write still reports
+// "complete".
+describe("save()'s clientApplication verdict (APL-REVIEW-02)", () => {
+  it("reports 'partial' when a malformed workspace file makes a selected integration's write fail", async () => {
+    const { host, controller, workspace } = await createHarness();
+    await fs.mkdir(path.join(workspace, ".vscode"), { recursive: true });
+    const malformed = "// comment\n{ broken }\n";
+    await fs.writeFile(path.join(workspace, ".vscode", "mcp.json"), malformed, "utf8");
+
+    await controller.runSetup();
+    await controller.save(savePlan({ integrations: { ...NO_INTEGRATIONS, vscodeMcpJson: true } }));
+
+    expect(host.last().clientApplication).toBe("partial");
+    // Protecting the file is still correct: left byte-identical, not overwritten.
+    expect(await fs.readFile(path.join(workspace, ".vscode", "mcp.json"), "utf8")).toBe(malformed);
+  });
+
+  it("reports 'complete' when the selected integration is written successfully", async () => {
+    const { host, controller } = await createHarness();
+
+    await controller.runSetup();
+    await controller.save(savePlan({ integrations: { ...NO_INTEGRATIONS, vscodeMcpJson: true } }));
+
+    expect(host.last().clientApplication).toBe("complete");
+  });
+});
+
+describe("save()'s download host validation (APL-REVIEW-04)", () => {
+  it("refuses an unusable download host before the approval dialog and names it with its reason", async () => {
+    const { host, service, controller } = await createHarness();
+    await controller.runSetup();
+
+    await controller.save(savePlan({ downloadHosts: ["https://bad host/"], acceptDownloads: true }));
+
+    expect(host.confirmed).toEqual([]);
+    expect(service.appliedPlans).toEqual([]);
+    expect(host.last().downloadHostIssues).toEqual([{ value: "https://bad host/", problem: "whitespace" }]);
+    expect(host.notices.at(-1)).toEqual({
+      level: "warning",
+      text: "Nothing was saved because these download hosts cannot be used: https://bad host/. Fix them using the reasons shown under the field."
+    });
+    expect(host.logs).toContain("save: refused 1 invalid download host(s)");
+    expect(host.logs.join("\n")).not.toContain("bad host");
+  });
+
+  it("saves the normalized hosts and clears the refusal once every entry is usable", async () => {
+    const { host, service, controller } = await createHarness();
+    await controller.runSetup();
+    await controller.save(savePlan({ downloadHosts: ["nope"], acceptDownloads: true }));
+    expect(host.last().downloadHostIssues).toEqual([{ value: "nope", problem: "not-a-domain" }]);
+
+    await controller.save(
+      savePlan({
+        downloadHosts: ["https://Files.Example.com/docs", "*.sharepoint.com"],
+        acceptDownloads: true
+      })
+    );
+
+    expect(service.appliedPlans.at(-1)?.downloadHosts).toEqual(["*.sharepoint.com", "files.example.com"]);
+    expect(host.last().downloadHostIssues).toBeUndefined();
+    expect(host.last().phase).toBe("done");
+  });
+});
+
 describe("health handed in through the host", () => {
   function health(overrides: Record<string, unknown> = {}): BrokerHealthSnapshot {
     return {

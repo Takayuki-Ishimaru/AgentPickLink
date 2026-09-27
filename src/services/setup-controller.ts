@@ -22,7 +22,13 @@ import { DomainError } from "../domain/errors.js";
 import type { ProgressEvent } from "../domain/progress.js";
 import type { Incident } from "../observability/incidents.js";
 import { restartBrokerIfStale } from "./broker-staleness.js";
-import { applyIntegrations, type IntegrationDefinition, type IntegrationVariables } from "./integrations.js";
+import {
+  applyIntegrations,
+  integrationVerdict,
+  type IntegrationDefinition,
+  type IntegrationIssue,
+  type IntegrationVariables
+} from "./integrations.js";
 import { describeErrorCode, translator } from "./localize.js";
 import { buildApplyPlan, mergeDownloadHostSuggestions, previewAlias } from "./setup-plan.js";
 import type {
@@ -128,6 +134,13 @@ export type SaveSummary = {
   /** Agents `SetupService.apply()` registered, and how many of those failed. */
   registered: number;
   failed: number;
+  /** APL-REVIEW-02: `applyIntegrations()`'s own `IntegrationSummary.issues`, classifying each
+   * `skipped` line as a real failure or a benign no-op -- see `integrationVerdict` in
+   * ./integrations.js, the single verdict this field, the CLI exit code and the setup panel's
+   * completion row all share. Present only when non-empty, so a caller/test that built a
+   * `SaveSummary` literal before this field existed keeps compiling. `install` reads this (via
+   * `host.savedSummary()`) to fold a failed selected client into its own exit code/`clientErrors`. */
+  issues?: readonly IntegrationIssue[];
 };
 
 /**
@@ -845,12 +858,26 @@ export class SetupController {
   async save(input: SavePlanInput): Promise<void> {
     const t = translator(this.host.locale);
     if (!this.requireTrustedWorkspace()) return;
-    const { plan, unknownKeys } = buildApplyPlan(input, this.state.candidates);
+    const { plan, unknownKeys, invalidDownloadHosts } = buildApplyPlan(input, this.state.candidates);
     if (unknownKeys.length > 0) this.host.log(`save: ignored ${unknownKeys.length} unknown key(s)`);
     if (plan.agents.length === 0) {
       this.host.notify("warning", t("noAgentsSelected"));
       return;
     }
+    // APL-REVIEW-04: a typed download host that cannot be allowlisted is never dropped silently.
+    // Nothing is saved; the panel shows each entry with its reason next to the field. Only the count
+    // is logged -- the entries are the user's own values.
+    if (invalidDownloadHosts.length > 0) {
+      this.host.log(`save: refused ${invalidDownloadHosts.length} invalid download host(s)`);
+      this.patch({ downloadHostIssues: invalidDownloadHosts });
+      const hosts = invalidDownloadHosts.map((issue) => issue.value).join(", ");
+      this.host.notify(
+        "warning",
+        t("invalidDownloadHosts").replace("{hosts}", () => hosts)
+      );
+      return;
+    }
+    if (this.state.downloadHostIssues) this.patch({ downloadHostIssues: undefined });
     // P1-18: `allowedCapabilityClasses` is machine-wide config, not per-workspace, so approving the
     // first actions-possible agent here also lets every other local workspace approve agents of
     // that capability class (each still needs its own separate approval). Warn about that widening
@@ -940,11 +967,7 @@ export class SetupController {
       const status = await this.setup().status();
       this.patch({
         phase: "done",
-        clientApplication: !Object.values(input.integrations).some(Boolean)
-          ? "not-selected"
-          : summary.skipped.length || summary.warnings?.length
-            ? "partial"
-            : "complete",
+        clientApplication: integrationVerdict(input.integrations, summary).state,
         notice: connected ? undefined : "saved-needs-sign-in",
         error: connectionError,
         discoverySummary: undefined,
@@ -963,7 +986,8 @@ export class SetupController {
         written: summary.written,
         skipped: summary.skipped,
         registered: result.registered.length - failed.length,
-        failed: failed.length
+        failed: failed.length,
+        ...(summary.issues && summary.issues.length > 0 ? { issues: summary.issues } : {})
       });
     });
   }

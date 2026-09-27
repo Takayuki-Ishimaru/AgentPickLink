@@ -183,6 +183,8 @@ export type ApplyPlanAgent = {
   alias?: string;
   displayName: string;
   description?: string;
+  /** Absent keeps an existing registry entry's hint; a string replaces it, and an empty string
+   * removes it (the same convention as `AgentMetadataPatch.usageHint`). */
   usageHint?: string;
   kind?: AgentKind;
   capabilityClass?: Exclude<CapabilityClass, "unknown">;
@@ -1226,7 +1228,8 @@ function applyReuse(existing: BrowserAgentDefinition, planAgent: ApplyPlanAgent)
   const next: BrowserAgentDefinition = {
     ...existing,
     description: planAgent.description ?? existing.description,
-    usageHint: planAgent.usageHint ?? existing.usageHint,
+    usageHint:
+      planAgent.usageHint !== undefined ? planAgent.usageHint.trim() || undefined : existing.usageHint,
     capabilityClass
   };
   // description/usageHint/capabilityClass never enter the fingerprint (see
@@ -1306,7 +1309,7 @@ function buildNewEntry(
     transport: "browser",
     entryPoint: { mode: "direct-chat", url: captured.url, surface: captured.surface },
     description: planAgent.description,
-    usageHint: planAgent.usageHint,
+    usageHint: planAgent.usageHint?.trim() || undefined,
     enabled: true,
     capabilityClass,
     uiActionPolicy: "never-click",

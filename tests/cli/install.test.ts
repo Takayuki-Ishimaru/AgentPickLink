@@ -338,6 +338,48 @@ describe("install happy path", () => {
   });
 });
 
+describe("install APL-REVIEW-02: a selected client's failed write forces exit 3", () => {
+  it("reports exit code 3 and clientErrors when a selected workspace client's existing file is malformed", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));
+    const packageRoot = await makePackageRoot();
+    const workspace = await makeWorkspace();
+    const paths = await makeTempPaths();
+    const { deps } = makeCommandDeps({
+      paths,
+      root: () => workspace,
+      packageRoot: async () => packageRoot,
+      createSetupService: () => fakeService(),
+      mcpHandshake: okHandshake
+    });
+    await mkdir(path.join(workspace, ".vscode"), { recursive: true });
+    const malformed = "// comment\n{ broken }\n";
+    await writeFile(path.join(workspace, ".vscode", "mcp.json"), malformed, "utf8");
+
+    const report = await runInstall(deps, {
+      workspaces: [workspace],
+      yes: true,
+      approveAgents: true,
+      home,
+      clients: "vscode-workspace",
+      agents: "agent-requirements"
+    });
+
+    expect(report.exitCode).toBe(3);
+    expect(report.clientErrors).toEqual([
+      {
+        client: "vscode-workspace",
+        file: path.join(workspace, ".vscode", "mcp.json"),
+        code: "invalid-configuration",
+        message: expect.stringContaining("not written")
+      }
+    ]);
+    // Protecting the file is still correct: left byte-identical, never overwritten.
+    expect(await readFile(path.join(workspace, ".vscode", "mcp.json"), "utf8")).toBe(malformed);
+    const text = formatInstallReport(report);
+    expect(text).toContain("vscode-workspace:");
+  });
+});
+
 describe("install --clients auto (default, §4.4)", () => {
   it("writes only the default user-scope files, leaving .vscode/mcp.json and .mcp.json untouched", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));

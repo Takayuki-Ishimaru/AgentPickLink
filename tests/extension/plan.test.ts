@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { AgentCandidate } from "../../src/services/setup-service.js";
 import {
   buildApplyPlan,
+  checkDownloadHosts,
   mergeDownloadHostSuggestions,
   normalizeDownloadHost,
   previewAlias
 } from "../../src/extension/plan.js";
 import type { SavePlanInput } from "../../src/extension/protocol.js";
+import { DOWNLOAD_HOST_VECTORS } from "./download-host-vectors.js";
 
 const candidates: AgentCandidate[] = [
   {
@@ -99,8 +101,24 @@ describe("buildApplyPlan", () => {
     expect(plan.agents[0].usageHint).toBe("Ask about scope");
   });
 
-  it("drops duplicates and normalizes download hosts", () => {
+  // APL-REVIEW-03: an emptied field is the user's value, not "unedited".
+  it.each(["", "   "])("carries a cleared usage hint (%j) as an explicit empty value", (usageHint) => {
     const { plan } = buildApplyPlan(
+      input({ agents: [{ key: "agent-requirements", usageHint }] }),
+      candidates
+    );
+    expect(plan.agents[0]).toHaveProperty("usageHint", "");
+  });
+
+  it("keeps the registered usage hint only when the input carries none", () => {
+    const { plan } = buildApplyPlan(input({ agents: [{ key: "agent-requirements" }] }), candidates);
+    expect(plan.agents[0].usageHint).toBe("Ask about requirements");
+    const unregistered = buildApplyPlan(input({ agents: [{ key: "agent-architecture" }] }), candidates);
+    expect(unregistered.plan.agents[0]).not.toHaveProperty("usageHint");
+  });
+
+  it("drops duplicates, normalizes download hosts and reports the entries it cannot use", () => {
+    const { plan, invalidDownloadHosts } = buildApplyPlan(
       input({
         agents: [{ key: "agent-architecture" }, { key: "agent-architecture" }],
         downloadHosts: ["  HTTPS://Files.example.com/x  ", "files.example.com", "nope", ""],
@@ -111,6 +129,26 @@ describe("buildApplyPlan", () => {
     expect(plan.agents).toHaveLength(1);
     expect(plan.downloadHosts).toEqual(["files.example.com"]);
     expect(plan.acceptDownloads).toBe(true);
+    expect(invalidDownloadHosts).toEqual([{ value: "nope", problem: "not-a-domain" }]);
+  });
+
+  it("reports the review's invalid host instead of silently saving an empty allowlist", () => {
+    const { plan, invalidDownloadHosts } = buildApplyPlan(
+      input({
+        agents: [{ key: "agent-architecture" }],
+        downloadHosts: ["https://bad host/"],
+        acceptDownloads: true
+      }),
+      candidates
+    );
+    expect(plan.downloadHosts).toEqual([]);
+    expect(invalidDownloadHosts).toEqual([{ value: "https://bad host/", problem: "whitespace" }]);
+  });
+});
+
+describe("checkDownloadHosts", () => {
+  it.each(DOWNLOAD_HOST_VECTORS)("checks $text", ({ text, hosts, invalid }) => {
+    expect(checkDownloadHosts(text.split(","))).toEqual({ hosts, invalid });
   });
 });
 

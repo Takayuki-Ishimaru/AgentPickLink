@@ -4,6 +4,10 @@
 
 旧版整理の `self prune` がインストール情報の不整合や未知の項目を報告した場合は、指定した `--home` とその `app` フォルダーを確認してください。必要なファイルは別の場所へ保管し、壊れたインストールは同じ場所へ再インストールして修復します。`--yes` で検証を回避することはできません。
 
+`integrations write` / `remove` が終了コード 1 を返した場合や、`install` の `clientErrors` にクライアントが表示された場合は、`errors` の `file` と `code` を確認してください。`invalid-configuration` は既存の設定ファイルを安全に読み書きできなかった状態で、ファイルは変更していません。構文を修正してから再実行してください。`foreign-entry` は AgentPickLink が作成していない `m365-agents` の設定がある状態です。内容を確認し、置き換えてよい場合だけ `--force` を付けて再実行します（元の内容は `<ファイル>.apl-backup` に保存します）。
+
+セットアップ画面で「承認して保存」を押せず、ダウンロードを許可するホストの下に理由が表示される場合は、表示された値を修正してください。ホスト名（`contoso.sharepoint.com`）、先頭の `*.` だけを使うワイルドカード（`*.sharepoint.com`）、または URL を指定できます。空白を含む値、ドメイン名でない値（`localhost` など）、途中や末尾のワイルドカードは使えません。
+
 `doctor --auth` の `authentication.unknown` は認証を確認できなかった状態です。正常とは扱いません。`authentication.sign-in-required` や `authentication.interactive-auth` ではサインイン・追加認証を完了し、`authentication.access-denied` ではアカウントの利用権限を確認してください。`doctor --agent <エイリアス>` の結果も `findings` に反映されます。検査対象を指定しない通常の `doctor` は、これらのブラウザー検査を行いません。
 
 | 状況                                         | 対処                                                                                                                                 |

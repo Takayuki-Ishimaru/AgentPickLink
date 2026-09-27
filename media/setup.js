@@ -1,7 +1,7 @@
 /* AgentPickLink setup panel (webview). Framework-free ES2020.
  * Everything rendered here comes from the host as data; the DOM is built node by node (never
  * innerHTML) so agent-supplied names and descriptions can never become markup. */
-/* global acquireVsCodeApi, document, window, setTimeout */
+/* global acquireVsCodeApi, document, window, setTimeout, URL */
 (function () {
   "use strict";
 
@@ -56,6 +56,17 @@
       missingDownloadHosts:
         "保存を許可するホストが空のため、ファイルを保存できません。許可するホストを指定して「承認して保存」を押してください。",
       useDefaultDownloadHosts: "SharePoint・OneDriveの標準ホストを入力",
+      invalidDownloadHosts: "次の値はホストとして使えません。修正するまで保存できません。",
+      downloadHostIssue: "「{value}」: {problem}",
+      downloadHostProblem: {
+        whitespace: "空白を含んでいます",
+        "not-a-domain": "ドメイン名ではありません（例: contoso.sharepoint.com）",
+        "invalid-wildcard": "ワイルドカードは先頭の「*.」だけに使えます（例: *.sharepoint.com）",
+        "invalid-host": "ホスト名に使えない文字または形式です"
+      },
+      savedDownloadHosts: "保存されるホスト: {hosts}",
+      noSavedDownloadHosts: "保存されるホストはありません",
+      saveBlockedByHosts: "ダウンロードを許可するホストに使えない値があります。修正すると保存できます。",
       integrations: "AI クライアント連携",
       codex: "Codex",
       claudeCode: "Claude Code",
@@ -169,6 +180,17 @@
       missingDownloadHosts:
         "Files cannot be saved because no download hosts are allowed. Enter the hosts you allow, then approve and save.",
       useDefaultDownloadHosts: "Fill in standard SharePoint and OneDrive hosts",
+      invalidDownloadHosts: "These entries cannot be used as hosts. Fix them before saving.",
+      downloadHostIssue: '"{value}" {problem}',
+      downloadHostProblem: {
+        whitespace: "contains a space",
+        "not-a-domain": "is not a domain name (for example contoso.sharepoint.com)",
+        "invalid-wildcard": 'a wildcard is allowed only as a leading "*." (for example *.sharepoint.com)',
+        "invalid-host": "is not a valid host name"
+      },
+      savedDownloadHosts: "Hosts to be saved: {hosts}",
+      noSavedDownloadHosts: "No hosts will be saved",
+      saveBlockedByHosts: "Some download hosts cannot be used. Fix them to save.",
       integrations: "AI client integrations",
       codex: "Codex",
       claudeCode: "Claude Code",
@@ -268,6 +290,7 @@
   var local = {
     search: "",
     downloadHosts: undefined,
+    submittedDownloadHosts: undefined,
     acceptDownloads: undefined,
     integrations: undefined,
     selected: new Set(),
@@ -320,7 +343,7 @@
   }
 
   function canSave() {
-    return !busy() && local.selected.size > 0;
+    return !busy() && local.selected.size > 0 && !visibleHostIssues().length;
   }
 
   function selectionSummary() {
@@ -929,9 +952,129 @@
     );
   }
 
+  // APL-REVIEW-04: mirrors checkDownloadHosts() in src/services/setup-plan.ts (and isHostPattern in
+  // src/domain/host-pattern.ts). The host re-checks every entry on Save and is the authority;
+  // tests/extension/webview-browser.test.ts runs the same vectors through both.
+  function isExactHostname(value) {
+    if (!value || /[*/:]/.test(value)) return false;
+    try {
+      return new URL("https://" + value).hostname.toLowerCase() === value.toLowerCase().replace(/\.$/, "");
+    } catch {
+      return false;
+    }
+  }
+
+  function isHostPattern(value) {
+    if (value.slice(0, 2) !== "*.") return isExactHostname(value);
+    var domain = value.slice(2);
+    var labels = domain.split(".");
+    return (
+      labels.length >= 2 &&
+      labels.every(function (label) {
+        return label.length > 0;
+      }) &&
+      isExactHostname(domain)
+    );
+  }
+
+  function parseDownloadHost(value) {
+    var trimmed = value.trim().toLowerCase();
+    if (!trimmed) return null;
+    var host = trimmed
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+      .replace(/\/.*$/, "")
+      .replace(/:\d+$/, "");
+    if (host.indexOf(".") >= 0 && isHostPattern(host)) return { host: host };
+    if (/\s/.test(host)) return { problem: "whitespace" };
+    if (host.indexOf("*") >= 0) return { problem: "invalid-wildcard" };
+    if (host.indexOf(".") < 0) return { problem: "not-a-domain" };
+    return { problem: "invalid-host" };
+  }
+
+  function checkDownloadHosts(text) {
+    var hosts = [];
+    var invalid = [];
+    text.split(",").forEach(function (value) {
+      var result = parseDownloadHost(value);
+      if (!result) return;
+      if (result.host) {
+        if (hosts.indexOf(result.host) < 0) hosts.push(result.host);
+      } else invalid.push({ value: value.trim(), problem: result.problem });
+    });
+    return { hosts: hosts.sort(), invalid: invalid };
+  }
+
+  function downloadHostCheck() {
+    return checkDownloadHosts(defaultDownloadHosts());
+  }
+
+  // The entries shown as unusable: the live check, or -- only while the field still holds exactly
+  // what was submitted -- the entries the host refused on that Save.
+  function visibleHostIssues() {
+    var live = downloadHostCheck().invalid;
+    if (live.length) return live;
+    return state.downloadHostIssues && local.submittedDownloadHosts === defaultDownloadHosts()
+      ? state.downloadHostIssues
+      : [];
+  }
+
+  function downloadHostFeedback() {
+    var strings = t();
+    var check = downloadHostCheck();
+    var invalid = visibleHostIssues();
+    var edited = local.downloadHosts !== undefined;
+    return h(
+      "div",
+      { id: "download-host-feedback" },
+      invalid.length
+        ? h(
+            "div",
+            { class: "field-error", role: "alert" },
+            h("p", { text: strings.invalidDownloadHosts }),
+            h(
+              "ul",
+              null,
+              invalid.map(function (issue) {
+                return h("li", {
+                  "data-value": issue.value,
+                  "data-problem": issue.problem,
+                  // Function replacements: a typed value may contain "$&" and similar patterns.
+                  text: strings.downloadHostIssue
+                    .replace("{problem}", function () {
+                      return strings.downloadHostProblem[issue.problem] || issue.problem;
+                    })
+                    .replace("{value}", function () {
+                      return issue.value;
+                    })
+                });
+              })
+            )
+          )
+        : null,
+      edited || invalid.length
+        ? h("p", {
+            id: "download-host-preview",
+            class: "muted",
+            "data-hosts": check.hosts.join(","),
+            text: check.hosts.length
+              ? strings.savedDownloadHosts.replace("{hosts}", function () {
+                  return check.hosts.join(", ");
+                })
+              : strings.noSavedDownloadHosts
+          })
+        : null
+    );
+  }
+
   function syncDownloadHostHint() {
     var hint = document.getElementById("download-host-hint");
     if (hint) hint.hidden = !missingDownloadHosts();
+    var feedback = document.getElementById("download-host-feedback");
+    if (feedback) feedback.replaceWith(downloadHostFeedback());
+    var save = document.getElementById("save-button");
+    if (save) save.disabled = !canSave();
+    var note = document.getElementById("save-blocked-note");
+    if (note) note.hidden = !visibleHostIssues().length;
   }
 
   function integrationFlags() {
@@ -962,7 +1105,7 @@
       "details",
       {
         class: "options-section",
-        open: local.optionsExpanded || missingDownloadHosts(),
+        open: local.optionsExpanded || missingDownloadHosts() || visibleHostIssues().length > 0,
         ontoggle: function (event) {
           local.optionsExpanded = event.target.open;
         }
@@ -979,6 +1122,7 @@
           syncDownloadHostHint();
         }
       }),
+      downloadHostFeedback(),
       h(
         "div",
         { id: "download-host-hint", hidden: !missingDownloadHosts() },
@@ -1032,6 +1176,12 @@
         text: t().save,
         disabled: !canSave(),
         onclick: submit
+      }),
+      h("p", {
+        id: "save-blocked-note",
+        class: "muted",
+        hidden: !visibleHostIssues().length,
+        text: t().saveBlockedByHosts
       })
     );
   }
@@ -1046,6 +1196,8 @@
         actionsPossible: candidateActions(candidate)
       });
     });
+    // Lets downloadHostFeedback() show the host's verdict on exactly this text (APL-REVIEW-04).
+    local.submittedDownloadHosts = defaultDownloadHosts();
     send({
       type: "save",
       plan: {

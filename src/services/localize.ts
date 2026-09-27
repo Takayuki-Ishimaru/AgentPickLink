@@ -63,6 +63,10 @@ const MESSAGES = {
   },
   signedOut: { ja: "サインアウトしました。", en: "Signed out." },
   brokerRestarted: { ja: "ブローカーを再起動しました。", en: "The broker was restarted." },
+  invalidDownloadHosts: {
+    ja: "ダウンロードを許可するホストに使えない値があるため、保存しませんでした: {hosts}。入力欄の下に表示した理由を確認して修正してください。",
+    en: "Nothing was saved because these download hosts cannot be used: {hosts}. Fix them using the reasons shown under the field."
+  },
   noAgentsSelected: {
     ja: "保存するエージェントを 1 つ以上選択してください。",
     en: "Select at least one agent to save."
@@ -314,6 +318,13 @@ const MESSAGES = {
   installUninstallHint: {
     ja: "アンインストールするには次を実行してください:",
     en: "To uninstall, run:"
+  },
+  // APL-REVIEW-02: header above the per-client failure lines (`InstallReport.clientErrors`), for a
+  // selected client whose write actually failed -- distinct from `installReportNoClients` (nothing
+  // was selected/detected at all) and from a plain `vscode-user`/`claude-user` skip line above it.
+  installClientErrorsHeader: {
+    ja: "クライアント設定の書き込みに失敗しました:",
+    en: "Client configuration failed to write:"
   },
   installNextStepsHeader: { ja: "次の手順:", en: "Next steps:" },
   installNextStepsVscode: {

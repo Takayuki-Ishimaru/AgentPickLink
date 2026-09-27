@@ -23,9 +23,11 @@ import {
   applyIntegrations,
   integrationEntryStatus,
   integrationNeedsRefresh,
+  integrationVerdict,
   removeIntegrations,
   type IntegrationContext,
   type IntegrationDefinition,
+  type IntegrationIssue,
   type IntegrationKind,
   type IntegrationSettings
 } from "../../services/integrations.js";
@@ -56,6 +58,13 @@ function parseClientList(raw: string | undefined): IntegrationsClientId[] {
     .split(",")
     .map((token) => token.trim())
     .filter(Boolean);
+  // APL-REVIEW-02: a value that is only separators/whitespace (e.g. "," or " , ") used to fall
+  // through to an empty client list -- every writer/remover below is a no-op over zero clients, so
+  // the command silently "succeeded" at doing nothing instead of naming the mistake.
+  if (tokens.length === 0)
+    throw new DomainError("INVALID_ARGUMENT", "No client name found in --client.", false, {
+      remediation: `Use --client ${KNOWN_CLIENTS.join(",")} (comma-separated), or omit it for vscode,claude,codex.`
+    });
   const unknown = tokens.filter((token) => !(KNOWN_CLIENTS as readonly string[]).includes(token));
   if (unknown.length > 0)
     throw new DomainError("INVALID_ARGUMENT", `Unknown client(s): ${unknown.join(", ")}`, false, {
@@ -70,6 +79,33 @@ function kindFor(client: IntegrationsClientId): IntegrationKind {
   if (client === "claude" || client === "claude-user") return "claudeUser";
   if (client === "vscode-workspace") return "vscodeMcpJson";
   return "vscodeUser"; // "vscode" | "vscode-user"
+}
+
+/** The inverse of `kindFor`/`settingsFor`: the canonical CLI token `runIntegrationsWrite`/
+ * `runIntegrationsRemove` report an `IntegrationIssue.kind` as, and what `install`'s own
+ * `clientErrors` reuses (APL-REVIEW-02) so both surfaces name a failed client the same way. Each
+ * `IntegrationKind` has exactly one canonical spelling here even though a couple accept aliases as
+ * *input* (`kindFor` above) -- `"vscode"`/`"claude"` are never reported back out. */
+export function clientTokenFor(kind: IntegrationKind): IntegrationsClientId {
+  if (kind === "codex") return "codex";
+  if (kind === "claudeCode") return "claude-project";
+  if (kind === "claudeUser") return "claude-user";
+  if (kind === "vscodeMcpJson") return "vscode-workspace";
+  return "vscode-user"; // "vscodeUser"
+}
+
+/** `{ client, file, code, message }` for every failed issue in `verdict.errors`, using the canonical
+ * CLI token (`clientTokenFor`) -- the shape `runIntegrationsWrite`/`runIntegrationsRemove`'s `errors`
+ * and `install`'s `clientErrors` both report (APL-REVIEW-02). */
+function reportErrors(
+  issues: readonly IntegrationIssue[]
+): Array<{ client: string; file: string; code: string; message: string }> {
+  return issues.map((issue) => ({
+    client: clientTokenFor(issue.kind),
+    file: issue.file,
+    code: issue.code,
+    message: issue.message
+  }));
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -188,10 +224,19 @@ export async function runIntegrationsWrite(
     deps.stdout(`${translator(pickLocaleFromEnv(deps.env))("installVscodeUserDirCreated")}\n`);
   }
   // §4.7 C6 (P1-8): without `--force`, a foreign entry is reported in `skipped` and left alone.
-  const summary = await applyIntegrations(context, settingsFor(clients), { force: options.force });
+  const settings = settingsFor(clients);
+  const summary = await applyIntegrations(context, settings, { force: options.force });
+  // APL-REVIEW-02: `ok`/`errors` are the one verdict the exit code (src/cli/index.ts), `install`'s
+  // `clientErrors` and the setup panel's completion row all share -- a script that checks only the
+  // exit code must not believe a requested client was written when it was not. `skipped` here now
+  // lists only the *benign* issues (nothing requested failed); every failure moved to `errors`.
+  const verdict = integrationVerdict(settings, summary);
+  const issues = summary.issues ?? [];
   return {
+    ok: verdict.ok,
     written: summary.written,
-    skipped: summary.skipped,
+    skipped: issues.filter((issue) => !issue.failed).map((issue) => issue.message),
+    errors: reportErrors(verdict.errors),
     ...(summary.warnings && summary.warnings.length > 0 ? { warnings: summary.warnings } : {})
   };
 }
@@ -234,8 +279,18 @@ export async function runIntegrationsRemove(
   const clients = parseClientList(options.client);
   const workspaceRoot = path.resolve(options.workspace ?? deps.root());
   const context = await resolveIntegrationContext(deps, workspaceRoot, options.home);
-  const summary = await removeIntegrations(context, settingsFor(clients), { force: options.force });
-  return { removed: summary.written, skipped: summary.skipped };
+  const settings = settingsFor(clients);
+  const summary = await removeIntegrations(context, settings, { force: options.force });
+  // APL-REVIEW-02: same split as `runIntegrationsWrite` above -- `skipped` keeps only the benign
+  // issues (e.g. a missing VS Code user directory: nothing was ever there to remove).
+  const verdict = integrationVerdict(settings, summary);
+  const issues = summary.issues ?? [];
+  return {
+    ok: verdict.ok,
+    removed: summary.written,
+    skipped: issues.filter((issue) => !issue.failed).map((issue) => issue.message),
+    errors: reportErrors(verdict.errors)
+  };
 }
 
 /** The vendor one-liner for a client that prefers its own CLI over a direct file edit
