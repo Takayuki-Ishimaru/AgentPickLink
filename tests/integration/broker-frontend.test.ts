@@ -655,13 +655,27 @@ describe("broker resource maintenance", () => {
       throw new Error("profile context is still closing");
     };
 
+    // Observe the actual stop attempt scheduled by the IPC request. Polling the protected
+    // descriptor starts more PowerShell ACL checks while shutdown is writing it on Windows;
+    // an arbitrary 20-second polling deadline can expire before those operations finish.
+    // The normal test deadline still bounds this wait, and the on-disk state is checked below.
+    const stop = fixture.server.stop.bind(fixture.server);
+    let completed!: (result: PromiseSettledResult<void>) => void;
+    const stopResult = new Promise<PromiseSettledResult<void>>((resolve) => {
+      completed = resolve;
+    });
+    const stopSpy = vi.spyOn(fixture.server, "stop").mockImplementationOnce(() => {
+      const attempt = stop();
+      void attempt.then(
+        (value) => completed({ status: "fulfilled", value }),
+        (reason: unknown) => completed({ status: "rejected", reason })
+      );
+      return attempt;
+    });
     await expect(fixture.client.call("broker.shutdown", {})).resolves.toEqual({ stopping: true });
-    // Publishing the failure rewrites a protected descriptor through real Windows ACLs.
-    const deadline = Date.now() + (process.platform === "win32" ? 20_000 : 2_000);
-    while ((await readDescriptorForTest(fixture.paths))?.state !== "stop-failed") {
-      if (Date.now() >= deadline) throw new Error("Shutdown failure was not published");
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    expect(await stopResult).toMatchObject({ status: "rejected", reason: expect.any(AggregateError) });
+    expect(stopSpy).toHaveBeenCalledOnce();
+    stopSpy.mockRestore();
     expect(await readDescriptorForTest(fixture.paths)).toMatchObject({
       instanceId: fixture.descriptor.instanceId,
       state: "stop-failed"
