@@ -189,7 +189,10 @@ export class InvocationService {
     message: string,
     handle: string | undefined,
     requestId: string,
-    onProgress?: ProgressSink
+    onProgress?: ProgressSink,
+    /** Aborted when the caller cancels (`broker.cancel`); the transport winds down at its next
+     * safe point, and the outcome is not recorded as an incident. */
+    signal?: AbortSignal
   ) {
     const started = this.now();
     const { workspace, agent } = await this.deps.policy.authorize(root, alias);
@@ -212,6 +215,11 @@ export class InvocationService {
       const result = await this.deps.limiter.run(workspace.workspaceKey, () =>
         this.deps.conversations.runExclusive(activeConversation.handle, async () => {
           try {
+            // A caller that gave up while this request was queued never has its message sent.
+            if (signal?.aborted)
+              throw new DomainError("SUBMIT_FAILED", "The request was cancelled before it was sent.", false, {
+                submissionState: "not-sent"
+              });
             // A queued invocation may wait while the repository request, local
             // approval, or registry binding changes. Re-evaluate at the last safe
             // boundary before the browser transport is allowed to fill or submit.
@@ -226,7 +234,8 @@ export class InvocationService {
               .invoke(this.transportHandle(activeConversation), {
                 message,
                 requestId,
-                onProgress
+                onProgress,
+                signal
               });
             const attachments = response.attachments ?? [];
             await this.deps.audit
@@ -273,7 +282,7 @@ export class InvocationService {
             };
           } catch (error) {
             // Invalidate a crashed browser before releasing the conversation lock to a waiter.
-            recordedFailure = this.recordIncident(error, "invoke");
+            recordedFailure = this.recordIncident(error, "invoke", signal);
             throw recordedFailure;
           }
         })
@@ -291,7 +300,7 @@ export class InvocationService {
       this.deps.conversations.forget(freshConversationHandle);
       return { ...result, conversationClosed: true };
     } catch (error) {
-      const domain = recordedFailure ?? this.recordIncident(error, phase);
+      const domain = recordedFailure ?? this.recordIncident(error, phase, signal);
       // A fresh ask is ephemeral. If sending or the limiter fails before a handle can be returned
       // to the caller, retire the conversation and release its page; successful asks close their
       // page in the invocation lock above. Existing handles remain available for explicit
@@ -331,11 +340,14 @@ export class InvocationService {
     }
   }
 
-  private recordIncident(error: unknown, phase: string): DomainError {
+  private recordIncident(error: unknown, phase: string, signal?: AbortSignal): DomainError {
     const domain =
       error instanceof DomainError ? error : new DomainError("INTERNAL_ERROR", "Agent invocation failed.");
     if (domain.code === "BROWSER_CRASHED") this.deps.conversations.failAll();
-    if (isIncidentCode(domain.code)) {
+    // A caller's own cancellation ends the transport's wait with RESPONSE_TIMEOUT; that is not an
+    // incident. Any other incident-worthy failure is recorded even if the caller also cancelled.
+    const cancelledByCaller = signal?.aborted === true && domain.code === "RESPONSE_TIMEOUT";
+    if (isIncidentCode(domain.code) && !cancelledByCaller) {
       const browser = this.deps.browserDescription?.();
       this.deps.incidents?.record({
         code: domain.code,

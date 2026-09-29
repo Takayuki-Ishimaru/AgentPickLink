@@ -11,7 +11,9 @@ export type BrokerHandler = (
   method: BrokerMethod,
   params: Record<string, unknown>,
   requestId: string,
-  notify: ProgressSink
+  notify: ProgressSink,
+  /** Aborted when the requesting client sends `broker.cancel` for this request. */
+  signal: AbortSignal
 ) => Promise<unknown>;
 export class IpcServer {
   private server?: net.Server;
@@ -79,6 +81,8 @@ export class IpcServer {
   private accept(socket: net.Socket): void {
     this.sockets.add(socket);
     let authenticated = false;
+    // Requests of this connection still running, so only this client can cancel them.
+    const inFlight = new Map<string, AbortController>();
     const decoder = new FrameDecoder();
     socket.on("data", async (chunk: Buffer) => {
       try {
@@ -131,27 +135,26 @@ export class IpcServer {
             );
             continue;
           }
-          // Progress frames may be written on this socket, keyed to this request's id, any
-          // number of times while the handler runs; they must never race or replace the final
-          // response. `settled` is flipped only once that response has actually been written,
-          // so a handler that (incorrectly) calls notify afterward is silently ignored rather
-          // than corrupting a later request/response on the same connection.
-          let settled = false;
-          const notify: ProgressSink = (event) => {
-            if (settled || socket.destroyed || !isProgressEvent(event)) return;
-            socket.write(encodeFrame({ id: envelope.id, event: "progress", data: event }));
-          };
-          let response: IpcResponse;
+          let parsed: ReturnType<typeof parseMethod>;
           try {
-            const parsed = parseMethod(envelope.method, envelope.params);
-            const result = await this.handler(parsed.method, parsed.params, envelope.id, notify);
-            response = { id: envelope.id, ok: true, result };
+            parsed = parseMethod(envelope.method, envelope.params);
           } catch (error) {
             const domain = asDomainError(error);
-            response = { id: envelope.id, ok: false, error: domain.toResult(envelope.id).error };
+            socket.write(
+              encodeFrame({ id: envelope.id, ok: false, error: domain.toResult(envelope.id).error })
+            );
+            continue;
           }
-          socket.write(encodeFrame(response));
-          settled = true;
+          if (parsed.method === "broker.cancel") {
+            const target = inFlight.get(parsed.params.requestId as string);
+            target?.abort();
+            socket.write(encodeFrame({ id: envelope.id, ok: true, result: { cancelled: !!target } }));
+            continue;
+          }
+          // Not awaited: a later frame of the same chunk -- a cancel above all -- must not wait
+          // for this request, just as frames of later chunks already do not. dispatch() answers
+          // every failure itself; anything else still ends only this connection.
+          void this.dispatch(socket, envelope.id, parsed, inFlight).catch(() => socket.destroy());
         }
       } catch (error) {
         const domain = asDomainError(error);
@@ -159,7 +162,50 @@ export class IpcServer {
         socket.destroy();
       }
     });
-    socket.on("close", () => this.sockets.delete(socket));
+    socket.on("close", () => {
+      this.sockets.delete(socket);
+      // A client that went away no longer waits for anything it asked for.
+      for (const controller of inFlight.values()) controller.abort();
+    });
     socket.on("error", () => undefined);
+  }
+
+  private async dispatch(
+    socket: net.Socket,
+    id: string,
+    parsed: ReturnType<typeof parseMethod>,
+    inFlight: Map<string, AbortController>
+  ): Promise<void> {
+    // Progress frames may be written on this socket, keyed to this request's id, any number of
+    // times while the handler runs; they must never race or replace the final response. `settled`
+    // is flipped only once that response has actually been written, so a handler that
+    // (incorrectly) calls notify afterward is silently ignored rather than corrupting a later
+    // request/response on the same connection.
+    let settled = false;
+    const notify: ProgressSink = (event) => {
+      if (settled || socket.destroyed || !isProgressEvent(event)) return;
+      socket.write(encodeFrame({ id, event: "progress", data: event }));
+    };
+    const controller = new AbortController();
+    inFlight.set(id, controller);
+    let response: IpcResponse;
+    try {
+      const result = await this.handler(parsed.method, parsed.params, id, notify, controller.signal);
+      response = { id, ok: true, result };
+    } catch (error) {
+      const domain = asDomainError(error);
+      response = { id, ok: false, error: domain.toResult(id).error };
+    } finally {
+      if (inFlight.get(id) === controller) inFlight.delete(id);
+    }
+    let frame: Buffer;
+    try {
+      frame = encodeFrame(response);
+    } catch (error) {
+      // A result that cannot be sent (e.g. over MAX_FRAME_BYTES) fails only its own request.
+      frame = encodeFrame({ id, ok: false, error: asDomainError(error).toResult(id).error });
+    }
+    socket.write(frame);
+    settled = true;
   }
 }

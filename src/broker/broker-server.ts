@@ -234,7 +234,7 @@ export class BrokerServer {
         capabilities: [...BROKER_CAPABILITIES],
         instanceId: this.instanceId
       },
-      (method, params, requestId, notify) => this.dispatch(method, params, requestId, notify)
+      (method, params, requestId, notify, signal) => this.dispatch(method, params, requestId, notify, signal)
     );
     this.unsubscribeCrash = this.deps.router.get("browser")?.onBrowserCrash?.((event) => {
       this.conversations?.failAll();
@@ -399,7 +399,8 @@ export class BrokerServer {
     method: BrokerMethod,
     params: Record<string, unknown>,
     requestId: string,
-    notify: ProgressSink
+    notify: ProgressSink,
+    signal?: AbortSignal
   ): Promise<unknown> {
     const stopFailed = this.descriptor?.state === "stop-failed";
     if (this.stopping && method !== "broker.shutdown" && !(stopFailed && method === "broker.health"))
@@ -410,7 +411,7 @@ export class BrokerServer {
       this.lastActivity = Date.now();
     }
     try {
-      return await this.route(method, params, requestId, notify);
+      return await this.route(method, params, requestId, notify, signal);
     } catch (error) {
       // browser.*/agent.* methods are the only ones that talk to the automation browser
       // directly (conversation.* goes through InvocationService, which records its own
@@ -444,9 +445,13 @@ export class BrokerServer {
     method: BrokerMethod,
     params: Record<string, unknown>,
     requestId: string,
-    notify: ProgressSink
+    notify: ProgressSink,
+    signal?: AbortSignal
   ): Promise<unknown> {
     switch (method) {
+      case "broker.cancel":
+        // Answered by IpcServer on the requesting connection; it never reaches a handler.
+        return { cancelled: false };
       case "broker.health":
         // Opportunistic refresh of the descriptor's browserPid (see findChildBrowserPid's doc
         // comment): broker.health is polled every 20-30s by the extension/CLI/doctor regardless of
@@ -570,7 +575,8 @@ export class BrokerServer {
           params.message as string,
           params.conversationHandle as string | undefined,
           requestId,
-          notify
+          notify,
+          signal
         );
       case "conversation.list":
         return this.invocationService().list(params.root as string);

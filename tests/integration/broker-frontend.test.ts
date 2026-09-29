@@ -300,6 +300,42 @@ describe("frontend → authenticated IPC → broker", () => {
     fixture.client.close();
   });
 
+  it("stops the broker-side ask when its caller cancels, without recording an incident", async () => {
+    const fixture = await setup(true);
+    servers.push(fixture.server);
+    const received = Promise.withResolvers<AbortSignal | undefined>();
+    vi.spyOn(fixture.transport, "invoke").mockImplementation(async (_conversation, request) => {
+      received.resolve(request.signal);
+      // Like the browser transport: wind down once the caller's cancel arrives.
+      await new Promise<void>((resolve) =>
+        request.signal?.addEventListener("abort", () => resolve(), { once: true })
+      );
+      throw new DomainError(
+        "RESPONSE_TIMEOUT",
+        "The request was cancelled while collecting attachments.",
+        false,
+        { submissionState: "sent" }
+      );
+    });
+    const controller = new AbortController();
+    const pending = fixture.frontend.ask(
+      fixture.workspaceRoot,
+      { agent: "requirements", message: "hello" },
+      "req-cancelled-ask",
+      controller.signal
+    );
+    const signal = await received.promise;
+    expect(signal?.aborted).toBe(false);
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+    await expect.poll(() => signal?.aborted).toBe(true);
+    // The ended one-shot ask released its page, and a caller's cancel is not an incident.
+    await expect.poll(() => fixture.transport.closes).toBe(1);
+    const health = (await fixture.client.call("broker.health", {})) as { incidents: unknown[] };
+    expect(health.incidents).toEqual([]);
+    fixture.client.close();
+  });
+
   it("invalidates every existing handle when the browser context crashes", async () => {
     const fixture = await setup(true);
     servers.push(fixture.server);

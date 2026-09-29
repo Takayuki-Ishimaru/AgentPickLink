@@ -7,8 +7,8 @@ import { pathToFileURL } from "node:url";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { FrontendBrokerPort } from "../../src/frontend/broker-port.js";
 import { createSdkServer } from "../../src/frontend/mcp-server.js";
-import { chromium } from "playwright-core";
-import { describe, expect, it } from "vitest";
+import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { describe, expect, it, onTestFailed, onTestFinished } from "vitest";
 import { attachmentMediaType } from "../../src/domain/attachment-media.js";
 import { AttachmentSaver } from "../../src/transports/browser/attachment-saver.js";
 import { ResponseExtractor } from "../../src/transports/browser/response-extractor.js";
@@ -25,13 +25,48 @@ const executable = [
   "/usr/bin/google-chrome"
 ].find((candidate): candidate is string => !!candidate && existsSync(candidate));
 
+/** Elapsed-time marks for one real-browser test, printed when it fails -- a vitest timeout
+ * included -- so a slow CI runner shows which step used the budget: browser launch, page setup,
+ * each download's start and finish as the browser reports them, the saver, and shutdown.
+ * M365_AGENT_TEST_STEP_TIMELINE=1 prints passing runs too, to compare runners or repeated runs. */
+function stepTimeline() {
+  const started = performance.now();
+  const marks: string[] = [];
+  const mark = (step: string) => marks.push(`${Math.round(performance.now() - started)} ms: ${step}`);
+  const print = () => void process.stderr.write(`step timeline:\n  ${marks.join("\n  ")}\n`);
+  if (process.env.M365_AGENT_TEST_STEP_TIMELINE === "1") onTestFinished(print);
+  else onTestFailed(print);
+  return {
+    mark,
+    watch(context: BrowserContext, page: Page) {
+      // Edge on Windows can open its own downloads hub as a page in the automated context.
+      context.on("page", (opened) => mark(`context opened a page (${opened.url() || "blank"})`));
+      page.on("download", (download) => {
+        const name = download.suggestedFilename();
+        mark(`download started: ${name}`);
+        download.path().then(
+          () => mark(`download finished: ${name}`),
+          () => mark(`download did not finish: ${name}`)
+        );
+      });
+    }
+  };
+}
+
 describe.skipIf(!executable)("arbitrary response attachments through a real browser", () => {
+  // Windows CI (Edge) has needed up to 11.5 s here against about 1 s on Ubuntu, so 15 s left little
+  // headroom; 30 s matches the sibling tests. The saver's 5 s bounds make a stalled download fail
+  // as a named stage instead of consuming that headroom.
   it("saves each file under its nearby M365 filename while keeping download-control identity", async () => {
+    const timeline = stepTimeline();
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-agent-filenames-"));
+    timeline.mark("launching browser");
     const browser = await chromium.launch({ executablePath: executable, headless: true });
+    timeline.mark("browser launched");
     try {
       const context = await browser.newContext({ acceptDownloads: true });
       const page = await context.newPage();
+      timeline.watch(context, page);
       await page.route("https://attachments.example.test/**", (route) =>
         route.fulfill({
           contentType: "text/html",
@@ -53,36 +88,43 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
           root.append(card);
         }
       });
+      timeline.mark("page ready");
       const pageLike = page as unknown as PageLike;
       const extracted = await new ResponseExtractor().extract(pageLike, { assistantCount: 0 });
+      timeline.mark("candidates extracted");
       expect(extracted.attachmentCandidates).toHaveLength(3);
       expect(extracted.attachmentCandidates?.slice(0, 2)).toMatchObject([
         { name: "attachment-1", sourceFilename: "売上 報告書①.pdf" },
         { name: "attachment-2", sourceFilename: "売上 報告書①.pdf" }
       ]);
-      const saved = await new AttachmentSaver({ enabled: true, directory }).save(
+      const saved = await new AttachmentSaver({ enabled: true, directory, timeoutMs: 5_000 }).save(
         pageLike,
         extracted.attachmentCandidates!,
         { workspaceKey: "workspace", requestId: "original-names" }
       );
-      expect(saved.map((file) => file.name)).toEqual([
-        "売上 報告書①.pdf",
-        "売上 報告書①-2.pdf",
-        "attachment-3.pdf"
+      timeline.mark("saver returned");
+      // Whole records, so a not-saved file shows its stage in the failure diff.
+      expect(saved).toMatchObject([
+        { name: "売上 報告書①.pdf", status: "saved" },
+        { name: "売上 報告書①-2.pdf", status: "saved" },
+        { name: "attachment-3.pdf", status: "saved" }
       ]);
       for (const [index, file] of saved.entries()) {
-        expect(file.status).toBe("saved");
         expect(await readFile(file.localPath!, "utf8")).toBe(`%PDF-1.3\nfile ${index}`);
       }
     } finally {
       await browser.close();
+      timeline.mark("browser closed");
       await rm(directory, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("recovers extensionless binary formats from generic blobs and reads their original bytes through MCP", async () => {
+    const timeline = stepTimeline();
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-generic-format-flow-"));
+    timeline.mark("launching browser");
     const browser = await chromium.launch({ executablePath: executable, headless: true });
+    timeline.mark("browser launched");
     const unused = async (): Promise<never> => {
       throw new Error("unused broker operation");
     };
@@ -96,6 +138,7 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
       await client.connect(clientTransport);
       const context = await browser.newContext({ acceptDownloads: true });
       const page = await context.newPage();
+      timeline.watch(context, page);
       await page.route("https://attachments.example.test/**", (route) =>
         route.fulfill({ contentType: "text/html", body: '<div data-message-author-role="assistant"></div>' })
       );
@@ -171,11 +214,13 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
         );
         const pageLike = page as unknown as PageLike;
         const extracted = await new ResponseExtractor().extract(pageLike, { assistantCount: 0 });
+        timeline.mark(`batch ${start}: saving ${files.length} files`);
         const saved = await new AttachmentSaver({ enabled: true, directory, timeoutMs: 5_000 }).save(
           pageLike,
           extracted.attachmentCandidates!,
           { workspaceKey: "workspace", requestId: `batch-${start}` }
         );
+        timeline.mark(`batch ${start}: saver returned`);
         expect(saved).toHaveLength(files.length);
         for (const [index, file] of files.entries()) {
           expect(saved[index]).toMatchObject({
@@ -224,10 +269,12 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
       expect(refused[0]?.status).toBe("not-saved");
       expect(downloads).toBe(0);
       expect(await page.evaluate(() => Reflect.get(globalThis, "attachmentExecuted"))).toBeUndefined();
+      timeline.mark("retarget refusal checked");
     } finally {
       await client.close();
       await server.close();
       await browser.close();
+      timeline.mark("browser closed");
       await rm(directory, { recursive: true, force: true });
     }
   }, 30_000);
@@ -283,12 +330,16 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
         body: Buffer.from(JSON.stringify({ 日本語: "𠮷・中文・한국어・😀", value: 42 }))
       }
     ];
+    const timeline = stepTimeline();
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-format-flow-"));
+    timeline.mark("launching browser");
     const browser = await chromium.launch({ executablePath: executable, headless: true });
+    timeline.mark("browser launched");
     try {
       // A fresh, unauthenticated context: never opens the user's dedicated product profile.
       const context = await browser.newContext({ acceptDownloads: true });
       const page = await context.newPage();
+      timeline.watch(context, page);
       await page.route("https://attachments.example.test/**", (route) =>
         route.fulfill({
           contentType: "text/html",
@@ -320,6 +371,7 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
       expect(extracted.attachmentCandidates?.map((file) => file.name)).toEqual(
         files.map((file) => file.name)
       );
+      timeline.mark(`saving ${files.length} files`);
       const saved = await new AttachmentSaver({
         enabled: true,
         directory,
@@ -327,6 +379,7 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
         timeoutMs: 5_000,
         allowedHosts: []
       }).save(pageLike, extracted.attachmentCandidates!, { workspaceKey: "formats", requestId: "one" });
+      timeline.mark("saver returned");
       expect(saved).toHaveLength(files.length);
       for (const [index, file] of files.entries()) {
         expect(saved[index]).toMatchObject({
@@ -431,11 +484,13 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
         page.once("download", (download) => {
           suggestedName = download.suggestedFilename();
         });
+        timeline.mark("refusals checked; saving the unnamed file");
         const unnamedSaved = await new AttachmentSaver({ enabled: true, directory, timeoutMs: 5_000 }).save(
           pageLike,
           unnamed.attachmentCandidates!,
           { workspaceKey: "formats", requestId: "unnamed" }
         );
+        timeline.mark("saver returned");
         expect(unnamedSaved).toHaveLength(1);
         expect(unnamedSaved[0]).toMatchObject({ status: "saved", name: suggestedName });
         expect(suggestedName).not.toBe("");
@@ -454,6 +509,7 @@ describe.skipIf(!executable)("arbitrary response attachments through a real brow
       await context.close();
     } finally {
       await browser.close();
+      timeline.mark("browser closed");
       await rm(directory, { recursive: true, force: true });
     }
   }, 30_000);

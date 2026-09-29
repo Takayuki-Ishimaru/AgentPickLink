@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { AliasSchema } from "../domain/agent.js";
 import { DomainError } from "../domain/errors.js";
+const RequestIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 export const IpcEnvelopeSchema = z
   .object({
-    id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+    id: RequestIdSchema,
     method: z.string().min(1).max(128),
     params: z.unknown()
   })
@@ -13,6 +14,9 @@ const ConversationHandleSchema = z.string().regex(/^conv_[A-Za-z0-9_-]+$/);
 export const BrokerMethodSchemas = {
   "broker.health": z.object({}).strict(),
   "broker.shutdown": z.object({}).strict(),
+  /** Cancels a request still in flight on the same connection (protocol minor 4). Answered by the
+   * IPC server itself, never by a broker handler. */
+  "broker.cancel": z.object({ requestId: RequestIdSchema }).strict(),
   "browser.login": z.object({ timeoutMs: z.number().int().min(1_000).max(600_000).optional() }).strict(),
   /** Cancels the interactive sign-in currently running in the visible window, if any. */
   "browser.cancelLogin": z.object({}).strict(),

@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.4 Beta** — VS Code から、利用を承認した Microsoft 365 エージェントへ質問するためのローカル MCP ブリッジです。
+**v0.2.5 Beta** — VS Code から、利用を承認した Microsoft 365 エージェントへ質問するためのローカル MCP ブリッジです。
 
 Microsoft 365 にサインインしてエージェントを選び、ワークスペース単位で利用を承認すると、MCP 対応の AI クライアントから質問できるようになります。回答テキストや引用に加え、エージェントが生成したファイルを保存できます。
 
@@ -16,13 +16,12 @@ AgentPickLink は **MIT ライセンスのオープンソースソフトウェ�
 
 本ソフトウェアは Microsoft の公式製品ではありません。ベータ版のため、Microsoft 365 の画面変更やテナントの設定によって接続・取得に失敗する場合があります。
 
-## v0.2.4 の主な変更
+## v0.2.5 の主な変更
 
-- `doctor --auth` / `--agent` がエラー表示後も終了しない問題を修正しました。失敗した検査は理由付きの診断結果として返します。
-- 解析できない連携設定があっても `doctor` は他の検査を続け、該当クライアントを `invalid` と報告します。空の設定ファイルは設定なしとして扱います。
-- `integrations remove` は解析できない設定を変更せず、削除失敗として報告します。`integrations status` でも `invalid` と確認できます。
+- 添付ファイルのダウンロードやファイルカードが応答しない場合に、保存処理が待ち続ける問題を修正しました。待機上限に達したファイルは未保存として理由を返します。
+- MCP クライアントからのキャンセルを受け取ると、ローカルの回答待ち・ファイル保存も終了します。送信済みの質問や Microsoft 365 側の生成処理を取り消すものではありません。
 
-詳細は [リリースノート](release-docs/CHANGELOG.md) を参照してください。
+詳細と更新時の注意点は [リリースノート](release-docs/CHANGELOG.md) を参照してください。
 
 ## 利用環境
 
@@ -39,21 +38,21 @@ Windows・macOS・Ubuntu の自動テストを公開 CI で実行します。Ubu
 
 ## インストール
 
-1. GitHub の **Releases → v0.2.4 (Beta)** で `agent-pick-link-0.2.4.vsix` をダウンロードします。
+1. GitHub の **Releases → v0.2.5 (Beta)** で `agent-pick-link-0.2.5.vsix` をダウンロードします。
 2. VS Code のコマンドパレットから **Extensions: Install from VSIX… / 拡張機能: VSIX からのインストール…** を実行し、ダウンロードしたファイルを選びます。
 3. 再読み込みを求められた場合は、VS Code を再読み込みします。
 
 ターミナルからもインストールできます。
 
 ```sh
-code --install-extension agent-pick-link-0.2.4.vsix
+code --install-extension agent-pick-link-0.2.5.vsix
 ```
 
 VSIX には拡張機能、CLI、ローカル接続プロセス、MCP サーバーを同梱しています。npm パッケージや Marketplace からのインストールは、このベータ版の配布手順には含みません。
 
 ### v0.2.3 以前からの更新
 
-同じ手順で v0.2.4 の VSIX をインストールし、VS Code を再読み込みしてください。既存の設定・ワークスペース承認・専用ブラウザープロファイルはそのまま利用できます。パネルで接続状態を確認し、必要に応じて **接続して更新 / Connect and refresh** を実行してください。外部 AI クライアントの MCP 接続も再起動して、新しいバージョンを読み込みます。v0.1.x で有効にした Codex / Claude Code / VS Code の連携設定は、起動時に新しい形式へ更新し、その旨を 1 回通知します。
+同じ手順で v0.2.5 の VSIX をインストールし、VS Code を再読み込みしてください。既存の設定・ワークスペース承認・専用ブラウザープロファイルはそのまま利用できます。パネルで接続状態を確認し、必要に応じて **接続して更新 / Connect and refresh** を実行してください。外部 AI クライアントの MCP 接続も再起動して、新しいバージョンを読み込みます。v0.1.x で有効にした Codex / Claude Code / VS Code の連携設定は、起動時に新しい形式へ更新し、その旨を 1 回通知します。
 
 ## 拡張機能なしでインストールする
 
@@ -140,7 +139,7 @@ AgentPickLink は、Microsoft 365 Copilot の Web 画面を、利用者自身の
 - [利用 OSS・第三者ソフトウェア一覧](release-docs/OSS-LICENSES.md)
 - [第三者ソフトウェアの著作権・ライセンス全文](release-docs/THIRD-PARTY-NOTICES.txt)
 
-開発者向けには `agent-pick-link-0.2.4-source.zip` を配布します。依存関係は `package-lock.json` に固定しており、展開したソースのみでインストール・テスト・ビルドできます。
+開発者向けには `agent-pick-link-0.2.5-source.zip` を配布します。依存関係は `package-lock.json` に固定しており、展開したソースのみでインストール・テスト・ビルドできます。
 
 ## CLI の出力・削除時の確認
 

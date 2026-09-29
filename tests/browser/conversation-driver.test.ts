@@ -779,6 +779,63 @@ describe("conversation timing and completion metadata", () => {
     ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
     expect(save).not.toHaveBeenCalled();
   });
+
+  it("hands the request's cancellation to the saver and reports a cancel while saving", async () => {
+    const controller = new AbortController();
+    let savedWith: AbortSignal | undefined;
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[], context: { signal?: AbortSignal }) => {
+      savedWith = context.signal;
+      controller.abort();
+      return [{ index: 1, name: "report.pdf", status: "not-saved", stage: "cancelled" }];
+    });
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      on: () => undefined,
+      off: () => undefined
+    };
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save } as never,
+      { attachmentSettleMs: 0 }
+    );
+    await expect(
+      driver.invoke(page, conversation(), agent, fixtureAdapter({}), {
+        message: "hello",
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({
+      code: "RESPONSE_TIMEOUT",
+      message: "The request was cancelled while collecting attachments.",
+      details: { submissionState: "sent" }
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(savedWith).toBe(controller.signal);
+  });
+
+  it("keeps a response whose files were all handled before a late cancel arrived", async () => {
+    const controller = new AbortController();
+    const saved = [{ index: 1, name: "report.pdf", status: "saved", localPath: "/tmp/report.pdf" }];
+    const save = vi.fn(async () => {
+      controller.abort();
+      return saved;
+    });
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      on: () => undefined,
+      off: () => undefined
+    };
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save } as never,
+      { attachmentSettleMs: 0 }
+    );
+    await expect(
+      driver.invoke(page, conversation(), agent, fixtureAdapter({}), {
+        message: "hello",
+        signal: controller.signal
+      })
+    ).resolves.toMatchObject({ attachments: saved });
+  });
 });
 
 function conversation() {

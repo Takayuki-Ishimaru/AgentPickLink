@@ -276,13 +276,14 @@ export class ConversationDriver {
           stableSince = Date.now();
         }
       }
-      if (request.signal?.aborted)
-        throw new BrowserTransportError(
+      const cancelledWhileCollecting = () =>
+        new BrowserTransportError(
           "RESPONSE_TIMEOUT",
           "The request was cancelled while collecting attachments.",
           undefined,
           { submissionState: "sent", partialResponse: extracted }
         );
+      if (request.signal?.aborted) throw cancelledWhileCollecting();
       await assertPostSubmitContext();
       const { attachmentCandidates: _initialCandidates, ...response } = extracted;
       const attachmentCandidates = [...candidates.values()];
@@ -290,8 +291,12 @@ export class ConversationDriver {
       const attachments = await this.attachmentSaver.save(page, attachmentCandidates ?? [], {
         workspaceKey: request.workspaceKey ?? "workspace",
         workspaceRoot: request.workspaceRoot,
-        requestId: request.requestId ?? conversation.handle
+        requestId: request.requestId ?? conversation.handle,
+        signal: request.signal
       });
+      // The saver stops at its next safe point once cancelled; if that cut any file short, report it
+      // like a cancel above. A cancel arriving after every file was handled changes nothing.
+      if (attachments.some((item) => item.stage === "cancelled")) throw cancelledWhileCollecting();
       tracker.complete();
       report("done", "The agent response is complete");
       return {

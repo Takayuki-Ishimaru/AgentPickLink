@@ -98,6 +98,9 @@ jobs:
           LOCALAPPDATA: ${{ runner.temp }}/apl-test/local
           M365_AGENT_APP_DATA: ${{ runner.temp }}/apl-test/app-data
           M365_AGENT_INSTALL_ROOT: ${{ runner.temp }}/apl-test/install
+          # Real-browser attachment tests print per-step timings even when they pass, so runner
+          # differences (notably Windows Edge) can be compared from the logs.
+          M365_AGENT_TEST_STEP_TIMELINE: "1"
         working-directory: ${{ steps.source.outputs.path }}
       - run: npm run schemas:check
         working-directory: ${{ steps.source.outputs.path }}

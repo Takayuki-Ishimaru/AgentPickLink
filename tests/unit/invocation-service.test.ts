@@ -785,6 +785,74 @@ describe("InvocationService", () => {
     expect(events).toEqual([{ phase: "filling" }]);
   });
 
+  it("forwards the caller's cancellation signal to the transport's invoke request", async () => {
+    const fixture = await harness();
+    const controller = new AbortController();
+    await fixture.service.invoke(
+      fixture.workspaceRoot,
+      agent.alias,
+      "hello",
+      undefined,
+      "req-signal",
+      undefined,
+      controller.signal
+    );
+    expect(fixture.transport.lastRequest?.signal).toBe(controller.signal);
+  });
+
+  it("never sends a request its caller cancelled while it waited, and records no incident for a cancel", async () => {
+    const incidents = new IncidentLog();
+    const fixture = await harness({ incidents });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "hello",
+        undefined,
+        "req-cancelled-early",
+        undefined,
+        cancelled.signal
+      )
+    ).rejects.toMatchObject({ code: "SUBMIT_FAILED", options: { submissionState: "not-sent" } });
+    expect(fixture.transport.invokes).toBe(0);
+
+    // Cancelled mid-response: the transport's timeout-shaped outcome is not an incident.
+    const controller = new AbortController();
+    fixture.transport.invokeHook = async () => controller.abort();
+    fixture.transport.failWith = new DomainError("RESPONSE_TIMEOUT", "The request was cancelled.");
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "hello",
+        undefined,
+        "req-cancelled-late",
+        undefined,
+        controller.signal
+      )
+    ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+    expect(incidents.list()).toEqual([]);
+
+    // A genuine UI failure is still an incident even when the caller happened to cancel too.
+    const alsoCancelled = new AbortController();
+    fixture.transport.invokeHook = async () => alsoCancelled.abort();
+    fixture.transport.failWith = new DomainError("UI_CHANGED", "The chat composer could not be located.");
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "hello",
+        undefined,
+        "req-cancelled-ui",
+        undefined,
+        alsoCancelled.signal
+      )
+    ).rejects.toMatchObject({ code: "UI_CHANGED" });
+    expect(incidents.list().map((item) => item.code)).toEqual(["UI_CHANGED"]);
+  });
+
   it("records an incident for a failure with an incident-worthy code, but not for one without", async () => {
     const incidents = new IncidentLog();
     const fixture = await harness({ incidents });

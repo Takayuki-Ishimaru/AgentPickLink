@@ -2,7 +2,7 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { encodeFrame, FrameDecoder } from "./framing.js";
 import type { BrokerDescriptor, BrokerHello, IpcProgressFrame, IpcResponse } from "./protocol.js";
-import { BROKER_CAPABILITIES, BROKER_PROTOCOL } from "./protocol.js";
+import { BROKER_CANCEL_MINOR, BROKER_CAPABILITIES, BROKER_PROTOCOL } from "./protocol.js";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
@@ -170,6 +170,7 @@ export class IpcClient {
         if (!waiter) return;
         this.waiting.delete(requestId);
         waiter.cleanup();
+        this.cancelOnBroker(requestId);
         reject(
           new DomainError(
             "SUBMIT_STATE_UNKNOWN",
@@ -204,6 +205,16 @@ export class IpcClient {
         }
       });
     });
+  }
+  /** Asks a broker that supports it (protocol minor 4) to stop a request this client no longer
+   * waits for. Best effort and unanswered: an older broker simply finishes the request. */
+  private cancelOnBroker(requestId: string): void {
+    const socket = this.socket;
+    if (!socket || socket.destroyed || (this.hello?.protocolMinor ?? 0) < BROKER_CANCEL_MINOR) return;
+    socket.write(
+      encodeFrame({ id: randomUUID(), method: "broker.cancel", params: { requestId } }),
+      () => undefined
+    );
   }
   close(): void {
     const cancel = this.connectingReject;

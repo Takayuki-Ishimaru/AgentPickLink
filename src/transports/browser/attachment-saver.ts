@@ -14,6 +14,7 @@ import type {
   ApiRequestLike,
   AttachmentCandidate,
   BrowserDocumentLike,
+  BrowserDownloadLike,
   BrowserRequestContextLike,
   PageLike
 } from "./types.js";
@@ -32,6 +33,9 @@ export type AttachmentSaveContext = {
   workspaceKey: string;
   requestId: string;
   workspaceRoot?: string;
+  /** The request's cancellation: once aborted, the file in progress and every later one are
+   * reported as not saved (stage `cancelled`) and an unfinished browser download is cancelled. */
+  signal?: AbortSignal;
 };
 
 /** Saves only explicit response-file anchors or completed-response download controls. URL files
@@ -96,8 +100,13 @@ export class AttachmentSaver {
 
     const attachments: AgentAttachment[] = [];
     const usedNames = new Set<string>();
+    const signal = context.signal;
     let lastUiDownloadStartedAt: number | undefined;
     for (const candidate of limited) {
+      if (signal?.aborted) {
+        attachments.push(notSaved(candidate, "download-failed", page.url(), "cancelled"));
+        continue;
+      }
       if (candidate.fileCardIndex !== undefined) {
         try {
           lastUiDownloadStartedAt = await waitForUiDownloadGap(page, lastUiDownloadStartedAt);
@@ -109,7 +118,8 @@ export class AttachmentSaver {
             this.allowedHosts,
             this.timeoutMs,
             this.maxAttachmentBytes,
-            this.maxTotalAttachmentBytes - totalBytes
+            this.maxTotalAttachmentBytes - totalBytes,
+            signal
           );
           totalBytes += attachment.sizeBytes ?? 0;
           attachments.push(attachment);
@@ -137,7 +147,8 @@ export class AttachmentSaver {
             this.allowedHosts,
             this.timeoutMs,
             this.maxAttachmentBytes,
-            this.maxTotalAttachmentBytes - totalBytes
+            this.maxTotalAttachmentBytes - totalBytes,
+            signal
           );
           totalBytes += attachment.sizeBytes ?? 0;
           attachments.push(attachment);
@@ -175,20 +186,27 @@ export class AttachmentSaver {
             this.timeoutMs,
             this.maxAttachmentBytes,
             this.maxTotalAttachmentBytes - totalBytes,
-            this.allowedHosts
+            this.allowedHosts,
+            signal
           );
         } catch (firstError) {
+          if (stageOf(firstError) === "cancelled") throw firstError;
           // A Microsoft 365 session can be authenticated while the tenant's SharePoint host has
           // not received its SSO cookies yet. A passive navigation in the same persistent browser
           // context establishes that session without filling a form or clicking any action. Retry
           // the bounded HTTP download exactly once afterward.
           let resolvedDownload: URL | undefined;
           try {
-            resolvedDownload = await establishPassiveFileSession(browserContext, source, this.timeoutMs);
-          } catch {
+            resolvedDownload = await establishPassiveFileSession(
+              browserContext,
+              source,
+              this.timeoutMs,
+              signal
+            );
+          } catch (error) {
             // The retry itself could not even be attempted; the first attempt's own stage (if any)
             // remains the more useful diagnostic.
-            throw firstError;
+            throw stageOf(error) === "cancelled" ? error : firstError;
           }
           try {
             downloaded = await fetchAttachment(
@@ -197,9 +215,11 @@ export class AttachmentSaver {
               this.timeoutMs,
               this.maxAttachmentBytes,
               this.maxTotalAttachmentBytes - totalBytes,
-              this.allowedHosts
+              this.allowedHosts,
+              signal
             );
-          } catch {
+          } catch (error) {
+            if (stageOf(error) === "cancelled") throw error;
             // The passive-SSO retry ran but the download still failed: worth its own stage, since
             // it rules out "the tenant simply had not issued SSO cookies yet" as the explanation.
             throw new AttachmentStageError("attachment-sso-retry-failed", "sso-retry-failed");
@@ -270,19 +290,23 @@ async function fetchAttachment(
   timeoutMs: number,
   maxAttachmentBytes: number,
   remainingTotalBytes: number,
-  allowedHosts?: HostAllowlist
+  allowedHosts?: HostAllowlist,
+  signal?: AbortSignal
 ): Promise<DownloadedAttachment> {
   let response: Awaited<ReturnType<ApiRequestLike["get"]>>;
   let currentUrl = new URL(url);
   for (let redirectCount = 0; ; redirectCount++) {
     if (allowedHosts && !isAllowedHttpsUrl(currentUrl, allowedHosts))
       throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
-    response = await request.get(currentUrl.toString(), {
-      timeout: timeoutMs,
-      failOnStatusCode: false,
-      // Redirects are followed manually so every Location target is checked before any request.
-      maxRedirects: 0
-    });
+    response = await unlessCancelled(
+      request.get(currentUrl.toString(), {
+        timeout: timeoutMs,
+        failOnStatusCode: false,
+        // Redirects are followed manually so every Location target is checked before any request.
+        maxRedirects: 0
+      }),
+      signal
+    );
     const responseHeaders = lowerCaseHeaders(response.headers());
     const status = response.status();
     if (status >= 300 && status < 400) {
@@ -313,7 +337,7 @@ async function fetchAttachment(
       throw new AttachmentStageError("attachment-response-rejected", "oversize");
     if (Number.isFinite(declaredBytes) && declaredBytes > remainingTotalBytes)
       throw new AttachmentStageError("attachment-response-rejected", "quota-exceeded");
-    const body = await response.body();
+    const body = await unlessCancelled(response.body(), signal);
     if (body.length === 0 && !isExplicitAttachment(headers["content-disposition"]))
       throw new Error("attachment-body-rejected");
     if (body.length > maxAttachmentBytes)
@@ -329,18 +353,32 @@ async function fetchAttachment(
 async function establishPassiveFileSession(
   context: BrowserRequestContextLike | undefined,
   source: URL,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<URL | undefined> {
   if (!context?.newPage) throw new Error("attachment-session-bootstrap-unavailable");
-  const bootstrapPage = await context.newPage();
+  const opening = context.newPage();
+  let bootstrapPage: Awaited<typeof opening>;
   try {
-    await bootstrapPage
-      .goto?.(source.toString(), {
-        waitUntil: "domcontentloaded",
-        timeout: Math.min(timeoutMs, 30_000)
-      })
-      .catch(() => undefined);
+    bootstrapPage = await withinBudget(opening, timeoutMs, "sso-retry-failed", signal);
+  } catch (error) {
+    // A tab that opens after this gave up must not stay open in the user's browser context.
+    void opening.then((late) => late.close?.().catch(() => undefined)).catch(() => undefined);
+    const stage = stageOf(error);
+    throw stage && stage !== "cancelled" ? new Error("attachment-session-bootstrap-timeout") : error;
+  }
+  try {
+    await unlessCancelled(
+      bootstrapPage
+        .goto?.(source.toString(), {
+          waitUntil: "domcontentloaded",
+          timeout: Math.min(timeoutMs, 30_000)
+        })
+        .catch(() => undefined) ?? Promise.resolve(),
+      signal
+    );
     await bootstrapPage.waitForTimeout?.(750);
+    throwIfCancelled(signal);
     // SSO can take several redirects after DOMContentLoaded. Keep the authenticated context's
     // passive tab alive until it returns to the file host, instead of closing it on a login page.
     const attempts = Math.max(1, Math.ceil(Math.min(timeoutMs, 15_000) / 250));
@@ -366,10 +404,12 @@ async function establishPassiveFileSession(
       }
       if (!bootstrapPage.waitForTimeout) break;
       await bootstrapPage.waitForTimeout(250);
+      throwIfCancelled(signal);
     }
     return undefined;
   } finally {
-    await bootstrapPage.close?.().catch(() => undefined);
+    const closing = bootstrapPage.close?.();
+    if (closing) await withinBudget(closing, timeoutMs, "sso-retry-failed", signal).catch(() => undefined);
   }
 }
 
@@ -413,6 +453,12 @@ const FILE_CARD_REVEAL_POLL_MS = 100;
 /** Chromium can suppress a burst of synthetic download events from one response card. Keep a
  * short gap between UI-triggered downloads; direct authenticated HTTP fetches do not use it. */
 const UI_DOWNLOAD_MIN_INTERVAL_MS = 150;
+/** A page script that clicks must do so this long before its budget ends (at most a tenth of the
+ * budget), so the click and its reply land while the broker still waits. */
+const ACTIVATION_CLICK_MARGIN_MS = 1_000;
+/** One frame's DOM scan while looking for the Office viewer. The scan polls every 250 ms, so a
+ * frame that cannot answer a query this quickly is skipped for the rest of the scan instead. */
+const FRAME_SCAN_SCRIPT_TIMEOUT_MS = 2_000;
 /** Events a hover-revealed control listens for; dispatched on the card, never on a control. */
 const FILE_CARD_HOVER_EVENTS = ["mouseover", "mouseenter", "pointerenter"];
 
@@ -420,14 +466,21 @@ const FILE_CARD_HOVER_EVENTS = ["mouseover", "mouseenter", "pointerenter"];
  * Where an acquisition attempt got to before it failed (metadata only), recorded on the resulting
  * not-saved `AgentAttachment.stage` (src/domain/response.ts) so a UI change ("the controls never
  * became visible") can be told apart from a plain download failure ("the tenant returned an HTML
- * sign-in page") without reading logs. The first three are file-card-specific (see
- * revealFileCardControls); the rest are raised by the authenticated-fetch URL flow (see
- * fetchAttachment and the retry it feeds).
+ * sign-in page") without reading logs. The first four are file-card-specific (see
+ * revealFileCardControls and saveFileCard, whose page scripts are each bounded by the saver's
+ * timeout); the next three are raised by a browser (UI-triggered) download, each phase of which
+ * is bounded by the same timeout (see saveDownloadControl and completedDownloadPath); the next are
+ * raised by the authenticated-fetch URL flow (see fetchAttachment and the retry it feeds); and
+ * `cancelled` marks every file not finished when the request was cancelled (AttachmentSaveContext).
  */
 export type AttachmentStage =
   | "card-missing"
   | "control-not-visible"
   | "control-visible"
+  | "card-activation-timeout"
+  | "control-activation-timeout"
+  | "download-not-started"
+  | "download-incomplete"
   | "preview-frame-not-found"
   | "preview-download-control-not-found"
   | "preview-host-not-allowed"
@@ -436,7 +489,8 @@ export type AttachmentStage =
   | "oversize"
   | "quota-exceeded"
   | "viewer-url-unparseable"
-  | "sso-retry-failed";
+  | "sso-retry-failed"
+  | "cancelled";
 
 /** Internal failure carrying the stage it happened at (see AttachmentStage). */
 class AttachmentStageError extends Error {
@@ -459,13 +513,15 @@ class AttachmentStageError extends Error {
 async function revealFileCardControls(
   page: PageLike,
   fileCardIndex: number,
-  timeoutMs: number
+  revealWindowMs: number,
+  scriptTimeoutMs: number,
+  signal?: AbortSignal
 ): Promise<AttachmentStage> {
   if (!page.evaluate) return "card-missing";
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + revealWindowMs;
   for (;;) {
-    const stage: AttachmentStage = await page
-      .evaluate<AttachmentStage>(
+    const stage: AttachmentStage = await withinBudget(
+      page.evaluate<AttachmentStage>(
         (args: { selector: string; index: number; events: string[] }) => {
           const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
           const response = nodes[nodes.length - 1];
@@ -508,10 +564,19 @@ async function revealFileCardControls(
           index: fileCardIndex,
           events: FILE_CARD_HOVER_EVENTS
         }
-      )
-      .catch(() => "card-missing" as AttachmentStage);
+      ),
+      scriptTimeoutMs,
+      "card-activation-timeout",
+      signal
+    ).catch((error: unknown) => {
+      // A page that stopped answering, or a cancel, ends this file; any other failure means no card.
+      const failed = stageOf(error);
+      if (failed === "card-activation-timeout" || failed === "cancelled") throw error;
+      return "card-missing" as AttachmentStage;
+    });
     if (stage === "control-visible" || Date.now() >= deadline) return stage;
     await wait(page, FILE_CARD_REVEAL_POLL_MS);
+    throwIfCancelled(signal);
   }
 }
 
@@ -523,16 +588,23 @@ async function saveDownloadControl(
   allowedHosts: HostAllowlist,
   timeoutMs: number,
   maxAttachmentBytes: number,
-  remainingTotalBytes: number
+  remainingTotalBytes: number,
+  signal?: AbortSignal
 ): Promise<AgentAttachment> {
   if (!page.waitForEvent || !page.evaluate) throw new Error("attachment-download-control-unavailable");
-  const downloadPromise = page.waitForEvent("download", { timeout: Math.min(timeoutMs, 30_000) });
+  const downloadPromise = waitForDownloadStart(page, timeoutMs, candidate.url, signal);
   const verifiedPageOrigin = secureHttpsOrigin(page.url());
   let expectedBlobUrl: string | undefined;
   let contentType: string | undefined;
   try {
-    const activation = await page.evaluate<{ expectedBlobUrl?: string; contentType?: string } | undefined>(
-      async (args: { selector: string; index: number; expectedName: string; expectedUrl?: string }) => {
+    const activating = page.evaluate<{ expectedBlobUrl?: string; contentType?: string } | undefined>(
+      async (args: {
+        selector: string;
+        index: number;
+        expectedName: string;
+        expectedUrl?: string;
+        clickBy?: number;
+      }) => {
         const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
         const response = nodes[nodes.length - 1];
         if (!response) throw new Error("attachment-response-missing");
@@ -584,6 +656,10 @@ async function saveDownloadControl(
         // Read the selected anchor before activation: a click handler may synchronously replace
         // href or remove the node, but the URL we validate must be the control we selected.
         if (href && anchor?.href !== href) throw new Error("attachment-download-anchor-url-mismatch");
+        // Never click after the broker has stopped waiting for this activation: every download
+        // waiter sees every download, so a late one could be taken for the next file's.
+        if (args.clickBy !== undefined && Date.now() > args.clickBy)
+          throw new Error("attachment-download-activation-expired");
         control.click();
         return href?.startsWith("blob:") ? { expectedBlobUrl: href, contentType } : undefined;
       },
@@ -591,9 +667,13 @@ async function saveDownloadControl(
         selector: RESPONSE_SELECTORS.join(", "),
         index: candidate.downloadControlIndex!,
         expectedName: candidate.name,
-        expectedUrl: candidate.url
+        expectedUrl: candidate.url,
+        clickBy: clickDeadline(timeoutMs)
       }
     );
+    // The page script awaits a blob MIME read before clicking; a stalled renderer must not hold the
+    // whole response open, so the activation gets the same bound as every other download phase.
+    const activation = await withinBudget(activating, timeoutMs, "control-activation-timeout", signal);
     expectedBlobUrl = activation?.expectedBlobUrl;
     contentType = activation?.contentType;
   } catch (error) {
@@ -610,6 +690,8 @@ async function saveDownloadControl(
     allowedHosts,
     maxAttachmentBytes,
     remainingTotalBytes,
+    timeoutMs,
+    signal,
     { expectedBlobUrl, verifiedPageOrigin, currentPageOrigin, contentType }
   );
 }
@@ -622,7 +704,8 @@ async function saveFileCard(
   allowedHosts: HostAllowlist,
   timeoutMs: number,
   maxAttachmentBytes: number,
-  remainingTotalBytes: number
+  remainingTotalBytes: number,
+  signal?: AbortSignal
 ): Promise<AgentAttachment> {
   if (!page.waitForEvent || !page.evaluate) throw new Error("attachment-file-card-unavailable");
   // Hover/focus first: on Microsoft 365 the preview and download controls of a file card exist in
@@ -630,10 +713,12 @@ async function saveFileCard(
   const stage = await revealFileCardControls(
     page,
     candidate.fileCardIndex!,
-    Math.min(timeoutMs, FILE_CARD_REVEAL_TIMEOUT_MS)
+    Math.min(timeoutMs, FILE_CARD_REVEAL_TIMEOUT_MS),
+    timeoutMs,
+    signal
   );
-  await page.evaluate(
-    (args: { selector: string; index: number; expectedName: string }) => {
+  const opening = page.evaluate(
+    (args: { selector: string; index: number; expectedName: string; clickBy?: number }) => {
       const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
       const response = nodes[nodes.length - 1];
       if (!response) throw new Error("attachment-response-missing");
@@ -648,6 +733,9 @@ async function saveFileCard(
       const expectedName = args.expectedName.replace(/\s+/g, " ").trim();
       if (!card || !expectedName || !signal.includes(expectedName))
         throw new Error("attachment-file-card-missing");
+      // Never click after the broker has stopped waiting for this script (see clickBy below).
+      if (args.clickBy !== undefined && Date.now() > args.clickBy)
+        throw new Error("attachment-file-card-activation-expired");
       if (card.matches('button, [role="button"], a')) {
         card.click();
         return;
@@ -681,9 +769,11 @@ async function saveFileCard(
     {
       selector: RESPONSE_SELECTORS.join(", "),
       index: candidate.fileCardIndex!,
-      expectedName: candidate.name
+      expectedName: candidate.name,
+      clickBy: clickDeadline(timeoutMs)
     }
   );
+  await withinBudget(opening, timeoutMs, "card-activation-timeout", signal);
 
   let previewFailure: AttachmentStageError | undefined;
   const previewAttachment = await trySaveSharePointPreview(
@@ -694,20 +784,22 @@ async function saveFileCard(
     allowedHosts,
     timeoutMs,
     maxAttachmentBytes,
-    remainingTotalBytes
+    remainingTotalBytes,
+    signal
   ).catch((error: unknown) => {
     if (error instanceof AttachmentStageError) previewFailure = error;
     return undefined;
   });
   if (previewAttachment) return previewAttachment;
-  if (previewFailure?.stage === "preview-host-not-allowed") throw previewFailure;
+  if (previewFailure?.stage === "preview-host-not-allowed" || previewFailure?.stage === "cancelled")
+    throw previewFailure;
 
-  const downloadPromise = page.waitForEvent("download", { timeout: Math.min(timeoutMs, 30_000) });
+  const downloadPromise = waitForDownloadStart(page, timeoutMs, undefined, signal);
   let clicked = false;
   try {
     for (let attempt = 0; attempt < 40 && !clicked; attempt++) {
-      clicked = await page.evaluate(
-        (args: { selector: string; index: number }) => {
+      const clicking = page.evaluate<boolean>(
+        (args: { selector: string; index: number; clickBy?: number }) => {
           const responses = Array.from(document.querySelectorAll(args.selector));
           const response = responses[responses.length - 1];
           const attachmentRoot = response?.closest('[role="article"].fai-CopilotMessage') || response;
@@ -744,12 +836,21 @@ async function saveFileCard(
           // Prefer the selected card's own control. The page can contain unrelated download
           // buttons in a task pane, and choosing the last global match could activate the wrong file.
           const control = controls[0];
+          // A late click would start a download no one is waiting for any more.
+          if (control && args.clickBy !== undefined && Date.now() > args.clickBy)
+            throw new Error("attachment-file-card-activation-expired");
           control?.click();
           return !!control;
         },
-        { selector: RESPONSE_SELECTORS.join(", "), index: candidate.fileCardIndex! }
+        {
+          selector: RESPONSE_SELECTORS.join(", "),
+          index: candidate.fileCardIndex!,
+          clickBy: clickDeadline(timeoutMs)
+        }
       );
+      clicked = await withinBudget(clicking, timeoutMs, "card-activation-timeout", signal);
       if (!clicked) await wait(page, 250);
+      throwIfCancelled(signal);
     }
     if (!clicked)
       throw new AttachmentStageError(
@@ -770,7 +871,9 @@ async function saveFileCard(
     usedNames,
     allowedHosts,
     maxAttachmentBytes,
-    remainingTotalBytes
+    remainingTotalBytes,
+    timeoutMs,
+    signal
   );
 }
 
@@ -782,11 +885,12 @@ async function trySaveSharePointPreview(
   allowedHosts: HostAllowlist,
   timeoutMs: number,
   maxAttachmentBytes: number,
-  remainingTotalBytes: number
+  remainingTotalBytes: number,
+  signal?: AbortSignal
 ): Promise<AgentAttachment | undefined> {
   const context = page.context?.();
   if (!context?.request || !page.evaluate) return undefined;
-  const source = await findSharePointViewerInDom(page);
+  const source = await findSharePointViewerInDom(page, timeoutMs, signal);
   const downloadUrl = source ? sharePointViewerDownloadUrl(source) : undefined;
   if (!source || !downloadUrl)
     throw new AttachmentStageError("attachment-preview-frame-not-found", "preview-frame-not-found");
@@ -802,17 +906,20 @@ async function trySaveSharePointPreview(
       timeoutMs,
       maxAttachmentBytes,
       remainingTotalBytes,
-      allowedHosts
+      allowedHosts,
+      signal
     );
-  } catch {
-    await establishPassiveFileSession(context, source, timeoutMs);
+  } catch (error) {
+    if (stageOf(error) === "cancelled") throw error;
+    await establishPassiveFileSession(context, source, timeoutMs, signal);
     downloaded = await fetchAttachment(
       context.request,
       downloadUrl,
       timeoutMs,
       maxAttachmentBytes,
       remainingTotalBytes,
-      allowedHosts
+      allowedHosts,
+      signal
     );
   }
   const name = uniqueFilename(
@@ -834,7 +941,13 @@ async function trySaveSharePointPreview(
   };
 }
 
-async function findSharePointViewerInDom(page: PageLike): Promise<URL | undefined> {
+async function findSharePointViewerInDom(
+  page: PageLike,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<URL | undefined> {
+  // Frames whose document stopped answering: their URL is still checked every round.
+  const stalled = new Set<BrowserDocumentLike>();
   // Office's embedded viewer is mounted asynchronously after the response card is opened. On a
   // cold tenant session the SharePoint frame can appear several seconds after the card itself.
   for (let attempt = 0; attempt < 60; attempt++) {
@@ -843,15 +956,23 @@ async function findSharePointViewerInDom(page: PageLike): Promise<URL | undefine
       // before evaluating the document because Office may replace/detach sibling frames while the
       // preview boots; one transient frame must not abort discovery of the stable SharePoint frame.
       const values = [scope.url()];
-      if (scope.evaluate) {
-        const discovered = await scope
-          .evaluate<string[]>(() =>
+      if (scope.evaluate && !stalled.has(scope)) {
+        const discovered = await withinBudget(
+          scope.evaluate<string[]>(() =>
             Array.from(document.querySelectorAll("a[href], iframe[src]"))
               .flatMap((element) => [element.getAttribute("href"), element.getAttribute("src")])
               .filter((value): value is string => !!value)
               .slice(0, 200)
-          )
-          .catch(() => []);
+          ),
+          Math.min(timeoutMs, FRAME_SCAN_SCRIPT_TIMEOUT_MS),
+          "card-activation-timeout",
+          signal
+        ).catch((error: unknown) => {
+          const failed = stageOf(error);
+          if (failed === "cancelled") throw error;
+          if (failed === "card-activation-timeout") stalled.add(scope);
+          return [];
+        });
         values.push(...discovered);
       }
       for (const value of values) {
@@ -865,6 +986,7 @@ async function findSharePointViewerInDom(page: PageLike): Promise<URL | undefine
       }
     }
     await wait(page, 250);
+    throwIfCancelled(signal);
   }
   return undefined;
 }
@@ -914,25 +1036,32 @@ function isAllowedHttpsUrl(value: URL, allowedHosts: HostAllowlist): boolean {
 }
 
 async function persistBrowserDownload(
-  download: import("./types.js").BrowserDownloadLike,
+  download: BrowserDownloadLike,
   candidate: AttachmentCandidate,
   destination: string,
   usedNames: Set<string>,
   allowedHosts: HostAllowlist,
   maxAttachmentBytes: number,
   remainingTotalBytes: number,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
   validation: BrowserDownloadValidation = {}
 ): Promise<AgentAttachment> {
-  const failure = await download.failure?.();
-  if (failure) throw new Error("attachment-browser-download-failed");
+  // The source is known when the download starts: refuse an untrusted one before waiting for its bytes.
   const sourceValue = download.url();
-  const source = new URL(sourceValue);
-  if (source.protocol === "blob:") {
+  let source: URL | undefined;
+  try {
+    source = new URL(sourceValue);
+  } catch {
+    // Unparseable: rejected below like any other untrusted source.
+  }
+  if (source?.protocol === "blob:") {
     if (!isVerifiedBlobDownload(sourceValue, validation)) {
       await download.cancel?.().catch(() => undefined);
       throw new Error("attachment-blob-download-rejected");
     }
   } else if (
+    !source ||
     source.protocol !== "https:" ||
     source.username ||
     source.password ||
@@ -944,8 +1073,7 @@ async function persistBrowserDownload(
     throw new Error("attachment-download-host-rejected");
   }
   const suggestedName = download.suggestedFilename().trim() || `attachment-${candidate.index}`;
-  const temporaryPath = await download.path();
-  if (!temporaryPath) throw new Error("attachment-download-path-missing");
+  const temporaryPath = await completedDownloadPath(download, timeoutMs, signal);
   const body = await readFile(temporaryPath);
   if (body.length > maxAttachmentBytes || body.length > remainingTotalBytes)
     throw new Error("attachment-download-body-rejected");
@@ -1017,6 +1145,111 @@ function secureHttpsOrigin(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The latest time a page script given `timeoutMs` may still click (see ACTIVATION_CLICK_MARGIN_MS). */
+function clickDeadline(timeoutMs: number): number {
+  return Date.now() + timeoutMs - Math.min(ACTIVATION_CLICK_MARGIN_MS, timeoutMs / 10);
+}
+
+/** Waits for the download a UI activation should start. Playwright rejects on its own timeout (or
+ * when the page goes away); either way no download began, so the failure carries that stage. A
+ * blob anchor's download has exactly the anchor's URL, so only that download is taken and a late
+ * one from an earlier, abandoned file cannot stand in for it. HTTPS downloads may be redirected,
+ * so their source is checked against the host allowlist once they start instead. */
+function waitForDownloadStart(
+  page: PageLike,
+  timeoutMs: number,
+  expectedUrl?: string,
+  signal?: AbortSignal
+): Promise<BrowserDownloadLike> {
+  const predicate = expectedUrl?.startsWith("blob:")
+    ? (download: BrowserDownloadLike) => download.url() === expectedUrl
+    : undefined;
+  const started = page.waitForEvent!("download", {
+    timeout: Math.min(timeoutMs, 30_000),
+    ...(predicate ? { predicate } : {})
+  }).catch(() => {
+    throw new AttachmentStageError("attachment-download-not-started", "download-not-started");
+  });
+  // A download that still starts after a cancel is left alone: this waiter sees every download of
+  // the page, so it could as well be the next request's. It is never saved to the user's folder.
+  return unlessCancelled(started, signal);
+}
+
+/** Playwright's `failure()` and `path()` wait for the download to finish without any timeout of
+ * their own, so a download the browser never completes would hold the response open for good.
+ * Bound that wait and cancel the download once the bound elapses. */
+async function completedDownloadPath(
+  download: BrowserDownloadLike,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<string> {
+  const completion = (async () => {
+    if (await download.failure?.()) throw new Error("attachment-browser-download-failed");
+    const temporaryPath = await download.path();
+    if (!temporaryPath) throw new Error("attachment-download-path-missing");
+    return temporaryPath;
+  })();
+  try {
+    return await withinBudget(completion, timeoutMs, "download-incomplete", signal);
+  } catch (error) {
+    const stage = stageOf(error);
+    if (stage === "download-incomplete" || stage === "cancelled")
+      await download.cancel?.().catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Settles like `work`, or rejects with `stage` once `timeoutMs` elapse, or as `cancelled` once
+ * `signal` aborts. Abandoned work keeps running, so its later rejection is observed here instead of
+ * surfacing as unhandled. */
+async function withinBudget<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  stage: AttachmentStage,
+  signal?: AbortSignal
+): Promise<T> {
+  work.catch(() => undefined);
+  throwIfCancelled(signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new AttachmentStageError(`attachment-${stage}`, stage)), timeoutMs);
+    onAbort = () => reject(cancelledError());
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort!);
+  }
+}
+
+/** Settles like `work` (bounded by its own timeout), or rejects as `cancelled` once `signal` aborts. */
+async function unlessCancelled<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  work.catch(() => undefined);
+  throwIfCancelled(signal);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(cancelledError());
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort!);
+  }
+}
+
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw cancelledError();
+}
+
+function cancelledError(): AttachmentStageError {
+  return new AttachmentStageError("attachment-cancelled", "cancelled");
 }
 
 async function wait(page: PageLike, ms: number): Promise<void> {

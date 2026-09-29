@@ -29,7 +29,10 @@ export interface PageLike {
   getByText?(text: string | RegExp, options?: { exact?: boolean }): LocatorLike;
   evaluate?<T>(fn: unknown, arg?: unknown): Promise<T>;
   waitForTimeout?(ms: number): Promise<void>;
-  waitForEvent?(event: "download", options?: { timeout?: number }): Promise<BrowserDownloadLike>;
+  waitForEvent?(
+    event: "download",
+    options?: { timeout?: number; predicate?: (download: BrowserDownloadLike) => boolean }
+  ): Promise<BrowserDownloadLike>;
   on?(event: string, listener: (...args: any[]) => void): void;
   off?(event: string, listener: (...args: any[]) => void): void;
   isClosed?(): boolean;

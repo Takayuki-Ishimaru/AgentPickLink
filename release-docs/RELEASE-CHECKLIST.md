@@ -1,6 +1,6 @@
 # 対応環境と検証範囲
 
-v0.2.4 Beta の対応環境と確認範囲を説明します。
+v0.2.5 Beta の対応環境と確認範囲を説明します。
 
 ## 対応環境
 
@@ -19,7 +19,7 @@ Windows ARM64、macOS Intel、Linux x64 のアーカイブも配布しますが�
 
 ## この版で未確認の範囲
 
-この版では、Windows 実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。以前の版での確認結果を、この版の動作保証として扱いません。
+この版では、Windows 実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作からキャンセルが伝わることも未確認です。以前の版での確認結果を、この版の動作保証として扱いません。
 
 特に、AI クライアントからの質問・回答・生成ファイル取得、エージェントの種類や表示言語による差、MFA・条件付きアクセスを伴う再サインインは、利用するテナントで確認してください。セットアップでの保存完了は、実際の質問・回答やファイルの内容の正しさまで確認したことを意味しません。
 
@@ -27,10 +27,10 @@ SmartScreen、AppLocker / WDAC、Gatekeeper などの実行制御や、組織の
 
 ## English
 
-v0.2.4 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
+v0.2.5 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
 
 Public CI is configured for Windows, macOS, and Ubuntu with Node.js 22 / 24. It uses local mock browser pages and VS Code API mocks, and does not verify a live tenant or the actual VS Code interface. Select the relevant version or commit in [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) to view its results.
 
-Additional Windows desktop, live-tenant, and actual VS Code interface checks have not been performed for this version. Native Windows ARM64, Intel Mac, and Linux x64 operation is unverified for this version. Earlier checks do not establish compatibility for the current version. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content.
+Additional Windows desktop, live-tenant, and actual VS Code interface checks have not been performed for this version. Native Windows ARM64, Intel Mac, and Linux x64 operation is unverified for this version. Cancellation through actual AI clients' stop controls has not been verified either. Earlier checks do not establish compatibility for the current version. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content.
 
 See [Managed environments](MANAGED-ENVIRONMENTS.en.md) for execution controls and client policy considerations.

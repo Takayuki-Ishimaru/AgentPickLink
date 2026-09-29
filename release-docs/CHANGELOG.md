@@ -1,5 +1,54 @@
 # リリースノート
 
+## v0.2.5 Beta
+
+### 主な変更
+
+- **添付ファイルの保存で待ち続ける問題を修正しました。** ダウンロード操作やファイルカードが応答しない場合、またはダウンロードが完了しない場合に、待機を打ち切ります。完了しないダウンロードは取り消し、そのファイルは未保存（`not-saved`）として理由を返します。許可されていない保存元からのダウンロードは、開始した時点で拒否します。
+- **依頼のキャンセルがローカルの処理にも伝わります。** MCP クライアントからのキャンセルを受け取ると、回答待ちや添付ファイルの保存を終了し、保存中のダウンロードも取り消します。待ち行列にある依頼は送信しません。クライアントとのローカル接続が切れた場合も、その接続からの依頼を取り消します。
+
+ファイル保存の各操作には `browser.navigationTimeoutMs`（既定 45 秒）の待機上限を適用します。ダウンロード開始待ちは最大 30 秒です。これらは回答全体の制限時間ではなく、複数の操作やファイルの処理では合計時間が長くなる場合があります。上限を超えるダウンロードは未保存になります。理由の確認方法は [トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+キャンセルは AgentPickLink 側の処理を終了するもので、Microsoft 365 に送信済みの質問や生成処理を取り消すものではありません。キャンセル前に保存済みのファイルはディスクに残ります。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.5.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続も再起動してください。キャンセル伝達を利用するには、接続先のローカルプロセスも新しい版で起動している必要があります。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+### 配布物
+
+- `agent-pick-link-0.2.5.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.5-win-x64.zip` / `AgentPickLink-0.2.5-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.5-darwin-arm64.tgz` / `AgentPickLink-0.2.5-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.5-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.5-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+この版では Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作からキャンセルが伝わることも未確認です。セットアップの保存完了や `doctor` の正常判定は、実際の回答・生成ファイル取得を保証するものではありません。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed indefinite waits while saving attachments.** Waiting now stops when a download control or file card does not respond, or a download does not finish. An unfinished download is cancelled and the file is reported as `not-saved` with a reason. Downloads from disallowed sources are rejected as soon as they start.
+- **Request cancellation now reaches local processing.** When AgentPickLink receives a cancellation from an MCP client, it ends response waiting and attachment saving, including cancelling the download being saved. Requests still queued are not submitted. Closing the local client connection also cancels requests from that connection.
+
+Individual file-saving operations use `browser.navigationTimeoutMs` (default 45 seconds); waiting for a download to start is capped at 30 seconds. These are not a deadline for the entire answer: multiple operations or files can take longer in total. Downloads that exceed the limit are not saved. See [Troubleshooting](TROUBLESHOOTING.md) for failure reasons.
+
+Cancellation ends AgentPickLink's local processing; it does not retract questions already sent to Microsoft 365 or stop generation there. Files saved before cancellation remain on disk.
+
+To update, install `agent-pick-link-0.2.5.vsix`, reload VS Code, and restart external clients' MCP connections. The local process handling requests must also run the new version for cancellation forwarding to work. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals and the dedicated browser profile can be reused.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Edge is the primary target; macOS is for development and verification. Linux is for development/CI only. Additional Windows desktop, live-tenant and actual VS Code interface checks have not been performed for this version. Cancellation through actual AI clients' stop controls has not been verified either. Setup completion and a healthy doctor result do not verify live answers or generated files. See the [English README](README.en.md) and [validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.4 Beta
 
 ### 主な変更
