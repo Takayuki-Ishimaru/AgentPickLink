@@ -2172,10 +2172,22 @@ describe("response attachment saving", () => {
         new AttachmentSaver({ enabled: true, directory, allowedHosts: ["tenant.sharepoint.com"], timeoutMs });
       const clickEverything = async (fn: unknown) =>
         (evaluateStep(fn) === "reveal" ? "control-visible" : true) as never;
-      const abortSoon = (ms = 50) => {
+      const cancellationPoint = () => {
         const controller = new AbortController();
-        setTimeout(() => controller.abort(), ms);
-        return controller.signal;
+        let enter!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enter = resolve;
+        });
+        return {
+          signal: controller.signal,
+          enter,
+          cancel: async () => {
+            await entered;
+            const started = Date.now();
+            controller.abort();
+            return started;
+          }
+        };
       };
       const untouchable = () => {
         throw new Error("a cancelled request must not touch the page");
@@ -2207,6 +2219,11 @@ describe("response attachment saving", () => {
 
       it("stops waiting for a download when cancelled, and leaves one that starts afterwards alone", async () => {
         const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
+        const controller = new AbortController();
+        let waiting!: () => void;
+        const downloadWaitStarted = new Promise<void>((resolve) => {
+          waiting = resolve;
+        });
         let deliver: ((download: BrowserDownloadLike) => void) | undefined;
         let lateDownloadCancelled = false;
         const page: PageLike = {
@@ -2215,17 +2232,23 @@ describe("response attachment saving", () => {
           waitForEvent: () =>
             new Promise((resolve) => {
               deliver = resolve;
+              waiting();
             })
         };
-        const started = Date.now();
-        const result = await saver(directory).save(
+        const pending = saver(directory).save(
           page,
           [
             { index: 1, name: "late.docx", downloadControlIndex: 0 },
             { index: 2, name: "next.docx", downloadControlIndex: 1 }
           ],
-          { workspaceKey: "workspace", requestId: "request", signal: abortSoon() }
+          { workspaceKey: "workspace", requestId: "request", signal: controller.signal }
         );
+        // Filesystem setup may take longer than a fixed delay on Windows. Cancel only
+        // after the download waiter actually exists, so this tests in-flight cancellation.
+        await downloadWaitStarted;
+        const started = Date.now();
+        controller.abort();
+        const result = await pending;
         expect(result).toMatchObject([{ stage: "cancelled" }, { stage: "cancelled" }]);
         expect(Date.now() - started).toBeLessThan(2_000);
         // Every waiter sees every download of the page, so a late one may belong to the next request:
@@ -2245,25 +2268,30 @@ describe("response attachment saving", () => {
       it("cancels an unfinished browser download when the request is cancelled", async () => {
         const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
         let cancelled = false;
+        const cancellation = cancellationPoint();
         const page: PageLike = {
           url: () => "https://m365.example.test/chat",
           evaluate: clickEverything,
           waitForEvent: async () => ({
             url: () => "https://tenant.sharepoint.com/download/unfinished",
             suggestedFilename: () => "unfinished.docx",
-            failure: () => never(),
+            failure: () => {
+              cancellation.enter();
+              return never();
+            },
             path: () => never(),
             cancel: async () => {
               cancelled = true;
             }
           })
         };
-        const started = Date.now();
-        const result = await saver(directory).save(
+        const pending = saver(directory).save(
           page,
           [{ index: 1, name: "unfinished.docx", downloadControlIndex: 0 }],
-          { workspaceKey: "workspace", requestId: "request", signal: abortSoon() }
+          { workspaceKey: "workspace", requestId: "request", signal: cancellation.signal }
         );
+        const started = await cancellation.cancel();
+        const result = await pending;
         expect(result).toMatchObject([{ status: "not-saved", stage: "cancelled" }]);
         expect(cancelled).toBe(true);
         expect(Date.now() - started).toBeLessThan(2_000);
@@ -2272,22 +2300,29 @@ describe("response attachment saving", () => {
       it("stops an HTTP download when the request is cancelled, without the passive sign-in retry", async () => {
         const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
         let signInTabs = 0;
+        const cancellation = cancellationPoint();
         const page: PageLike = {
           url: () => "https://m365.example.test/chat",
           context: () => ({
-            request: { get: () => never() },
+            request: {
+              get: () => {
+                cancellation.enter();
+                return never();
+              }
+            },
             newPage: async () => {
               signInTabs++;
               return { url: () => "about:blank" };
             }
           })
         };
-        const started = Date.now();
-        const result = await saver(directory).save(
+        const pending = saver(directory).save(
           page,
           [{ index: 1, name: "report.pdf", url: "https://tenant.sharepoint.com/report.pdf" }],
-          { workspaceKey: "workspace", requestId: "request", signal: abortSoon() }
+          { workspaceKey: "workspace", requestId: "request", signal: cancellation.signal }
         );
+        const started = await cancellation.cancel();
+        const result = await pending;
         expect(result).toMatchObject([
           { status: "not-saved", errorCode: "download-failed", stage: "cancelled" }
         ]);
@@ -2297,6 +2332,7 @@ describe("response attachment saving", () => {
 
       it("does not wait for a stuck sign-in tab to close once the request is cancelled", async () => {
         const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
+        const cancellation = cancellationPoint();
         const page: PageLike = {
           url: () => "https://m365.example.test/chat",
           context: () => ({
@@ -2310,42 +2346,51 @@ describe("response attachment saving", () => {
               })
             },
             newPage: async () => ({
-              url: () => "about:blank",
+              url: () => "https://tenant.sharepoint.com/:b:/g/report",
               goto: async () => undefined,
-              waitForTimeout: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
-              close: () => never()
+              waitForTimeout: async () => undefined,
+              close: () => {
+                cancellation.enter();
+                return never();
+              }
             })
           })
         };
-        const started = Date.now();
-        const result = await saver(directory).save(
+        const pending = saver(directory).save(
           page,
           [{ index: 1, name: "report.pdf", url: "https://tenant.sharepoint.com/:b:/g/report" }],
-          { workspaceKey: "workspace", requestId: "request", signal: abortSoon(200) }
+          { workspaceKey: "workspace", requestId: "request", signal: cancellation.signal }
         );
+        const started = await cancellation.cancel();
+        const result = await pending;
         expect(result).toMatchObject([{ status: "not-saved", stage: "cancelled" }]);
         expect(Date.now() - started).toBeLessThan(2_000);
       });
 
       it("stops scanning for a file card's preview when cancelled, without falling back to a click", async () => {
         const directory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-"));
+        const cancellation = cancellationPoint();
         const page: PageLike = {
           url: () => "https://m365.example.test/chat",
           evaluate: async (fn: unknown) => {
             const step = evaluateStep(fn);
             return (step === "reveal" ? "control-visible" : step === "open-card" ? undefined : []) as never;
           },
-          frames: () => [],
+          frames: () => {
+            cancellation.enter();
+            return [];
+          },
           waitForTimeout: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
           waitForEvent: untouchable,
           context: () => ({ request: { get: untouchable } })
         };
-        const started = Date.now();
-        const result = await saver(directory).save(
-          page,
-          [{ index: 1, name: "preview.docx", fileCardIndex: 0 }],
-          { workspaceKey: "workspace", requestId: "request", signal: abortSoon(300) }
-        );
+        const pending = saver(directory).save(page, [{ index: 1, name: "preview.docx", fileCardIndex: 0 }], {
+          workspaceKey: "workspace",
+          requestId: "request",
+          signal: cancellation.signal
+        });
+        const started = await cancellation.cancel();
+        const result = await pending;
         expect(result).toMatchObject([{ status: "not-saved", kind: "file-card", stage: "cancelled" }]);
         expect(Date.now() - started).toBeLessThan(2_000);
       });

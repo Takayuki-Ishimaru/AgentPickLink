@@ -182,7 +182,7 @@ describe.skipIf(!executable)("agent description discovery through a real browser
           </div></main>`;
           } else if (pathname === "/chat/agent/requirements" || recoveredVisit) {
             body = `<main>Microsoft 365 Copilot
-            <button id="title" hidden>${titleName}</button>
+            <button id="title">${titleName}</button>
             <textarea aria-label="Message"></textarea>
             <button onclick="recordAction('send')">Send</button>
           </main>
@@ -197,16 +197,17 @@ describe.skipIf(!executable)("agent description discovery through a real browser
           </div><script>
             const title = document.getElementById('title');
             const details = document.getElementById('details');
-            title.onclick = () => { details.hidden = false; recordAction('details'); setTimeout(() => document.getElementById('metadata').hidden = false, 100); };
+            title.onclick = () => { details.hidden = false; document.getElementById('metadata').hidden = false; recordAction('details'); };
             function dismiss() { details.hidden = true; recordAction('dismiss'); }
             details.onkeydown = (event) => { if (event.key === 'Escape') dismiss(); };
-            setTimeout(() => title.hidden = false, 100);
           </script>`;
           } else if (pathname === "/chat/agent/no-details") {
             body = "<main>Microsoft 365 Copilot — no inspectable agent title</main>";
           }
           await route.fulfill({ contentType: "text/html; charset=utf-8", body });
         });
+        // This fixture tests missing-description retries, not delayed rendering (covered
+        // above). Reveal metadata in the same click as its dialog to avoid clock races.
         let created = 0;
         let closed = 0;
         const manager = {
@@ -527,26 +528,15 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
         const pathname = new URL(route.request().url()).pathname;
         let body = '<main>Microsoft 365 Copilot <a href="/chat/agentstore">Agent catalogue</a></main>';
         if (pathname === "/chat/agentstore") {
-          // Same blocked "Show more" as above, but a second card is appended in the background
-          // shortly after the click is attempted -- simulating content that was genuinely still
-          // loading -- so the post-timeout re-inspection must see the catalogue grow and report it,
-          // instead of mistaking it for the end of the list.
+          // Keep card identities explicit: this test exercises expansion failure, while
+          // navigation and card-retry behavior are covered by the fixtures above.
           body = `<main>Microsoft 365 Copilot<div role="list" id="cards">
-            <button onclick="location.href='/chat/agent/first-agent'">First Agent</button>
+            <button data-agent-id="first-agent" data-agent-name="First Agent">First Agent</button>
           </div>
           <div style="position:relative;display:inline-block;">
             <button>Show more</button>
             <div style="position:absolute;inset:0;"></div>
-          </div></main>
-          <script>
-            setTimeout(function () {
-              var list = document.getElementById('cards');
-              var button = document.createElement('button');
-              button.textContent = 'Second Agent';
-              button.onclick = function () { location.href = '/chat/agent/second-agent'; };
-              list.appendChild(button);
-            }, 150);
-          </script>`;
+          </div></main>`;
         } else if (pathname === "/chat/agent/first-agent") {
           body = "<main>Microsoft 365 Copilot<h1>First Agent</h1></main>";
         } else if (pathname === "/chat/agent/second-agent") {
@@ -554,11 +544,46 @@ describe.skipIf(!executable)("store catalogue resilience through a real browser"
         }
         await route.fulfill({ contentType: "text/html; charset=utf-8", body });
       });
+      const growth: number[][] = [];
+      const getByRole = page.getByRole.bind(page);
+      vi.spyOn(page, "getByRole").mockImplementation((role, options) => {
+        const locator = getByRole(role, options);
+        if (role === "button" && options?.name === "Show more") {
+          const first = locator.first();
+          const click = first.click.bind(first);
+          vi.spyOn(first, "click").mockImplementation(async (clickOptions) => {
+            // expandStore has already read its baseline before invoking click. Add the
+            // second card now, then let the real obstructed click time out. A page-load
+            // timer could fire before that baseline and accidentally test end-of-list.
+            growth.push(
+              await page.evaluate(() => {
+                const list = document.getElementById("cards")!;
+                const before = list.children.length;
+                if (!list.querySelector('[data-agent-id="second-agent"]')) {
+                  const button = document.createElement("button");
+                  button.textContent = "Second Agent";
+                  button.setAttribute("data-agent-id", "second-agent");
+                  button.setAttribute("data-agent-name", "Second Agent");
+                  list.appendChild(button);
+                }
+                return [before, list.children.length];
+              })
+            );
+            return click(clickOptions);
+          });
+          vi.spyOn(locator, "first").mockReturnValue(first);
+        }
+        return locator;
+      });
       const discovery = discoveryFor(page as unknown as PageLike, origin);
 
       const result = await discovery.discover(15_000);
 
-      expect(result.agents.some((agent) => agent.stableAgentId === "first-agent")).toBe(true);
+      expect(growth).toEqual([[1, 2]]);
+      expect(
+        result.agents.some((agent) => agent.stableAgentId === "first-agent"),
+        JSON.stringify(result)
+      ).toBe(true);
       expect(result.agents.some((agent) => agent.stableAgentId === "second-agent")).toBe(true);
       const catalogue = result.warnings.find((line) => line.startsWith("store-catalog:"));
       expect(catalogue).toContain("none=0 errors=0");

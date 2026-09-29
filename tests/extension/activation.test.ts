@@ -289,16 +289,23 @@ describe("auto-start", () => {
       seenByStalenessCheck.push(runtime.brokerEntry());
       return false;
     };
+    let spawned!: () => void;
+    const brokerSpawned = new Promise<void>((resolve) => {
+      spawned = resolve;
+    });
     const connect = deps.connectOrStartBroker;
     deps.connectOrStartBroker = (runtime) => {
       seenBySpawn.push(runtime.brokerEntry());
+      spawned();
       return connect(runtime);
     };
     vi.useFakeTimers();
     vscodeMock.configuration.set(`${CONFIGURATION_SECTION}.autoStartBroker`, true);
     activate(harness.context as never, deps);
 
-    await advance(AUTO_START_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(AUTO_START_DELAY_MS);
+    // Wait for the observed broker decision, not an assumed number of disk-I/O turns.
+    await brokerSpawned;
 
     expect(seenByStalenessCheck).toEqual([machineBroker]);
     expect(seenBySpawn).toEqual([machineBroker]);
