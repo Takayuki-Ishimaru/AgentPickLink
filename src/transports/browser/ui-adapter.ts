@@ -44,9 +44,9 @@ export interface ChatUiAdapter {
     before: ConversationMarker
   ): Promise<{ verified: boolean; reason?: string }>;
   captureSubmissionMarker(page: PageLike, verifiedIdentityDigest?: string): Promise<SubmissionMarker>;
-  fillComposer(page: PageLike, message: string): Promise<void>;
+  fillComposer(page: PageLike, message: string, signal?: AbortSignal): Promise<void>;
   clearComposer(page: PageLike): Promise<void>;
-  submitComposer(page: PageLike): Promise<void>;
+  submitComposer(page: PageLike, signal?: AbortSignal): Promise<void>;
   waitForUserMessageAck(
     page: PageLike,
     marker: SubmissionMarker,

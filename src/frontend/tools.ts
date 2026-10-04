@@ -101,7 +101,7 @@ function validateAsk(value: unknown): AskInput {
 
 function validateSession(value: unknown): SessionInput {
   const object = validateObject(value, ["action"], ["action", "agent", "conversationHandle"]);
-  if (!["new", "list", "close", "close_all"].includes(String(object.action)))
+  if (typeof object.action !== "string" || !["new", "list", "close", "close_all"].includes(object.action))
     throw invalid("action must be new, list, close, or close_all.");
   if (
     object.agent !== undefined &&

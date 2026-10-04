@@ -15,7 +15,7 @@ export type AgentAttachment = {
   localPath?: string;
   sizeBytes?: number;
   sha256?: string;
-  errorCode?: "downloads-disabled" | "host-not-allowed" | "download-failed";
+  errorCode?: "downloads-disabled" | "host-not-allowed" | "download-failed" | "attachment-count-limit";
   /** Which candidate shape produced this attachment: a plain URL-based candidate found in the
    * response text, a completed-response download control, or a file card. Metadata only -- never
    * affects behaviour, just lets a failure be told apart by acquisition path. */

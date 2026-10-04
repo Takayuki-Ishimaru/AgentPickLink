@@ -222,7 +222,12 @@ describe("response attachment saving", () => {
     { name: "attachment-1", type: "application/pdf", header: "report.PDF", expected: "report.PDF" },
     { name: "original.custom", type: "application/pdf", expected: "original.custom" },
     { name: "attachment-1", type: "application/pdf", header: "../../CON", expected: "_CON.pdf" },
-    { name: "a".repeat(240), type: "application/pdf", expected: "a".repeat(236) + ".pdf" },
+    {
+      name: "a".repeat(240),
+      type: "application/pdf",
+      expected: "a".repeat(236) + ".pdf",
+      expectedDuplicate: "a".repeat(234) + "-2.pdf"
+    },
     {
       name: "attachment-1",
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -281,7 +286,11 @@ describe("response attachment saving", () => {
       expect(saved[1]?.status).toBe("saved");
       expect(saved[1]?.name).not.toBe(saved[0]?.name);
       if (fixture.name && fixture.expected.endsWith(".pdf"))
-        expect(saved[1]?.name).toBe(fixture.expected.replace(/\.pdf$/, "-2.pdf"));
+        expect(saved[1]?.name).toBe(
+          "expectedDuplicate" in fixture
+            ? fixture.expectedDuplicate
+            : fixture.expected.replace(/\.pdf$/, "-2.pdf")
+        );
       for (const attachment of saved) expect(await readFile(attachment.localPath!)).toEqual(body);
       if (fixture.expected.endsWith(".pdf")) expect(saved[0]?.mediaType).toBe("application/pdf");
     } finally {
@@ -512,7 +521,9 @@ describe("response attachment saving", () => {
         [{ index: 1, name: "redirect.pdf", url: "https://tenant.sharepoint.com/files/redirect.pdf" }],
         { workspaceKey: "workspace", requestId: "redirect" }
       )
-    ).resolves.toMatchObject([{ status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }]);
+    ).resolves.toMatchObject([
+      { status: "not-saved", errorCode: "host-not-allowed", stage: "redirect-host-not-allowed" }
+    ]);
     expect(requests).toBe(1);
     expect(requestedUrls).toEqual(["https://tenant.sharepoint.com/files/redirect.pdf?download=1"]);
   });
@@ -2559,7 +2570,7 @@ describe("passive SSO retry only for real authentication evidence", () => {
     try {
       const result = await saverFor(directory).save(harness.page, [candidate], context("redirect"));
       expect(result).toMatchObject([
-        { status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }
+        { status: "not-saved", errorCode: "host-not-allowed", stage: "redirect-host-not-allowed" }
       ]);
       expect(harness.requested).toEqual(["https://tenant.sharepoint.com/:b:/g/report?download=1"]);
       expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });

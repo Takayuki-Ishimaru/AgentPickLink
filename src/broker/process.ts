@@ -51,6 +51,7 @@ async function main(): Promise<void> {
     responseStartTimeoutMs: config.browser.responseStartTimeoutMs,
     typingDelayMs: config.browser.typingDelayMs,
     attachmentSettleMs: config.browser.attachmentSettleMs,
+    attachmentPhaseTimeoutMs: config.browser.attachmentPhaseTimeoutMs,
     stabilityWindowMs: config.browser.stabilityWindowMs,
     pollIntervalMs: config.browser.pollIntervalMs,
     acceptDownloads: config.browser.acceptDownloads,

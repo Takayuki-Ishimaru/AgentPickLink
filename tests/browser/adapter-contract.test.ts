@@ -215,7 +215,7 @@ describe("current M365 direct-agent landing", () => {
       click: async () => calls.push("click"),
       press: async (key) => calls.push(`press:${key}`),
       pressSequentially: async (text) => {
-        value = `${text}\u200b\u200c`;
+        value = text;
         calls.push(`type:${text}`);
       }
     };
@@ -273,14 +273,14 @@ describe("current M365 direct-agent landing", () => {
     ).resolves.toMatchObject({ valid: true });
   });
 
-  it("correlates a current M365 user article with Lexical zero-width markers", async () => {
+  it("rejects a user article that lost requested zero-width characters", async () => {
     const adapter = new M365CopilotChatAdapter({ hostnames: ["m365.example.test"] });
     const page: PageLike = {
       url: () => "https://m365.example.test/chat/agent/T_agent/conversation/conversation-1",
       evaluate: async (fn: unknown, arg?: unknown) => {
         const source = String(fn);
         if (source.includes("const all")) return { userCount: 1, assistantCount: 0 };
-        expect(source).toContain("querySelector('[data-testid=\"chatOutput\"]')");
+        expect(source).toContain("chatOutput");
         expect(arg).toContain("fai-UserMessage");
         return "hello";
       },
@@ -300,7 +300,7 @@ describe("current M365 direct-agent landing", () => {
         },
         1_000
       )
-    ).resolves.toEqual({ state: "sent" });
+    ).resolves.toMatchObject({ state: "unknown" });
   });
 
   it("extracts a specific agent name from localized composer labels", () => {
@@ -756,7 +756,7 @@ describe("rich-text composer typing latency", () => {
       details: { submissionState: "not-sent" }
     });
     expect(fixture.typed).toEqual([]);
-    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace"]);
+    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace", "ControlOrMeta+A", "Backspace"]);
   });
 
   it("keeps typing state independent across adapters running in parallel", async () => {

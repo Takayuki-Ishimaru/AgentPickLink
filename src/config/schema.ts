@@ -65,6 +65,8 @@ export const GlobalConfigSchema = z
         typingDelayMs: z.number().int().min(0).max(200).default(0),
         /** Grace period after completion before a second, cheap attachment re-scan. */
         attachmentSettleMs: z.number().int().min(0).max(60000).default(2000),
+        /** Total budget across all attachment downloads, including retries. */
+        attachmentPhaseTimeoutMs: z.number().int().positive().max(600000).default(45000),
         stabilityWindowMs: z.number().int().positive().default(1800),
         pollIntervalMs: z.number().int().positive().default(250),
         idleShutdownMinutes: z.number().int().positive().default(30),

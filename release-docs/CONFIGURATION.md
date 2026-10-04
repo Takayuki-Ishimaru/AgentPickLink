@@ -39,23 +39,28 @@ Windows の標準保存先は `%LOCALAPPDATA%\M365AgentWorkspace\`、macOS は `
 
 ## ブラウザーとファイル
 
-| 設定                              | 初期値                                  | 用途                                                |
-| --------------------------------- | --------------------------------------- | --------------------------------------------------- |
-| `browser.channel`                 | `msedge`                                | 使用するブラウザー。`chrome`、`chromium` も設定可能 |
-| `browser.responseTimeoutMs`       | `300000`                                | 質問送信後、回答を待つ上限時間（ミリ秒）            |
-| `browser.acceptDownloads`         | `true`                                  | 回答に添付されたファイルを保存                      |
-| `browser.maxAttachments`          | `10`                                    | 1 回の回答から保存する最大ファイル数                |
-| `browser.maxAttachmentBytes`      | `26214400`                              | 1 ファイルの上限（25 MiB）                          |
-| `browser.maxTotalAttachmentBytes` | `104857600`                             | 1 回の回答の合計上限（100 MiB）                     |
-| `navigation.downloadHosts`        | `*.sharepoint.com`, `onedrive.live.com` | ファイル取得を許可するホスト                        |
+| 設定                               | 初期値                                  | 用途                                                              |
+| ---------------------------------- | --------------------------------------- | ----------------------------------------------------------------- |
+| `browser.channel`                  | `msedge`                                | 使用するブラウザー。`chrome`、`chromium` も設定可能               |
+| `browser.responseTimeoutMs`        | `300000`                                | 質問送信後、回答を待つ上限時間（ミリ秒）                          |
+| `browser.acceptDownloads`          | `true`                                  | 回答に添付されたファイルを保存                                    |
+| `browser.attachmentPhaseTimeoutMs` | `45000`                                 | 添付取得全体の期限（1〜600000ミリ秒、再認証・複数ファイルを含む） |
+| `browser.maxAttachments`           | `10`                                    | 1 回の回答から保存する最大ファイル数                              |
+| `browser.maxAttachmentBytes`       | `26214400`                              | 1 ファイルの上限（25 MiB）                                        |
+| `browser.maxTotalAttachmentBytes`  | `104857600`                             | 1 回の回答の合計上限（100 MiB）                                   |
+| `navigation.downloadHosts`         | `*.sharepoint.com`, `onedrive.live.com` | ファイル取得を許可するホスト                                      |
+
+添付候補が保存件数上限を超えた場合も、超過分を `not-saved`、`errorCode` / `stage` は `attachment-count-limit` として返します。例えば12件の候補に上限10件なら、10件の取得結果と2件の上限超過を返します。取得全体の期限を超えた未取得分は `attachment-phase-timeout`、明示キャンセルは `cancelled` です。保存済みの添付はそのまま返します。`truncated` は回答本文の切り詰めを表し、添付の保存完了を意味しません。
 
 ### 質問入力の速度
 
-`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.6 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
+`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.7 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
 
 既存の設定に保存された正の値は更新時にも保持します。例えば `20` を保存していた環境は、そのまま 20 ミリ秒で入力します。新しい入力速度を使うには値を `0` に変更し、接続プロセスを再起動してください。正の値を指定した場合は、入力し直す場合にも同じ値を使います。入力操作の時間上限は質問の長さと設定に応じて調整しますが、各試行で最大 2 分です。
 
-English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.6. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
+English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.7. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
+
+入力検証では段落・改行・空行を確認し、CRLF / CR を LF として比較します。全角・半角の変換、ZWJ・ゼロ幅文字の削除、前後空白やコードの字下げの変更は一致扱いにしません。入力や送信前の確認待ちでキャンセルを受け取ると、入力を止め、下書きを消去して `SUBMIT_FAILED / not-sent` を返します。送信済みの質問は取り消しません。
 
 時間のかかる回答・ファイル生成では、回答待ち時間とクライアント側のツール待ち時間を調整してください。生成された Codex 連携設定では、ツール呼び出しに 15 分を設定します。
 

@@ -1,6 +1,6 @@
 # 対応環境と検証範囲
 
-v0.2.6 Beta の対応環境と確認範囲を説明します。
+v0.2.7 Beta の対応環境と確認範囲を説明します。
 
 ## 対応環境
 
@@ -19,9 +19,9 @@ Windows ARM64、macOS Intel、Linux x64 のアーカイブも配布しますが�
 
 ## この版で未確認の範囲
 
-今回の修正は、公開前の修正版で Windows 上の VS Code 起動・MCP 登録、質問入力、実 Microsoft 365 テナントでの PDF 生成・保存・取得を限定的に確認しました。PDF の表示と指定ページ数の確認には、生成元エージェントの指示を調整したケースを含みます。このエージェント固有の設定は配布物に含まれません。AgentPickLink の案内だけで同じ結果を保証するものではありません。
+v0.2.7 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。
 
-最終配布物をすべての OS・CPU の実機で再確認したものではありません。実際の AI クライアントの会話画面全体や停止操作によるキャンセル、すべてのエージェント・テナント・表示言語の組み合わせは未確認です。以前の版や限定した環境での確認結果を、すべての環境の動作保証として扱いません。
+以前の版や限定した環境での確認結果を、すべての環境の動作保証として扱いません。PDF のフォント・レイアウト・ページ数は、生成された実ファイルを確認してください。
 
 特に、AI クライアントからの質問・回答・生成ファイル取得、エージェントの種類や表示言語による差、MFA・条件付きアクセスを伴う再サインインは、利用するテナントで確認してください。セットアップでの保存完了は、実際の質問・回答やファイルの内容の正しさまで確認したことを意味しません。
 
@@ -29,12 +29,12 @@ SmartScreen、AppLocker / WDAC、Gatekeeper などの実行制御や、組織の
 
 ## English
 
-v0.2.6 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
+v0.2.7 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
 
 Public CI is configured for Windows, macOS, and Ubuntu with Node.js 22 / 24. It uses local mock browser pages and VS Code API mocks, and does not verify a live tenant or the actual VS Code interface. Select the relevant version or commit in [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) to view its results.
 
-The fixes received limited checks on a pre-publication patched build for Windows VS Code startup and MCP registration, question entry, and live-tenant PDF generation, saving, and retrieval. PDF rendering and page-count checks included cases with adjusted instructions in the generating agent. Those agent-specific settings are not distributed with AgentPickLink, and its guidance alone does not guarantee the same result.
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.7 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified.
 
-The final distribution has not been rechecked natively on every OS/CPU. Actual AI clients' full conversation interfaces and stop controls, and every combination of agents, tenants, and UI languages remain unverified. Earlier or limited checks do not establish compatibility for all environments. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content.
+Earlier or limited checks do not establish compatibility for all environments. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content. Inspect generated PDFs for correct fonts, layout, and page counts.
 
 See [Managed environments](MANAGED-ENVIRONMENTS.en.md) for execution controls and client policy considerations.

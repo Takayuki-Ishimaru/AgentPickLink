@@ -1,5 +1,68 @@
 # リリースノート
 
+## v0.2.7 Beta
+
+### 主な変更
+
+- **複数行の質問の入力確認を修正しました。** 段落・改行・空行・コードの字下げを含む入力を確認します。全角文字、丸数字、ゼロ幅文字、前後の空白などが変更されていれば一致扱いにせず、確認できない質問は送信しません。改行コードの CRLF / CR は LF として比較します。
+- **送信前のキャンセルを改善しました。** 入力中、入力内容の確認待ち、送信ボタン待ちでもキャンセルを受け取り、入力を止めて下書きを消去します。送信前のキャンセルは未送信（`not-sent`）を返します。
+- **保存されなかった添付の理由を確認できます。** 保存件数上限を超えたファイルも、`not-saved` と `attachment-count-limit` を含む結果として返します。許可されていないホストへの転送は `host-not-allowed / redirect-host-not-allowed` として報告します。
+- **添付取得全体に待機上限を追加しました。** 複数ファイルや再試行を含む添付取得全体に `browser.attachmentPhaseTimeoutMs`（既定 45 秒）を適用します。期限を超えた未取得分は `attachment-phase-timeout` として返し、保存済みのファイルは保持します。
+- **長いファイル名の保存を修正しました。** 長い日本語・絵文字の名前は、文字の途中で分割せず保存できる長さに短縮します。拡張子と、同名の別ファイルを区別する接尾辞を保持します。
+- **MCP の不正引数を構造化されたエラーで返します。** 不正な型、必須項目の欠落、未知の項目は `requestId` を含む `INVALID_ARGUMENT` として返します。
+
+キャンセルは AgentPickLink 側の処理を終了するもので、Microsoft 365 に送信済みの質問や生成処理を取り消すものではありません。キャンセル前に保存済みのファイルはディスクに残ります。クライアントがキャンセル通知を送らず待機だけをやめた場合は、処理が続くことがあります。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.7.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+`browser.attachmentPhaseTimeoutMs` は既存設定に項目がなくても既定の 45 秒で有効になります。大きなファイルや遅い接続で期限に達する場合は、設定を調整してください。回答待ち時間とは別の設定です。詳しくは [設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.7.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.7-win-x64.zip` / `AgentPickLink-0.2.7-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.7-darwin-arm64.tgz` / `AgentPickLink-0.2.7-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.7-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.7-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.7 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。利用する環境で質問・回答・ファイル取得を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+PDF の案内は生成を依頼する AI クライアントへの助言です。生成物のフォント・レイアウト・ページ数の正しさを保証するものではなく、実ファイルの確認が必要です。
+
+### English
+
+- **Fixed verification of multiline question entry.** Paragraphs, line breaks, blank lines, and code indentation are checked. Changes to full-width characters, circled numbers, zero-width characters, or leading/trailing whitespace are rejected. Questions that cannot be verified are not submitted. CRLF / CR line endings are compared as LF.
+- **Improved cancellation before submission.** Cancellation reaches typing, text-verification waits, and send-button waits. Input stops and the draft is cleared. Cancellation before submission returns `not-sent`.
+- **Unsaved attachments include a reason.** Files beyond the saving limit are also returned as `not-saved` with `attachment-count-limit`. Redirects to disallowed hosts report `host-not-allowed / redirect-host-not-allowed`.
+- **Added an overall attachment-retrieval deadline.** `browser.attachmentPhaseTimeoutMs` (default 45 seconds) covers multiple files and retries. Files still pending when it expires return `attachment-phase-timeout`; already saved files are retained.
+- **Fixed saving long filenames.** Long Japanese and emoji filenames are shortened without splitting characters, while preserving extensions and suffixes that distinguish files with the same name.
+- **Invalid MCP arguments return structured errors.** Invalid types, missing required fields, and unknown fields return `INVALID_ARGUMENT` with a `requestId`.
+
+Cancellation ends AgentPickLink's local processing; it does not retract questions already sent to Microsoft 365 or stop generation there. Files saved before cancellation remain on disk. If a client stops waiting without sending a cancellation notification, processing may continue.
+
+To update, install `agent-pick-link-0.2.7.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused.
+
+The new `browser.attachmentPhaseTimeoutMs` default of 45 seconds applies even when the setting is absent from existing configurations. Adjust it if large files or slow connections reach the deadline. It is separate from the response-wait timeout. See [Configuration](CONFIGURATION.md) and [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`.
+
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.7 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Verify questions, answers, and file retrieval in your deployment environment. See [Supported environments and validation scope](RELEASE-CHECKLIST.md) and the [English README](README.en.md).
+
+PDF guidance is advice to the calling AI client. It does not guarantee correct fonts, layout, or page counts; inspect the actual file.
+
 ## v0.2.6 Beta
 
 ### 主な変更

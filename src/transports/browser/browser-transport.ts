@@ -98,6 +98,7 @@ export interface BrowserTransportOptions {
   maxAttachments?: number;
   maxAttachmentBytes?: number;
   maxTotalAttachmentBytes?: number;
+  attachmentPhaseTimeoutMs?: number;
   allowedCapabilityClasses?: Array<"knowledge-only" | "actions-possible">;
 }
 
@@ -224,6 +225,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
         maxAttachments: options.maxAttachments,
         maxAttachmentBytes: options.maxAttachmentBytes,
         maxTotalAttachmentBytes: options.maxTotalAttachmentBytes,
+        overallTimeoutMs: options.attachmentPhaseTimeoutMs,
         timeoutMs: options.navigationTimeoutMs
       }),
       {

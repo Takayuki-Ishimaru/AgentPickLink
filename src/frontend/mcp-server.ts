@@ -9,7 +9,7 @@ import {
   FILE_GENERATION_GUIDANCE_URI
 } from "./file-generation-guidance.js";
 import { createToolHandlers, TOOL_DESCRIPTIONS, type ToolCallResult } from "./tools.js";
-import { decodeUtf8Exact, isTextLikeMediaType } from "./tool-results.js";
+import { decodeUtf8Exact, isTextLikeMediaType, failure, requestId } from "./tool-results.js";
 import {
   askInputSchema,
   askOutputSchema,
@@ -116,42 +116,6 @@ export async function serveStdio(
     process.stdin.removeListener("close", settle);
     await server.close();
   }
-}
-
-type JsonSchemaProperty = Record<string, unknown>;
-
-/**
- * Produces a relaxed copy of a strict tool input JSON Schema for SDK *registration* only (see
- * the trade-off comment on createSdkServer below). It keeps `type` and, per property, `type`
- * and `description` -- what GitHub Copilot and other MCP clients actually read off `tools/list`
- * to learn argument names and meanings -- while stripping every constraint the SDK's own ajv
- * gate could reject a call on: `required`, `additionalProperties: false`, `pattern`,
- * `minLength`/`maxLength`, and `enum`. A stripped `enum` is not just dropped: its allowed
- * values are folded into the property's description (comma-joined, "Allowed values: ...") so
- * that information still reaches the client, just as prose instead of a validator constraint.
- * tools.ts (createToolHandlers) is the one place that still enforces the real strict schema and
- * returns a structured INVALID_ARGUMENT envelope, so nothing about correctness depends on the
- * SDK ajv-validating anything beyond "this looks like an object".
- */
-export function relaxInputSchemaForSdk(schema: Record<string, unknown>): Record<string, unknown> {
-  const properties = schema.properties;
-  const type = typeof schema.type === "string" ? schema.type : "object";
-  if (!properties || typeof properties !== "object") return { type };
-  const relaxedProperties: Record<string, JsonSchemaProperty> = {};
-  for (const [key, value] of Object.entries(properties as Record<string, unknown>)) {
-    const property: JsonSchemaProperty =
-      value && typeof value === "object" ? (value as JsonSchemaProperty) : {};
-    const relaxed: JsonSchemaProperty = {};
-    if (typeof property.type === "string") relaxed.type = property.type;
-    let description = typeof property.description === "string" ? property.description : undefined;
-    if (Array.isArray(property.enum)) {
-      const allowed = `Allowed values: ${property.enum.join(", ")}.`;
-      description = description ? `${description} ${allowed}` : allowed;
-    }
-    if (description) relaxed.description = description;
-    relaxedProperties[key] = relaxed;
-  }
-  return { type, properties: relaxedProperties };
 }
 
 export type CreateSdkServerOptions = {
@@ -361,54 +325,57 @@ export async function createSdkServer(
     },
     { instructions: CORE_INSTRUCTIONS }
   );
+  const execute = async (
+    name: string,
+    args: unknown,
+    mcpReq: ProgressCapableRequest & { signal: AbortSignal }
+  ) => {
+    const forwarder =
+      name === "m365_agent_ask" ||
+      (name === "m365_agent_session" && (args as { action?: unknown })?.action === "new")
+        ? createProgressForwarder(mcpReq)
+        : { onProgress: undefined, dispose: () => {} };
+    try {
+      return await handler.callTool(name, args, mcpReq.signal, forwarder.onProgress);
+    } finally {
+      forwarder.dispose();
+    }
+  };
+  const outputValidators = new Map(
+    PUBLIC_TOOLS.map((tool) => [tool.name, sdk.fromJsonSchema(tool.outputSchema as never)])
+  );
   for (const tool of PUBLIC_TOOLS) {
-    // MCP SDK v2 accepts JSON-schema objects for the low-level registration path, and it runs
-    // its own ajv validation against `inputSchema` BEFORE our handler is invoked. There is no
-    // separate schema for `tools/list` vs. validation (registerTool takes exactly one
-    // inputSchema, used for both), so the true strict schema here would let the SDK reject
-    // unknown fields or a malformed alias/handle with a plain-text isError result that has no
-    // requestId, structuredContent, or error.code -- breaking the structured error envelope
-    // every tool result is supposed to have. tools.ts (createToolHandlers) already re-validates
-    // every field against the true strict schema (unknown properties, alias/handle patterns,
-    // required fields) and returns a proper INVALID_ARGUMENT ApplicationErrorResult, so the SDK
-    // is deliberately given a relaxed schema here -- via relaxInputSchemaForSdk -- that keeps
-    // property names/types/descriptions (so clients like GitHub Copilot still learn argument
-    // shape from `tools/list`) but drops every constraint the SDK could reject a call on, and
-    // the SDK is never allowed to short-circuit a call on our behalf.
-    // Trade-off: `tools/list` advertises this relaxed shape instead of the precise one in
-    // PUBLIC_TOOLS/schemas.ts (which remains the source of truth for docs and validation) --
-    // an unknown field or a malformed pattern/enum value is no longer visible in the schema
-    // itself, only in the INVALID_ARGUMENT error a bad call gets back.
     const { name: _name, inputSchema, outputSchema, ...config } = tool;
     server.registerTool(
       tool.name,
       {
         ...config,
-        inputSchema: sdk.fromJsonSchema(relaxInputSchemaForSdk(inputSchema) as never),
+        inputSchema: sdk.fromJsonSchema(inputSchema as never),
         outputSchema: sdk.fromJsonSchema(outputSchema as never)
       } as never,
-      async (args: unknown, context: { mcpReq: ProgressCapableRequest & { signal: AbortSignal } }) => {
-        // Asking and creating a session can both wait for a human to sign in.
-        if (
-          tool.name !== "m365_agent_ask" &&
-          !(tool.name === "m365_agent_session" && (args as { action?: unknown })?.action === "new")
-        ) {
-          return handler.callTool(tool.name, args, context.mcpReq.signal) as never;
-        }
-        const forwarder = createProgressForwarder(context.mcpReq);
-        try {
-          return (await handler.callTool(
-            tool.name,
-            args,
-            context.mcpReq.signal,
-            forwarder.onProgress
-          )) as never;
-        } finally {
-          forwarder.dispose();
-        }
-      }
+      async (args: unknown, context: { mcpReq: ProgressCapableRequest & { signal: AbortSignal } }) =>
+        (await execute(tool.name, args, context.mcpReq)) as never
     );
   }
+  // The public low-level handler lets our validator own application argument errors. Keep the
+  // full typed schema on tools/list, without the high-level SDK's plain-text Ajv error path.
+  // Invalid JSON-RPC envelopes and unknown tool names remain protocol errors.
+  server.server.setRequestHandler("tools/call", async (request, context) => {
+    const tool = PUBLIC_TOOLS.find((item) => item.name === request.params.name);
+    if (!tool) throw new sdk.ProtocolError(sdk.ProtocolErrorCode.InvalidParams, "Unknown MCP tool.");
+    const result = await execute(tool.name, request.params.arguments ?? {}, context.mcpReq);
+    if (!("isError" in result && result.isError)) {
+      const validator = outputValidators.get(tool.name)!;
+      const validated = await validator["~standard"].validate(result.structuredContent);
+      if (validated.issues)
+        return failure(result.structuredContent.requestId ?? requestId(), {
+          code: "INTERNAL_ERROR",
+          message: "The tool returned an invalid response.",
+          retryable: false
+        }) as never;
+    }
+    return server.server.projectCallToolResult(result as never, { type: "object", ...tool.outputSchema });
+  });
   server.registerResource(
     "file-generation-guidance",
     FILE_GENERATION_GUIDANCE_URI,

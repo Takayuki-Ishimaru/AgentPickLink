@@ -77,6 +77,7 @@ export interface BrowserDownloadLike {
   cancel?(): Promise<void>;
 }
 export interface LocatorLike {
+  evaluate?<T>(fn: (element: Element) => T): Promise<T>;
   count?(): Promise<number>;
   first?(): LocatorLike;
   nth?(index: number): LocatorLike;

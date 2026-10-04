@@ -149,7 +149,11 @@ await writeFile(
   path.join(root, "release-docs", "OSS-LICENSES.md"),
   await format(inventory, { ...(await resolveConfig(root)), parser: "markdown" })
 );
-await writeFile(path.join(root, "release-docs", "THIRD-PARTY-NOTICES.txt"), notices.join("\n\n") + "\n");
+// Match the repository's LF policy so regenerated notices survive a Git checkout unchanged.
+await writeFile(
+  path.join(root, "release-docs", "THIRD-PARTY-NOTICES.txt"),
+  notices.join("\n\n").replace(/\r\n?/g, "\n") + "\n"
+);
 process.stdout.write(
   `Generated inventory: ${entries.length} lockfile entries; ${bundled.size} bundled npm components.\n`
 );

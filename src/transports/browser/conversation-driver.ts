@@ -1,6 +1,7 @@
 import type { ProgressPhase, ProgressSink } from "../../domain/progress.js";
 import { AgentNavigator } from "./agent-navigator.js";
 import { AttachmentSaver } from "./attachment-saver.js";
+import { normalizeComposerText } from "./composer-text.js";
 import { RESPONSE_SELECTORS } from "./selectors/common.js";
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { SubmissionTracker } from "./submission-tracker.js";
@@ -141,7 +142,13 @@ export class ConversationDriver {
         );
       tracker.transition("FILLING");
       report("filling", "Entering the prompt into the agent composer");
-      await adapter.fillComposer(page, request.message);
+      try {
+        await adapter.fillComposer(page, request.message, request.signal);
+      } catch (error) {
+        // Await the stopped input before clearing, so no background typing can restore a draft.
+        await adapter.clearComposer(page);
+        throw error;
+      }
       tracker.transition("ASSERTING_IDENTITY_BEFORE_SUBMIT");
       let afterFillIdentity;
       try {
@@ -174,10 +181,19 @@ export class ConversationDriver {
           { submissionState: "not-sent" }
         );
       }
+      if (normalizeComposerText(marker.composerValue) !== normalizeComposerText(request.message)) {
+        await adapter.clearComposer(page);
+        throw new BrowserTransportError(
+          "UI_CHANGED",
+          "The composer changed after the requested message was verified.",
+          undefined,
+          { submissionState: "not-sent" }
+        );
+      }
       tracker.transition("SUBMITTING");
       report("submitting", "Submitting the prompt");
       try {
-        await adapter.submitComposer(page);
+        await adapter.submitComposer(page, request.signal);
       } catch (error) {
         if (error instanceof BrowserTransportError && error.details?.submissionState === "not-sent")
           await adapter.clearComposer(page);

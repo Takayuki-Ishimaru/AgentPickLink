@@ -28,6 +28,32 @@ const agent: BrowserAgentDefinition = {
 };
 
 describe("conversation submission guard", () => {
+  it("clears and refuses a composer that changed between fill verification and capture", async () => {
+    const clearComposer = vi.fn(async () => {});
+    const submitComposer = vi.fn(async () => {});
+    const adapter = fixtureAdapter({
+      clearComposer,
+      submitComposer,
+      captureSubmissionMarker: async () => ({
+        userCount: 0,
+        assistantCount: 0,
+        url: "https://m365.example.test/chat",
+        identityDigest: "expected",
+        composerValue: "changed",
+        capturedAt: Date.now()
+      })
+    });
+    const page: PageLike = { url: () => "https://m365.example.test/chat", on: () => {}, off: () => {} };
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] }))
+    );
+    await expect(
+      driver.invoke(page, conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({ code: "UI_CHANGED", details: { submissionState: "not-sent" } });
+    expect(clearComposer).toHaveBeenCalledOnce();
+    expect(submitComposer).not.toHaveBeenCalled();
+  });
+
   it("waits for a transiently missing visible name on a registered direct route", async () => {
     const registered = registeredAgent();
     const route = registered.entryPoint.url;

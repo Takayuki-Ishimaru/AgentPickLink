@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.6 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.7 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,12 +16,13 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.6
+## What's new in v0.2.7
 
-- Fixed the VS Code extension failing to load with `Cannot find module './impl/format'`.
-- Reduced the default delay when entering questions and added a length-based time limit for long prompts. If the entered text does not match, it retries once with slower typing and stops without submitting if verification fails.
-- Attachment saving no longer opens an extra tab for failures that an authentication retry cannot resolve. File retrieval from SharePoint sharing links remains supported.
-- Improved guidance to AI clients requesting PDFs: embed Japanese fonts, use appropriate line spacing, and verify the requested total page count against the actual file. This does not automatically guarantee output quality.
+- Fixed verification of multiline questions, blank lines, and code indentation. Detected changes to characters or whitespace prevent submission.
+- Cancellation also reaches typing and verification waits before submission, stopping input and clearing the draft.
+- Attachments beyond the saving limit are returned with a reason for not being saved. Attachment retrieval now has a configurable overall time limit.
+- Long Japanese and emoji filenames are shortened to a supported length while preserving extensions and suffixes that distinguish files with the same name.
+- Invalid types or fields in MCP tool arguments return a structured `INVALID_ARGUMENT` with a `requestId`.
 
 See the [release notes](release-docs/CHANGELOG.md) for details and update instructions.
 
@@ -40,21 +41,21 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.6.vsix` from **Releases → v0.2.6 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.7.vsix` from **Releases → v0.2.7 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.6.vsix
+code --install-extension agent-pick-link-0.2.7.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
 ### Updating from an earlier version
 
-Install the v0.2.6 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.7 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
 ## Install without the extension
 
@@ -141,7 +142,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](release-docs/OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](release-docs/THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.6-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.7-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -152,7 +153,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.6.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.7.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 

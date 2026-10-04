@@ -76,7 +76,7 @@ export type Attachment = {
   localPath?: string;
   sizeBytes?: number;
   sha256?: string;
-  errorCode?: "downloads-disabled" | "host-not-allowed" | "download-failed";
+  errorCode?: "downloads-disabled" | "host-not-allowed" | "download-failed" | "attachment-count-limit";
   kind?: "url" | "download-control" | "file-card";
   stage?: string;
 };
@@ -234,7 +234,7 @@ const attachmentSchema = strict(
     sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
     errorCode: {
       type: "string",
-      enum: ["downloads-disabled", "host-not-allowed", "download-failed"]
+      enum: ["downloads-disabled", "host-not-allowed", "download-failed", "attachment-count-limit"]
     },
     kind: { type: "string", enum: ["url", "download-control", "file-card"] },
     stage: { type: "string" }

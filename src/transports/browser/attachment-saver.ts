@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { HostAllowlist } from "../../domain/host-pattern.js";
 import { isGenericAttachmentName, filenameFromAttachmentUrl } from "../../domain/attachment-filename.js";
@@ -27,6 +27,8 @@ export type AttachmentSaverOptions = {
   maxAttachmentBytes?: number;
   maxTotalAttachmentBytes?: number;
   timeoutMs?: number;
+  /** Total acquisition budget across all files, retries and UI operations; defaults to 45 seconds. */
+  overallTimeoutMs?: number;
 };
 
 export type AttachmentSaveContext = {
@@ -49,6 +51,7 @@ export class AttachmentSaver {
   private readonly maxAttachmentBytes: number;
   private readonly maxTotalAttachmentBytes: number;
   private readonly timeoutMs: number;
+  private readonly overallTimeoutMs: number;
 
   constructor(options: AttachmentSaverOptions = {}) {
     this.enabled = options.enabled ?? false;
@@ -58,6 +61,7 @@ export class AttachmentSaver {
     this.maxAttachmentBytes = options.maxAttachmentBytes ?? 25 * 1024 * 1024;
     this.maxTotalAttachmentBytes = options.maxTotalAttachmentBytes ?? 100 * 1024 * 1024;
     this.timeoutMs = options.timeoutMs ?? 45_000;
+    this.overallTimeoutMs = options.overallTimeoutMs ?? 45_000;
   }
 
   async save(
@@ -65,9 +69,45 @@ export class AttachmentSaver {
     candidates: AttachmentCandidate[],
     context: AttachmentSaveContext
   ): Promise<AgentAttachment[]> {
+    const controller = new AbortController();
+    const deadline = Date.now() + this.overallTimeoutMs;
+    let expired = false;
+    const expire = () => {
+      expired = true;
+      controller.abort();
+    };
+    phaseBudgets.set(controller.signal, { deadline, expire });
+    const cancel = () => controller.abort();
+    context.signal?.addEventListener("abort", cancel, { once: true });
+    if (context.signal?.aborted) cancel();
+    const timer = setTimeout(expire, this.overallTimeoutMs);
+    timer.unref?.();
+    try {
+      const results = await this.saveWithinPhase(page, candidates, { ...context, signal: controller.signal });
+      return results.map((item) =>
+        item.stage === "cancelled" && (expired || Date.now() >= deadline) && !context.signal?.aborted
+          ? { ...item, stage: "attachment-phase-timeout" }
+          : item
+      );
+    } finally {
+      clearTimeout(timer);
+      context.signal?.removeEventListener("abort", cancel);
+      phaseBudgets.delete(controller.signal);
+    }
+  }
+
+  private async saveWithinPhase(
+    page: PageLike,
+    candidates: AttachmentCandidate[],
+    context: AttachmentSaveContext
+  ): Promise<AgentAttachment[]> {
     const limited = candidates.slice(0, this.maxAttachments);
-    if (!limited.length) return [];
-    if (!this.enabled) return limited.map((item) => notSaved(item, "downloads-disabled"));
+    const overLimit = candidates
+      .slice(this.maxAttachments)
+      .map((item) => notSaved(item, "attachment-count-limit", page.url(), "attachment-count-limit"));
+    const withOverflow = (items: AgentAttachment[]) => [...items, ...overLimit];
+    if (!limited.length) return overLimit;
+    if (!this.enabled) return withOverflow(limited.map((item) => notSaved(item, "downloads-disabled")));
 
     const browserContext = page.context?.();
     const request = browserContext?.request;
@@ -75,12 +115,12 @@ export class AttachmentSaver {
     const baseDirectory = context.workspaceRoot
       ? path.join(context.workspaceRoot, "APL_downloads")
       : this.directory;
-    if (!baseDirectory) return limited.map((item) => notSaved(item, "downloads-disabled"));
+    if (!baseDirectory) return withOverflow(limited.map((item) => notSaved(item, "downloads-disabled")));
     if (context.workspaceRoot) {
       const workspaceInfo = await lstat(context.workspaceRoot).catch(() => undefined);
       if (!workspaceInfo || workspaceInfo.isSymbolicLink() || !workspaceInfo.isDirectory())
-        return limited.map((item) =>
-          notSaved(item, "download-failed", page.url(), "destination-unavailable")
+        return withOverflow(
+          limited.map((item) => notSaved(item, "download-failed", page.url(), "destination-unavailable"))
         );
     }
     const destination = path.join(
@@ -95,7 +135,9 @@ export class AttachmentSaver {
         safeSegment(context.requestId, "request")
       );
     } catch {
-      return limited.map((item) => notSaved(item, "download-failed", page.url(), "destination-unavailable"));
+      return withOverflow(
+        limited.map((item) => notSaved(item, "download-failed", page.url(), "destination-unavailable"))
+      );
     }
 
     const attachments: AgentAttachment[] = [];
@@ -109,7 +151,7 @@ export class AttachmentSaver {
       }
       if (candidate.fileCardIndex !== undefined) {
         try {
-          lastUiDownloadStartedAt = await waitForUiDownloadGap(page, lastUiDownloadStartedAt);
+          lastUiDownloadStartedAt = await waitForUiDownloadGap(page, lastUiDownloadStartedAt, signal);
           const attachment = await saveFileCard(
             page,
             candidate,
@@ -128,7 +170,9 @@ export class AttachmentSaver {
           attachments.push(
             notSaved(
               candidate,
-              stage === "preview-host-not-allowed" ? "host-not-allowed" : "download-failed",
+              stage === "preview-host-not-allowed" || stage === "redirect-host-not-allowed"
+                ? "host-not-allowed"
+                : "download-failed",
               page.url(),
               stage
             )
@@ -138,7 +182,7 @@ export class AttachmentSaver {
       }
       if (candidate.downloadControlIndex !== undefined) {
         try {
-          lastUiDownloadStartedAt = await waitForUiDownloadGap(page, lastUiDownloadStartedAt);
+          lastUiDownloadStartedAt = await waitForUiDownloadGap(page, lastUiDownloadStartedAt, signal);
           const attachment = await saveDownloadControl(
             page,
             candidate,
@@ -230,7 +274,7 @@ export class AttachmentSaver {
               signal
             );
           } catch (error) {
-            if (stageOf(error) === "cancelled") throw error;
+            if (stageOf(error) === "cancelled" || stageOf(error) === "redirect-host-not-allowed") throw error;
             // The passive-SSO retry ran but the download still failed: worth its own stage, since
             // it rules out "the tenant simply had not issued SSO cookies yet" as the explanation.
             throw new AttachmentStageError("attachment-sso-retry-failed", "sso-retry-failed");
@@ -240,7 +284,7 @@ export class AttachmentSaver {
 
         const name = uniqueFilename(downloadedFilename(candidate, headers, body, downloaded.url), usedNames);
         const localPath = path.resolve(destination, name);
-        await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
+        await persistAttachment(localPath, body, signal);
         totalBytes += body.length;
         attachments.push({
           index: candidate.index,
@@ -254,10 +298,17 @@ export class AttachmentSaver {
           kind: "url"
         });
       } catch (error) {
-        attachments.push(notSaved(candidate, "download-failed", undefined, stageOf(error)));
+        attachments.push(
+          notSaved(
+            candidate,
+            stageOf(error) === "redirect-host-not-allowed" ? "host-not-allowed" : "download-failed",
+            undefined,
+            stageOf(error)
+          )
+        );
       }
     }
-    return attachments;
+    return withOverflow(attachments);
   }
 }
 
@@ -307,11 +358,12 @@ async function fetchAttachment(
   let response: Awaited<ReturnType<ApiRequestLike["get"]>>;
   let currentUrl = new URL(url);
   for (let redirectCount = 0; ; redirectCount++) {
+    throwIfCancelled(signal);
     if (allowedHosts && !isAllowedHttpsUrl(currentUrl, allowedHosts))
-      throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
+      throw new AttachmentStageError("attachment-redirect-host-not-allowed", "redirect-host-not-allowed");
     response = await unlessCancelled(
       request.get(currentUrl.toString(), {
-        timeout: timeoutMs,
+        timeout: boundedTimeout(timeoutMs, signal),
         failOnStatusCode: false,
         // Redirects are followed manually so every Location target is checked before any request.
         maxRedirects: 0
@@ -340,7 +392,7 @@ async function fetchAttachment(
         throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
       }
       if (!isAllowedHttpsUrl(finalUrl, allowedHosts))
-        throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
+        throw new AttachmentStageError("attachment-redirect-host-not-allowed", "redirect-host-not-allowed");
     }
     const declaredBytes = Number.parseInt(headers["content-length"] ?? "", 10);
     // A 401/403 is the session itself refusing the request, the one non-OK status a passive SSO
@@ -502,12 +554,14 @@ export type AttachmentStage =
   | "preview-frame-not-found"
   | "preview-download-control-not-found"
   | "preview-host-not-allowed"
+  | "redirect-host-not-allowed"
   | "http-rejected"
   | "html-rejected"
   | "oversize"
   | "quota-exceeded"
   | "viewer-url-unparseable"
   | "sso-retry-failed"
+  | "attachment-phase-timeout"
   | "cancelled";
 
 /** Internal failure carrying the stage it happened at (see AttachmentStage). */
@@ -690,7 +744,7 @@ async function saveDownloadControl(
         index: candidate.downloadControlIndex!,
         expectedName: candidate.name,
         expectedUrl: candidate.url,
-        clickBy: clickDeadline(timeoutMs)
+        clickBy: clickDeadline(timeoutMs, signal)
       }
     );
     // The page script awaits a blob MIME read before clicking; a stalled renderer must not hold the
@@ -792,7 +846,7 @@ async function saveFileCard(
       selector: RESPONSE_SELECTORS.join(", "),
       index: candidate.fileCardIndex!,
       expectedName: candidate.name,
-      clickBy: clickDeadline(timeoutMs)
+      clickBy: clickDeadline(timeoutMs, signal)
     }
   );
   await withinBudget(opening, timeoutMs, "card-activation-timeout", signal);
@@ -867,7 +921,7 @@ async function saveFileCard(
         {
           selector: RESPONSE_SELECTORS.join(", "),
           index: candidate.fileCardIndex!,
-          clickBy: clickDeadline(timeoutMs)
+          clickBy: clickDeadline(timeoutMs, signal)
         }
       );
       clicked = await withinBudget(clicking, timeoutMs, "card-activation-timeout", signal);
@@ -949,7 +1003,7 @@ async function trySaveSharePointPreview(
     usedNames
   );
   const localPath = path.resolve(destination, name);
-  await writeFile(localPath, downloaded.body, { flag: "wx", mode: 0o600 });
+  await persistAttachment(localPath, downloaded.body, signal);
   return {
     index: candidate.index,
     name,
@@ -1079,7 +1133,7 @@ async function persistBrowserDownload(
   }
   if (source?.protocol === "blob:") {
     if (!isVerifiedBlobDownload(sourceValue, validation)) {
-      await download.cancel?.().catch(() => undefined);
+      await cancelBrowserDownload(download, timeoutMs, signal);
       throw new Error("attachment-blob-download-rejected");
     }
   } else if (
@@ -1091,12 +1145,12 @@ async function persistBrowserDownload(
     !allowedHosts.allows(source.hostname) ||
     (validation.expectedBlobUrl && sourceValue !== validation.expectedBlobUrl)
   ) {
-    await download.cancel?.().catch(() => undefined);
+    await cancelBrowserDownload(download, timeoutMs, signal);
     throw new Error("attachment-download-host-rejected");
   }
   const suggestedName = download.suggestedFilename().trim() || `attachment-${candidate.index}`;
   const temporaryPath = await completedDownloadPath(download, timeoutMs, signal);
-  const body = await readFile(temporaryPath);
+  const body = await unlessCancelled(readFile(temporaryPath), signal);
   if (body.length > maxAttachmentBytes || body.length > remainingTotalBytes)
     throw new Error("attachment-download-body-rejected");
   const name = uniqueFilename(
@@ -1109,7 +1163,7 @@ async function persistBrowserDownload(
     usedNames
   );
   const localPath = path.resolve(destination, name);
-  await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
+  await persistAttachment(localPath, body, signal);
   return {
     index: candidate.index,
     name,
@@ -1170,8 +1224,10 @@ function secureHttpsOrigin(value: string): string | undefined {
 }
 
 /** The latest time a page script given `timeoutMs` may still click (see ACTIVATION_CLICK_MARGIN_MS). */
-function clickDeadline(timeoutMs: number): number {
-  return Date.now() + timeoutMs - Math.min(ACTIVATION_CLICK_MARGIN_MS, timeoutMs / 10);
+function clickDeadline(timeoutMs: number, signal?: AbortSignal): number {
+  throwIfCancelled(signal);
+  const budget = boundedTimeout(timeoutMs, signal);
+  return Date.now() + budget - Math.min(ACTIVATION_CLICK_MARGIN_MS, budget / 10);
 }
 
 /** Waits for the download a UI activation should start. Playwright rejects on its own timeout (or
@@ -1188,8 +1244,9 @@ function waitForDownloadStart(
   const predicate = expectedUrl?.startsWith("blob:")
     ? (download: BrowserDownloadLike) => download.url() === expectedUrl
     : undefined;
+  throwIfCancelled(signal);
   const started = page.waitForEvent!("download", {
-    timeout: Math.min(timeoutMs, 30_000),
+    timeout: Math.min(boundedTimeout(timeoutMs, signal), 30_000),
     ...(predicate ? { predicate } : {})
   }).catch(() => {
     throw new AttachmentStageError("attachment-download-not-started", "download-not-started");
@@ -1218,8 +1275,25 @@ async function completedDownloadPath(
   } catch (error) {
     const stage = stageOf(error);
     if (stage === "download-incomplete" || stage === "cancelled")
-      await download.cancel?.().catch(() => undefined);
+      await cancelBrowserDownload(download, timeoutMs, signal);
     throw error;
+  }
+}
+
+/** Cancellation is itself a browser RPC: a lost connection must not hold cleanup forever. */
+async function cancelBrowserDownload(
+  download: BrowserDownloadLike,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<void> {
+  try {
+    const cancelling = download.cancel?.();
+    if (cancelling)
+      await withinBudget(cancelling, boundedTimeout(timeoutMs, signal), "download-incomplete").catch(
+        () => undefined
+      );
+  } catch {
+    /* best effort, with no file persistence */
   }
 }
 
@@ -1236,8 +1310,18 @@ async function withinBudget<T>(
   throwIfCancelled(signal);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
+  const phaseBudget = signal && phaseBudgets.get(signal);
+  const phaseLimited = phaseBudget && phaseBudget.deadline - Date.now() <= timeoutMs;
   const expired = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new AttachmentStageError(`attachment-${stage}`, stage)), timeoutMs);
+    timer = setTimeout(
+      () => {
+        if (phaseLimited) {
+          phaseBudget.expire();
+          reject(cancelledError());
+        } else reject(new AttachmentStageError(`attachment-${stage}`, stage));
+      },
+      boundedTimeout(timeoutMs, signal)
+    );
     onAbort = () => reject(cancelledError());
     signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -1266,8 +1350,24 @@ async function unlessCancelled<T>(work: Promise<T>, signal: AbortSignal | undefi
   }
 }
 
+const phaseBudgets = new WeakMap<AbortSignal, { deadline: number; expire: () => void }>();
+function boundedTimeout(timeoutMs: number, signal?: AbortSignal): number {
+  const deadline = signal && phaseBudgets.get(signal)?.deadline;
+  return deadline === undefined ? timeoutMs : Math.max(1, Math.min(timeoutMs, deadline - Date.now()));
+}
+async function persistAttachment(localPath: string, body: Buffer, signal?: AbortSignal): Promise<void> {
+  throwIfCancelled(signal);
+  await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
+  if (signal?.aborted || (signal && (phaseBudgets.get(signal)?.deadline ?? Infinity) <= Date.now())) {
+    // Wait for the file operation, then roll it back before completing the cancelled call.
+    await rm(localPath, { force: true });
+    throw cancelledError();
+  }
+}
+
 function throwIfCancelled(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw cancelledError();
+  if (signal?.aborted || (signal && (phaseBudgets.get(signal)?.deadline ?? Infinity) <= Date.now()))
+    throw cancelledError();
 }
 
 function cancelledError(): AttachmentStageError {
@@ -1279,10 +1379,16 @@ async function wait(page: PageLike, ms: number): Promise<void> {
   else await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForUiDownloadGap(page: PageLike, lastStartedAt: number | undefined): Promise<number> {
+async function waitForUiDownloadGap(
+  page: PageLike,
+  lastStartedAt: number | undefined,
+  signal?: AbortSignal
+): Promise<number> {
+  throwIfCancelled(signal);
   if (lastStartedAt !== undefined) {
     const remaining = UI_DOWNLOAD_MIN_INTERVAL_MS - (Date.now() - lastStartedAt);
-    if (remaining > 0) await wait(page, remaining);
+    if (remaining > 0) await unlessCancelled(wait(page, remaining), signal);
+    throwIfCancelled(signal);
   }
   return Date.now();
 }
@@ -1299,11 +1405,24 @@ export function sanitizeFilename(value: string): string {
       (character.codePointAt(0) ?? 0) <= 0x1f || '<>:"/\\|?*'.includes(character) ? "_" : character
     )
     .join("")
-    .replace(/[. ]+$/g, "")
-    .slice(0, 240);
+    .replace(/[. ]+$/g, "");
   if (!safe) safe = "attachment.bin";
   if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe)) safe = `_${safe}`;
-  return safe;
+  return limitFilename(safe);
+}
+
+function limitFilename(value: string, suffix = ""): string {
+  // Reserve suffix space at collision time, and never cut a surrogate pair or UTF-8 sequence.
+  let extension = path.extname(value);
+  if (Buffer.byteLength(extension) > 64 || extension.length > 64) extension = "";
+  const stem = value.slice(0, value.length - extension.length);
+  let result = "";
+  for (const character of stem) {
+    const next = result + character + suffix + extension;
+    if (next.length > 240 || Buffer.byteLength(next) > 240) break;
+    result += character;
+  }
+  return result + suffix + extension;
 }
 
 function uniqueFilename(value: string, used: Set<string>): string {
@@ -1314,7 +1433,7 @@ function uniqueFilename(value: string, used: Set<string>): string {
   const extension = path.extname(value);
   const stem = value.slice(0, value.length - extension.length);
   for (let index = 2; ; index++) {
-    const next = `${stem}-${index}${extension}`;
+    const next = limitFilename(`${stem}${extension}`, `-${index}`);
     if (!used.has(next.toLocaleLowerCase())) {
       used.add(next.toLocaleLowerCase());
       return next;
@@ -1429,7 +1548,7 @@ function completeAttachmentFilename(
   const extension = extensionForAttachmentMediaType(mediaType);
   if (extension === ".bin" || (mediaType === "text/plain" && !/^attachment-\d+$/.test(name))) return name;
   // Leave room for the suffix after the filename sanitizer's length limit.
-  return `${name.slice(0, 240 - extension.length)}${extension}`;
+  return limitFilename(`${name}${extension}`);
 }
 
 function filenameFromContentDisposition(value: string | undefined): string | undefined {

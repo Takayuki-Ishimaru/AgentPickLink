@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AuthDetector } from "../auth-detector.js";
 import { CompletionDetector } from "../completion-detector.js";
+import { normalizeComposerText, readComposerPlainText, readDomPlainText } from "../composer-text.js";
 import { identityDigest, assertIdentity, directAgentIdFromUrl } from "../identity.js";
 import { ResponseExtractor } from "../response-extractor.js";
 import {
@@ -493,62 +494,85 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       capturedAt: Date.now()
     };
   }
-  async fillComposer(page: PageLike, message: string): Promise<void> {
+  async fillComposer(page: PageLike, message: string, signal?: AbortSignal): Promise<void> {
     if (!this.canSubmit) throw new Error("GENERIC_ADAPTER_CANNOT_SUBMIT");
-    const composer = await this.findComposer(page);
-    const contentEditable = (await composer.getAttribute?.("contenteditable")) === "true";
-    if (contentEditable && composer.pressSequentially && composer.press) {
-      // M365's Lexical editor is controlled by keyboard/beforeinput handlers.
-      // Playwright fill("") can desynchronise Lexical's internal state and make
-      // the UI submit a literal <br>, so clear and type exclusively with keys.
-      // The first attempt types without a per-character delay unless a positive delay was
-      // configured (0 means the same as unset); the exact-text check below still gates
-      // acceptance, so a corrupted fast attempt falls back to the conservative delay.
-      const delays =
-        this.typingDelayMs === undefined || this.typingDelayMs === 0
-          ? [0, 20]
-          : [this.typingDelayMs, this.typingDelayMs];
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (!(await this.clearRichTextComposer(page, composer))) break;
-        await composer.click?.();
-        // A long Unicode prompt can exceed Playwright's ordinary 30-second action timeout.
-        // Account for the configured delay and keyboard dispatch while keeping each attempt bounded.
-        const typingTimeoutMs = Math.min(
-          120_000,
-          Math.max(30_000, 5_000 + message.length * (delays[attempt]! + 30))
-        );
-        try {
-          await composer.pressSequentially(message, { delay: delays[attempt], timeout: typingTimeoutMs });
-        } catch {
-          // Playwright's raw error includes the entire prompt in its call log. Return a safe,
-          // actionable error instead, and never leave a partial draft ready to submit.
-          await this.clearComposer(page);
-          throw new BrowserTransportError(
-            "UI_CHANGED",
-            "The rich-text composer could not finish typing the requested message.",
-            undefined,
-            { submissionState: "not-sent" }
+    try {
+      assertInputActive(signal);
+      const composer = await this.findComposer(page);
+      const requested = normalizeComposerText(message);
+      const contentEditable = (await composer.getAttribute?.("contenteditable")) === "true";
+      if (contentEditable && composer.pressSequentially && composer.press) {
+        // Keep Lexical's keyboard/beforeinput path; fill() can desynchronise its internal state.
+        const delays =
+          this.typingDelayMs === undefined || this.typingDelayMs === 0
+            ? [0, 20]
+            : [this.typingDelayMs, this.typingDelayMs];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          assertInputActive(signal);
+          if (!(await this.clearRichTextComposer(page, composer, signal))) break;
+          assertInputActive(signal);
+          await composer.click?.({ timeout: 1_000 });
+          const typingTimeoutMs = Math.min(
+            120_000,
+            Math.max(30_000, 5_000 + requested.length * (delays[attempt]! + 30))
           );
+          // Await every keyboard operation. Cancellation never races a still-running typer.
+          // Small code-point chunks bound the time before the next signal check without
+          // splitting a surrogate pair. Calls without cancellation retain bulk typing.
+          const typingDeadline = Date.now() + typingTimeoutMs;
+          const characters = Array.from(requested);
+          const chunkSize = signal
+            ? Math.max(1, Math.min(16, Math.floor(100 / (delays[attempt]! + 10))))
+            : characters.length || 1;
+          for (let offset = 0; offset < characters.length; offset += chunkSize) {
+            assertInputActive(signal);
+            if (Date.now() >= typingDeadline) throw new Error("typing-budget-exhausted");
+            await composer.pressSequentially(characters.slice(offset, offset + chunkSize).join(""), {
+              delay: delays[attempt],
+              timeout: signal ? Math.min(1_000, Math.max(1, typingDeadline - Date.now())) : typingTimeoutMs
+            });
+          }
+          assertInputActive(signal);
+          if (await this.composerTextStayedExact(page, composer, requested, signal)) return;
+          await this.clearRichTextComposer(page, composer, signal);
+          if (attempt === 0) await delay(500, page, signal);
         }
-        if (await this.composerTextStayedExact(page, composer, message)) return;
-        await this.clearRichTextComposer(page, composer);
-        await delay(500, page);
+        throw new BrowserTransportError(
+          "UI_CHANGED",
+          "The rich-text composer did not retain the exact requested message.",
+          undefined,
+          { submissionState: "not-sent" }
+        );
       }
+      if (!composer.fill)
+        throw new BrowserTransportError(
+          "UI_CHANGED",
+          "The verified composer cannot be filled safely.",
+          undefined,
+          { submissionState: "not-sent" }
+        );
+      assertInputActive(signal);
+      await composer.fill(requested);
+      assertInputActive(signal);
+      if (!(await this.composerTextStayedExact(page, composer, requested, signal)))
+        throw new BrowserTransportError(
+          "UI_CHANGED",
+          "The composer did not retain the exact requested message.",
+          undefined,
+          { submissionState: "not-sent" }
+        );
+    } catch (error) {
+      await this.clearComposer(page);
+      assertInputActive(signal);
+      if (error instanceof BrowserTransportError) throw error;
+      // Playwright's call log can include the whole prompt. Never expose it.
       throw new BrowserTransportError(
         "UI_CHANGED",
-        "The rich-text composer did not retain the exact requested message.",
+        "The composer could not finish entering the requested message.",
         undefined,
         { submissionState: "not-sent" }
       );
     }
-    if (!composer.fill)
-      throw new BrowserTransportError(
-        "UI_CHANGED",
-        "The verified composer cannot be filled safely.",
-        undefined,
-        { submissionState: "not-sent" }
-      );
-    await composer.fill(message);
   }
   async clearComposer(page: PageLike): Promise<void> {
     try {
@@ -560,8 +584,9 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       /* best effort: do not submit */
     }
   }
-  async submitComposer(page: PageLike): Promise<void> {
+  async submitComposer(page: PageLike, signal?: AbortSignal): Promise<void> {
     if (!this.canSubmit) throw new Error("GENERIC_ADAPTER_CANNOT_SUBMIT");
+    assertInputActive(signal);
     const deadline = Date.now() + 2_000;
     let candidates: LocatorLike[];
     do {
@@ -583,7 +608,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
           : [];
       candidates = accessibleCandidates.length ? accessibleCandidates : structuralCandidates;
       if (candidates.length === 1 || candidates.length > 1 || Date.now() >= deadline) break;
-      await page.waitForTimeout?.(100);
+      await delay(100, page, signal);
     } while (Date.now() < deadline);
     const send = candidates[0];
     if (candidates.length !== 1 || !send?.click) {
@@ -595,6 +620,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
         { submissionState: "not-sent", sendDiagnostics }
       );
     }
+    assertInputActive(signal);
     try {
       await send.click();
     } catch {
@@ -619,7 +645,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       const now = await this.captureConversationMarker(page);
       if (now.userCount === marker.userCount + 1) {
         const latest = await this.latestUserMessage(page);
-        if (latest !== undefined && normalizeMessage(latest) === normalizeMessage(marker.composerValue))
+        if (
+          latest !== undefined &&
+          normalizeComposerText(latest) === normalizeComposerText(marker.composerValue)
+        )
           return { state: "sent" };
         return {
           state: "unknown",
@@ -639,7 +668,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
     if (marker.composerValue) {
       const composerNow = await this.composerValue(page);
-      if (normalizeMessage(composerNow) === normalizeMessage(marker.composerValue))
+      if (normalizeComposerText(composerNow) === normalizeComposerText(marker.composerValue))
         return { state: "not-sent", reason: "the composer still holds the submitted text unchanged" };
     }
     return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
@@ -723,43 +752,38 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   private async composerValue(page: PageLike): Promise<string> {
     try {
       const composer = await this.findComposer(page);
-      try {
-        const value = await composer.inputValue?.();
-        if (value !== undefined) return value;
-      } catch {
-        /* contenteditable */
-      }
-      return (await composer.textContent?.()) ?? "";
+      return await readComposerPlainText(composer);
     } catch {
       return "";
     }
   }
   private async latestUserMessage(page: PageLike): Promise<string | undefined> {
     try {
-      if (page.evaluate)
-        return await page.evaluate((selector: string) => {
-          const nodes = Array.from(document.querySelectorAll(selector)) as HTMLElement[];
-          const latest = nodes.at(-1);
-          const output = latest?.querySelector('[data-testid="chatOutput"]') as HTMLElement | null;
-          return output?.innerText ?? latest?.innerText;
-        }, USER_MESSAGE_SELECTORS);
+      if (page.evaluate) return await page.evaluate(readDomPlainText, USER_MESSAGE_SELECTORS);
     } catch {
       /* fail closed */
     }
     return undefined;
   }
 
-  private async clearRichTextComposer(page: PageLike, composer: LocatorLike): Promise<boolean> {
-    const current = normalizeComposerText((await composer.textContent?.()) ?? "");
+  private async clearRichTextComposer(
+    page: PageLike,
+    composer: LocatorLike,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    assertInputActive(signal);
+    const current = await readComposerPlainText(composer);
     if (!current) return true;
     if (!composer.press) return false;
-    await composer.click?.();
-    await composer.press("ControlOrMeta+A");
-    await composer.press("Backspace");
+    await composer.click?.({ timeout: 1_000 });
+    assertInputActive(signal);
+    await composer.press("ControlOrMeta+A", { timeout: 1_000 });
+    assertInputActive(signal);
+    await composer.press("Backspace", { timeout: 1_000 });
     const deadline = Date.now() + 1_000;
     do {
-      if (!normalizeComposerText((await composer.textContent?.()) ?? "")) return true;
-      await delay(50, page);
+      if (!(await readComposerPlainText(composer))) return true;
+      await delay(50, page, signal);
     } while (Date.now() < deadline);
     return false;
   }
@@ -767,20 +791,24 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   private async composerTextStayedExact(
     page: PageLike,
     composer: LocatorLike,
-    expected: string
+    expected: string,
+    signal?: AbortSignal
   ): Promise<boolean> {
+    assertInputActive(signal);
     const expectedText = normalizeComposerText(expected);
     const appearedBy = Date.now() + 750;
     while (Date.now() < appearedBy) {
-      if (normalizeComposerText((await composer.textContent?.()) ?? "") === expectedText) break;
-      await delay(50, page);
+      if ((await readComposerPlainText(composer)) === expectedText) break;
+      await delay(50, page, signal);
     }
-    if (normalizeComposerText((await composer.textContent?.()) ?? "") !== expectedText) return false;
+    assertInputActive(signal);
+    if ((await readComposerPlainText(composer)) !== expectedText) return false;
     const stableUntil = Date.now() + this.composerStabilityWindowMs;
     while (Date.now() < stableUntil) {
-      await delay(Math.min(250, Math.max(1, stableUntil - Date.now())), page);
-      if (normalizeComposerText((await composer.textContent?.()) ?? "") !== expectedText) return false;
+      await delay(Math.min(250, Math.max(1, stableUntil - Date.now())), page, signal);
+      if ((await readComposerPlainText(composer)) !== expectedText) return false;
     }
+    assertInputActive(signal);
     return true;
   }
   protected responseSelectors = RESPONSE_SELECTORS;
@@ -875,21 +903,34 @@ async function usableCandidates(locator: LocatorLike | undefined): Promise<Locat
   }
   return candidates;
 }
-function normalizeMessage(value: string): string {
-  return normalizeComposerText(value).replace(/\s+/g, " ");
-}
-function normalizeComposerText(value: string): string {
-  return value
-    .normalize("NFKC")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u00A0/g, " ")
-    .trim();
-}
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-async function delay(ms: number, page: PageLike): Promise<void> {
-  if (page.waitForTimeout) await page.waitForTimeout(ms);
-  else await new Promise((resolve) => setTimeout(resolve, ms));
+function assertInputActive(signal?: AbortSignal): void {
+  if (signal?.aborted)
+    throw new BrowserTransportError(
+      "SUBMIT_FAILED",
+      "The request was cancelled before submission.",
+      undefined,
+      { submissionState: "not-sent" }
+    );
+}
+async function delay(ms: number, page: PageLike, signal?: AbortSignal): Promise<void> {
+  assertInputActive(signal);
+  if (!signal) {
+    if (page.waitForTimeout) await page.waitForTimeout(ms);
+    else await new Promise((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+    if (signal.aborted) done();
+  });
+  assertInputActive(signal);
 }
