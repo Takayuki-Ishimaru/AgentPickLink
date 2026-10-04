@@ -137,7 +137,7 @@ describe("browser/navigation defaults (docs/ux-redesign.md §2.2 item 1)", () =>
     expect(config.browser.responseTimeoutMs).toBe(300000);
     expect(config.browser.ackTimeoutMs).toBe(30000);
     expect(config.browser.responseStartTimeoutMs).toBe(90000);
-    expect(config.browser.typingDelayMs).toBe(20);
+    expect(config.browser.typingDelayMs).toBe(0);
     expect(config.browser.attachmentSettleMs).toBe(2000);
   });
 

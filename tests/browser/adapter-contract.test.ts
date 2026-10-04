@@ -614,3 +614,162 @@ function pageFixture(
   };
   return { page, sendClicks: () => clicks, labels: () => labels };
 }
+
+describe("rich-text composer typing latency", () => {
+  // Synthetic prompt only: CJK, a line break and an emoji, never a real user message.
+  const FAST_PROMPT = "要件を整理して！次の表を Markdown で作る。\n二番目の項目も🧪含める。";
+
+  interface ComposerScript {
+    /** Text the composer reports after each typing attempt; missing means it kept the prompt. */
+    afterType?: string[];
+    /** Non-empty text the composer already holds before fillComposer runs. */
+    initialValue?: string;
+    /** Whether Backspace empties the composer. */
+    clearable?: boolean;
+    typingError?: Error;
+  }
+  function richTextFixture(script: ComposerScript) {
+    const typed: { text: string; delay: number | undefined }[] = [];
+    const keys: string[] = [];
+    const timeouts: (number | undefined)[] = [];
+    let value = script.initialValue ?? "";
+    let attempt = 0;
+    const composer: LocatorLike = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async (name) => (name === "contenteditable" ? "true" : null),
+      textContent: async () => value,
+      click: async () => undefined,
+      press: async (key) => {
+        keys.push(key);
+        if (key === "Backspace" && script.clearable !== false) value = "";
+      },
+      pressSequentially: async (text, options) => {
+        typed.push({ text, delay: options?.delay });
+        timeouts.push(options?.timeout);
+        value = script.afterType?.[attempt++] ?? text;
+        if (script.typingError) throw script.typingError;
+      }
+    };
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      locator: () => composer,
+      waitForTimeout: async () => undefined
+    };
+    return { page, typed, keys, timeouts };
+  }
+  const fastAdapter = () =>
+    new M365CopilotChatAdapter({ hostnames: ["m365.example.test"], stabilityWindowMs: 1 });
+
+  it("types a CJK, multiline and emoji prompt with no per-character delay by default", async () => {
+    const adapter = fastAdapter();
+    const fixture = richTextFixture({});
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).resolves.toBeUndefined();
+    expect(fixture.typed).toEqual([{ text: FAST_PROMPT, delay: 0 }]);
+    expect(fixture.keys).toEqual([]);
+  });
+
+  it("retries once with a conservative delay when the fast attempt corrupts the text", async () => {
+    const adapter = fastAdapter();
+    const fixture = richTextFixture({ afterType: [FAST_PROMPT.slice(0, -1), FAST_PROMPT] });
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).resolves.toBeUndefined();
+    expect(fixture.typed).toEqual([
+      { text: FAST_PROMPT, delay: 0 },
+      { text: FAST_PROMPT, delay: 20 }
+    ]);
+    // Only the clear after the failed verification presses keys: the composer is empty before
+    // each attempt, so clearRichTextComposer returns early without pressing anything.
+    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace"]);
+  });
+
+  it("treats an explicit zero delay as fast first with the conservative fallback", async () => {
+    const adapter = new M365CopilotChatAdapter({
+      hostnames: ["m365.example.test"],
+      stabilityWindowMs: 1,
+      typingDelayMs: 0
+    });
+    const fixture = richTextFixture({ afterType: [FAST_PROMPT.slice(0, -1), FAST_PROMPT] });
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).resolves.toBeUndefined();
+    expect(fixture.typed).toEqual([
+      { text: FAST_PROMPT, delay: 0 },
+      { text: FAST_PROMPT, delay: 20 }
+    ]);
+  });
+
+  it("honours an explicit custom delay on both attempts", async () => {
+    const adapter = new M365CopilotChatAdapter({
+      hostnames: ["m365.example.test"],
+      stabilityWindowMs: 1,
+      typingDelayMs: 35
+    });
+    const fixture = richTextFixture({ afterType: ["", FAST_PROMPT] });
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).resolves.toBeUndefined();
+    expect(fixture.typed).toEqual([
+      { text: FAST_PROMPT, delay: 35 },
+      { text: FAST_PROMPT, delay: 35 }
+    ]);
+  });
+
+  it("fails closed without submitting when both attempts corrupt the text", async () => {
+    const adapter = fastAdapter();
+    const fixture = richTextFixture({ afterType: ["x", "y"] });
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).rejects.toMatchObject({
+      code: "UI_CHANGED",
+      details: { submissionState: "not-sent" }
+    });
+    expect(fixture.typed).toHaveLength(2);
+  });
+
+  it("allows enough bounded typing time for a long prompt and an explicit delay", async () => {
+    const adapter = new M365CopilotChatAdapter({
+      hostnames: ["m365.example.test"],
+      stabilityWindowMs: 1,
+      typingDelayMs: 45
+    });
+    const fixture = richTextFixture({});
+    const prompt = "日本語の入力確認".repeat(125);
+    await adapter.fillComposer(fixture.page, prompt);
+    expect(fixture.timeouts[0]).toBeGreaterThan(prompt.length * 45);
+    expect(fixture.timeouts[0]).toBeLessThanOrEqual(120_000);
+  });
+
+  it("clears a partial draft and reports not-sent without exposing a typing error's prompt", async () => {
+    const fixture = richTextFixture({
+      afterType: ["partial draft"],
+      typingError: new Error(`Timeout call log: ${FAST_PROMPT}`)
+    });
+    const error = await fastAdapter()
+      .fillComposer(fixture.page, FAST_PROMPT)
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "UI_CHANGED", details: { submissionState: "not-sent" } });
+    expect(String(error)).not.toContain(FAST_PROMPT);
+    expect(fixture.typed).toHaveLength(1);
+    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace"]);
+  });
+
+  it("fails closed when the rich-text composer cannot be cleared", async () => {
+    const adapter = fastAdapter();
+    const fixture = richTextFixture({ clearable: false, initialValue: "残った下書き" });
+    await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).rejects.toMatchObject({
+      code: "UI_CHANGED",
+      details: { submissionState: "not-sent" }
+    });
+    expect(fixture.typed).toEqual([]);
+    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace"]);
+  });
+
+  it("keeps typing state independent across adapters running in parallel", async () => {
+    const a = richTextFixture({ afterType: ["broken", FAST_PROMPT] });
+    const b = richTextFixture({});
+    await Promise.all([
+      fastAdapter().fillComposer(a.page, FAST_PROMPT),
+      fastAdapter().fillComposer(b.page, "second prompt")
+    ]);
+    expect(a.typed).toEqual([
+      { text: FAST_PROMPT, delay: 0 },
+      { text: FAST_PROMPT, delay: 20 }
+    ]);
+    expect(b.typed).toEqual([{ text: "second prompt", delay: 0 }]);
+  });
+});

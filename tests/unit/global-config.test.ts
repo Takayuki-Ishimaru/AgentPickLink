@@ -223,3 +223,32 @@ describe("global config clients: key migration (§4.4)", () => {
     expect(persisted.clients.vscodeWorkspace).toBe(true);
   });
 });
+
+describe("global config rich-text typing delay", () => {
+  it("defaults to fast typing and keeps a persisted positive delay", () => {
+    const fresh = GlobalConfigSchema.parse({ version: 1, browser: { profilePath: "C:\\profile" } });
+    expect(fresh.browser.typingDelayMs).toBe(0);
+
+    const persisted = GlobalConfigSchema.parse({
+      version: 1,
+      browser: { profilePath: "C:\\profile", typingDelayMs: 45 }
+    });
+    expect(persisted.browser.typingDelayMs).toBe(45);
+
+    const explicitFast = GlobalConfigSchema.parse({
+      version: 1,
+      browser: { profilePath: "C:\\profile", typingDelayMs: 0 }
+    });
+    expect(explicitFast.browser.typingDelayMs).toBe(0);
+  });
+
+  it("never rewrites a persisted typing delay during migration", () => {
+    const migrated = migrateGlobalConfig({
+      version: 1,
+      downloadDefaultsVersion: 1,
+      headlessDefaultsVersion: 1,
+      browser: { profilePath: "C:\\profile", typingDelayMs: 45 }
+    }) as { browser: { typingDelayMs: number } };
+    expect(migrated.browser.typingDelayMs).toBe(45);
+  });
+});

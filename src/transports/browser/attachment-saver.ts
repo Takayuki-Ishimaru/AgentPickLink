@@ -191,6 +191,17 @@ export class AttachmentSaver {
           );
         } catch (firstError) {
           if (stageOf(firstError) === "cancelled") throw firstError;
+          // Authentication failures and opaque SharePoint sharing viewers need a passive tab.
+          // The latter resolves a real file URL even when authentication is already complete.
+          // A rejected
+          // redirect, a 404/5xx, an oversize or quota rejection, an empty body or a transport
+          // error would waste a passive tab and a second fetch on a result that cannot change.
+          if (
+            !(firstError instanceof AttachmentStageError) ||
+            (!firstError.authRetryable &&
+              !(firstError.stage === "html-rejected" && isSharePointSharingLink(source)))
+          )
+            throw firstError;
           // A Microsoft 365 session can be authenticated while the tenant's SharePoint host has
           // not received its SSO cookies yet. A passive navigation in the same persistent browser
           // context establishes that session without filling a form or clicking any action. Retry
@@ -332,7 +343,14 @@ async function fetchAttachment(
         throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
     }
     const declaredBytes = Number.parseInt(headers["content-length"] ?? "", 10);
-    if (!response.ok()) throw new AttachmentStageError("attachment-response-rejected", "http-rejected");
+    // A 401/403 is the session itself refusing the request, the one non-OK status a passive SSO
+    // navigation can clear; any other status is the tenant's decision and is not retried.
+    if (!response.ok())
+      throw new AttachmentStageError(
+        "attachment-response-rejected",
+        "http-rejected",
+        status === 401 || status === 403
+      );
     if (Number.isFinite(declaredBytes) && declaredBytes > maxAttachmentBytes)
       throw new AttachmentStageError("attachment-response-rejected", "oversize");
     if (Number.isFinite(declaredBytes) && declaredBytes > remainingTotalBytes)
@@ -345,7 +363,7 @@ async function fetchAttachment(
     if (body.length > remainingTotalBytes)
       throw new AttachmentStageError("attachment-body-rejected", "quota-exceeded");
     if (isHtml(headers["content-type"], body) && !isExplicitAttachment(headers["content-disposition"]))
-      throw new AttachmentStageError("attachment-body-rejected", "html-rejected");
+      throw new AttachmentStageError("attachment-body-rejected", "html-rejected", isSignInHtml(body));
     return { body, headers, url: response.url?.() ?? currentUrl.toString() };
   }
 }
@@ -495,10 +513,14 @@ export type AttachmentStage =
 /** Internal failure carrying the stage it happened at (see AttachmentStage). */
 class AttachmentStageError extends Error {
   readonly stage: AttachmentStage;
-  constructor(message: string, stage: AttachmentStage) {
+  /** Whether the failure is itself evidence of a missing Microsoft 365 session, i.e. the only kind
+   * a passive SSO navigation can plausibly clear (see establishPassiveFileSession). */
+  readonly authRetryable: boolean;
+  constructor(message: string, stage: AttachmentStage, authRetryable = false) {
     super(message);
     this.name = "AttachmentStageError";
     this.stage = stage;
+    this.authRetryable = authRetryable;
   }
 }
 
@@ -1311,6 +1333,24 @@ function isHtml(contentType: string | undefined, body: Buffer): boolean {
 
 function isExplicitAttachment(value: string | undefined): boolean {
   return /^\s*attachment(?:\s*;|$)/i.test(value ?? "");
+}
+
+/** Bounded evidence that an HTML body is a Microsoft sign-in page rather than an ordinary viewer
+ * page: only a sign-in page means the session is missing, so only that one earns an SSO retry. */
+function isSignInHtml(body: Buffer): boolean {
+  const head = body.subarray(0, 8_192).toString("utf8");
+  return (
+    /<title\b[^>]*>\s*(?:sign in\b|サインイン)/i.test(head) ||
+    /\bid\s*=\s*["']?(?:id_si3|i0116|i0118)["'\s>]/i.test(head) ||
+    /https:\/\/login\.microsoftonline\.com\/[\w.-]+\/oauth2\/(?:v2\.0\/)?authorize\b/i.test(head)
+  );
+}
+
+function isSharePointSharingLink(source: URL): boolean {
+  return (
+    source.hostname.toLowerCase().endsWith(".sharepoint.com") &&
+    /^\/:[a-z]:\/(?:g|p|r|s|u)\//i.test(source.pathname)
+  );
 }
 
 function normalizeMediaType(contentType: string | undefined, name: string, body?: Buffer): string {

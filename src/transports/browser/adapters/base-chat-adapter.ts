@@ -47,7 +47,8 @@ export interface BaseAdapterOptions {
   /** Extra quiet time required before an unchanged response counts as complete when no streaming
    * signal was ever observed (see CompletionDetector). */
   quietStreamingGraceMs?: number;
-  /** Per-character delay used when typing into a rich-text composer. */
+  /** Per-character delay used when typing into a rich-text composer. Unset means: type the first
+   * attempt without any per-character delay and retry once with a conservative delay. */
   typingDelayMs?: number;
   attachmentHosts?: string[];
 }
@@ -69,7 +70,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   protected readonly completion: CompletionDetector;
   protected readonly extractor: ResponseExtractor;
   private readonly composerStabilityWindowMs: number;
-  private readonly typingDelayMs: number;
+  private readonly typingDelayMs: number | undefined;
   constructor(options: BaseAdapterOptions) {
     this.id = options.id;
     this.hostnames = new Set(options.hostnames.map((h) => h.toLowerCase()));
@@ -77,7 +78,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     this.canSubmit = !options.diagnosticOnly;
     this.extractor = new ResponseExtractor({ attachmentHosts: options.attachmentHosts });
     this.composerStabilityWindowMs = options.stabilityWindowMs ?? 2_500;
-    this.typingDelayMs = options.typingDelayMs ?? 20;
+    this.typingDelayMs = options.typingDelayMs;
     this.completion = new CompletionDetector({
       stabilityWindowMs: options.stabilityWindowMs,
       pollIntervalMs: options.pollIntervalMs,
@@ -500,10 +501,35 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       // M365's Lexical editor is controlled by keyboard/beforeinput handlers.
       // Playwright fill("") can desynchronise Lexical's internal state and make
       // the UI submit a literal <br>, so clear and type exclusively with keys.
+      // The first attempt types without a per-character delay unless a positive delay was
+      // configured (0 means the same as unset); the exact-text check below still gates
+      // acceptance, so a corrupted fast attempt falls back to the conservative delay.
+      const delays =
+        this.typingDelayMs === undefined || this.typingDelayMs === 0
+          ? [0, 20]
+          : [this.typingDelayMs, this.typingDelayMs];
       for (let attempt = 0; attempt < 2; attempt++) {
         if (!(await this.clearRichTextComposer(page, composer))) break;
         await composer.click?.();
-        await composer.pressSequentially(message, { delay: this.typingDelayMs });
+        // A long Unicode prompt can exceed Playwright's ordinary 30-second action timeout.
+        // Account for the configured delay and keyboard dispatch while keeping each attempt bounded.
+        const typingTimeoutMs = Math.min(
+          120_000,
+          Math.max(30_000, 5_000 + message.length * (delays[attempt]! + 30))
+        );
+        try {
+          await composer.pressSequentially(message, { delay: delays[attempt], timeout: typingTimeoutMs });
+        } catch {
+          // Playwright's raw error includes the entire prompt in its call log. Return a safe,
+          // actionable error instead, and never leave a partial draft ready to submit.
+          await this.clearComposer(page);
+          throw new BrowserTransportError(
+            "UI_CHANGED",
+            "The rich-text composer could not finish typing the requested message.",
+            undefined,
+            { submissionState: "not-sent" }
+          );
+        }
         if (await this.composerTextStayedExact(page, composer, message)) return;
         await this.clearRichTextComposer(page, composer);
         await delay(500, page);

@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { assertExtensionBundleLoads } from "./check-extension-bundle.mjs";
 
 // --node <path> (or env SMOKE_NODE) launches the CLI/broker with that Node binary instead of
 // process.execPath -- used by scripts/assemble-portable.mjs to smoke-test a portable archive with its
@@ -88,7 +89,7 @@ const runCli = (...args) =>
     timeout: 15_000
   });
 let brokerStarted = false;
-let phase = "CLI version";
+let phase = "extension bundle loading";
 const clients = [
   new Client({ name: "release-package-smoke-a", version: manifest.version }),
   new Client({ name: "release-package-smoke-b", version: manifest.version })
@@ -115,6 +116,8 @@ const closeClient = async (client) => {
   }
 };
 try {
+  await assertExtensionBundleLoads(path.resolve(packageRoot, manifest.main), { nodeBinary });
+  phase = "CLI version";
   const { stdout } = await runCli("--version");
   assert.equal(stdout.trim(), manifest.version);
   phase = "MCP initialization";

@@ -84,7 +84,7 @@ export interface LocatorLike {
   isEnabled?(): Promise<boolean>;
   inputValue?(): Promise<string>;
   fill?(value: string): Promise<void>;
-  pressSequentially?(text: string, options?: { delay?: number }): Promise<void>;
+  pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   press?(key: string, options?: { timeout?: number }): Promise<void>;
   click?(options?: { timeout?: number }): Promise<void>;
   textContent?(): Promise<string | null>;

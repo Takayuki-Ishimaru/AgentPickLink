@@ -60,8 +60,9 @@ export const GlobalConfigSchema = z
         ackTimeoutMs: z.number().int().positive().default(30000),
         /** How long to wait for the agent's first response node after acknowledgement. */
         responseStartTimeoutMs: z.number().int().positive().default(90000),
-        /** Per-character delay used when typing into a rich-text composer. */
-        typingDelayMs: z.number().int().min(0).max(200).default(20),
+        /** Per-character delay used when typing into a rich-text composer. 0 means: type the first
+         * attempt without any per-character delay and retry once with a conservative delay. */
+        typingDelayMs: z.number().int().min(0).max(200).default(0),
         /** Grace period after completion before a second, cheap attachment re-scan. */
         attachmentSettleMs: z.number().int().min(0).max(60000).default(2000),
         stabilityWindowMs: z.number().int().positive().default(1800),

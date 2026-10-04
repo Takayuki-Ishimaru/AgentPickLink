@@ -1,5 +1,58 @@
 # リリースノート
 
+## v0.2.6 Beta
+
+### 主な変更
+
+- **VS Code 拡張機能の起動不具合を修正しました。** v0.2.5 で `Cannot find module './impl/format'` が発生し、拡張機能が読み込めない問題を解消しました。
+- **質問の入力を改善しました。** 文字ごとの待ち時間の既定値を短縮し、長文の入力には質問の長さに応じた時間上限を設けました。入力内容が一致・安定しない場合は低速で一度入力し直します。確認できない場合や入力が時間切れになった場合は、送信せず `UI_CHANGED` と未送信（`not-sent`）を返します。
+- **添付保存の余分な再試行を減らしました。** 認証が必要な応答やサインイン画面では、専用ブラウザー内で接続状態を確認して取得を一度再試行します。SharePoint 共有リンクのプレビュー画面でも、ファイルの取得先を解決するためにこの処理を使います。容量超過、404 / 5xx、許可されていない転送先など、認証を再試行しても解決しない失敗は未保存として返します。
+- **PDF 生成時の案内を改善しました。** 呼び出し元の AI クライアントに、日本語フォントの実データの埋め込み、見出し・本文に合った行間、表紙・結論を含む指定総ページ数、実ファイルのページ数と表示の確認を促します。
+
+PDF の案内は生成を依頼する AI クライアントへの助言です。AgentPickLink は、利用者の質問や生成元のエージェントの指示、受信したファイルを自動で書き換えません。案内を追加するだけで、生成物のフォント・レイアウト・ページ数の正しさを保証するものではありません。実ファイルを確認してください。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.6.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+`browser.typingDelayMs` の既定値は `0` です。既存の設定に保存された正の値は更新時にも保持します。新しい入力速度を使うには `config.yaml` の値を `0` に変更し、接続プロセスを再起動してください。`0` では最初の入力を待ち時間なしで行い、入力内容の確認に失敗した場合だけ 20 ミリ秒で一度入力し直します。詳しくは [設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.6.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.6-win-x64.zip` / `AgentPickLink-0.2.6-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.6-darwin-arm64.tgz` / `AgentPickLink-0.2.6-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.6-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.6-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+今回の修正は公開前の修正版を使って Windows 上の VS Code 起動、質問入力、実 Microsoft 365 テナントでの PDF 生成・取得を限定的に確認しました。この確認は、すべてのエージェント・テナント・画面構成の動作保証ではありません。最終配布物のすべての OS・CPU での実機動作や、実際の AI クライアントの停止操作によるキャンセルは未確認です。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed the VS Code extension failing to load.** v0.2.5 could fail with `Cannot find module './impl/format'`.
+- **Improved question entry.** The default per-character delay is shorter, and long prompts use a length-based typing time limit. If the entered text fails exact-match and stability checks, it retries once with slower typing. Failed verification or a typing timeout returns `UI_CHANGED` with `not-sent`, without submitting the question.
+- **Reduced unnecessary attachment retries.** Authentication failures and detected sign-in pages receive one retry after checking the session in the dedicated browser. SharePoint sharing viewers also use this step to resolve the actual file URL. Failures such as size limits, 404 / 5xx responses, or disallowed redirects are reported as not saved without an authentication retry.
+- **Improved PDF generation guidance.** Calling AI clients are advised to embed actual Japanese font data, use suitable line spacing, respect the requested total page count including covers and conclusions, and inspect the actual file's page count and rendering.
+
+This guidance does not automatically rewrite user questions, agent instructions, or received files, and does not guarantee correct fonts, layout, or page counts. Check the actual output.
+
+To update, install `agent-pick-link-0.2.6.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused.
+
+`browser.typingDelayMs` defaults to `0`. Existing positive values are preserved on upgrade. To use faster entry, set the value to `0` in `config.yaml` and restart the local process. Zero starts without a per-character delay and retries once at 20 ms only when text verification fails. See [Configuration](CONFIGURATION.md).
+
+Portable archives bundle Node.js 24.21.0. Windows 11 with Microsoft Edge remains the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`.
+
+The fixes received limited checks on a pre-publication patched build for Windows VS Code startup, question entry, and PDF generation and retrieval in a live Microsoft 365 tenant. This does not establish compatibility with every agent, tenant, or interface. Native execution of the final distribution across every OS/CPU and cancellation through actual AI clients' stop controls remain unverified. See [Supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.5 Beta
 
 ### 主な変更

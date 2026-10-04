@@ -8,6 +8,7 @@
 /* global Buffer, process */
 import { build } from "esbuild";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,9 @@ const FORBIDDEN = ["playwright-core"];
 // the extension host locally. Opt in with `APL_EXTENSION_SOURCEMAP=1 npm run build`; `package:vsix`
 // deliberately leaves it off (and cleans dist/ first, so a map from an earlier build cannot leak).
 const sourcemap = process.env.APL_EXTENSION_SOURCEMAP === "1";
+// The UMD entry shadows require() inside its factory, leaving ./impl/* imports unresolved
+// in the single-file extension. Its ESM entry lets esbuild include those modules statically.
+const jsoncParserEsm = createRequire(import.meta.url).resolve("jsonc-parser/lib/esm/main.js");
 
 const result = await build({
   entryPoints: [path.join(root, "src", "extension", "extension.ts")],
@@ -27,6 +31,7 @@ const result = await build({
   format: "cjs",
   target: "node22",
   external: ["vscode"],
+  alias: { "jsonc-parser": jsoncParserEsm },
   sourcemap,
   logLevel: "info",
   // `src/broker/broker-lifecycle.ts` reads `import.meta.url` in spawnBundledBroker(), which the

@@ -2444,3 +2444,345 @@ describe("download host wildcards", () => {
     ]);
   });
 });
+
+describe("passive SSO retry only for real authentication evidence", () => {
+  const fileBody = Buffer.from("%PDF-1.7 authenticated body");
+  const signInBody = Buffer.from(
+    '<!doctype html><title>Sign in to your account</title><div id="id_si3">login.microsoftonline.com</div>'
+  );
+  const viewerBody = Buffer.from("<!doctype html><title>Contoso Viewer</title><p>Preview</p>");
+
+  type ResponseSpec = {
+    status?: number;
+    headers?: Record<string, string>;
+    body?: Buffer;
+    error?: Error;
+  };
+
+  /** A page whose context counts every HTTP call and every passive sign-in tab the saver opens. */
+  function fetchHarness(responses: ResponseSpec[], onCall?: (call: number, url: string) => ResponseSpec) {
+    const requested: string[] = [];
+    const navigated: string[] = [];
+    let signInTabs = 0;
+    let closedTabs = 0;
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      context: () => ({
+        request: {
+          get: async (url: string) => {
+            requested.push(url);
+            const spec = onCall
+              ? onCall(requested.length - 1, url)
+              : (responses[requested.length - 1] ?? responses[responses.length - 1])!;
+            if (spec.error) throw spec.error;
+            const status = spec.status ?? 200;
+            return {
+              ok: () => status >= 200 && status < 300,
+              status: () => status,
+              headers: () => spec.headers ?? {},
+              body: async () => spec.body ?? Buffer.alloc(0),
+              url: () => url
+            };
+          }
+        },
+        newPage: async () => {
+          signInTabs++;
+          return {
+            url: () => "https://login.microsoftonline.com/synthetic",
+            goto: async (url: string) => {
+              navigated.push(url);
+            },
+            waitForTimeout: async () => undefined,
+            close: async () => {
+              closedTabs++;
+            }
+          };
+        }
+      })
+    };
+    return { page, requested, navigated, counts: () => ({ http: requested.length, signInTabs, closedTabs }) };
+  }
+
+  const saverFor = (
+    directory: string,
+    options: { maxAttachmentBytes?: number; maxTotalAttachmentBytes?: number } = {}
+  ) =>
+    new AttachmentSaver({
+      enabled: true,
+      directory,
+      allowedHosts: ["tenant.sharepoint.com"],
+      ...options
+    });
+  const candidate = { index: 1, name: "report.pdf", url: "https://tenant.sharepoint.com/:b:/g/report" };
+  const context = (requestId: string) => ({ workspaceKey: "workspace", requestId });
+
+  it.each([
+    [
+      "declared oversize",
+      { headers: { "content-type": "application/pdf", "content-length": "999999" }, body: fileBody },
+      "oversize",
+      { maxAttachmentBytes: 10 }
+    ],
+    [
+      "actual oversize",
+      { headers: { "content-type": "application/pdf" }, body: fileBody },
+      "oversize",
+      { maxAttachmentBytes: 10 }
+    ],
+    [
+      "total quota",
+      { headers: { "content-type": "application/pdf" }, body: fileBody },
+      "quota-exceeded",
+      { maxTotalAttachmentBytes: 4 }
+    ]
+  ] as const)(
+    "fails a %s response once, without a passive tab or a second fetch",
+    async (_label, response, stage, options) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+      const harness = fetchHarness([response]);
+      try {
+        const result = await saverFor(directory, options).save(harness.page, [candidate], context("quota"));
+        expect(result).toMatchObject([{ status: "not-saved", errorCode: "download-failed", stage }]);
+        expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("never requests a redirect target the allowlist blocks, and opens no passive tab for it", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+    const harness = fetchHarness([
+      { status: 302, headers: { location: "https://evil.example/download" } },
+      { headers: { "content-type": "application/pdf" }, body: fileBody }
+    ]);
+    try {
+      const result = await saverFor(directory).save(harness.page, [candidate], context("redirect"));
+      expect(result).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }
+      ]);
+      expect(harness.requested).toEqual(["https://tenant.sharepoint.com/:b:/g/report?download=1"]);
+      expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([404, 500, 503])("does not retry a %i response with the passive sign-in flow", async (status) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+    const harness = fetchHarness([
+      { status, headers: { "content-type": "application/json" }, body: Buffer.from("{}") }
+    ]);
+    try {
+      const result = await saverFor(directory).save(harness.page, [candidate], context(`status-${status}`));
+      expect(result).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }
+      ]);
+      expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not retry an arbitrary transport error or an empty body", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+    const transport = fetchHarness([{ error: new Error("ECONNRESET synthetic") }]);
+    const empty = fetchHarness([{ headers: { "content-type": "application/pdf" }, body: Buffer.alloc(0) }]);
+    try {
+      expect(await saverFor(directory).save(transport.page, [candidate], context("transport"))).toMatchObject(
+        [{ status: "not-saved", errorCode: "download-failed" }]
+      );
+      expect(transport.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+      expect(await saverFor(directory).save(empty.page, [candidate], context("empty"))).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed" }
+      ]);
+      expect(empty.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an ordinary viewer page as html-rejected, not as a missing session", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+    const harness = fetchHarness([{ headers: { "content-type": "text/html" }, body: viewerBody }]);
+    try {
+      const result = await saverFor(directory).save(
+        harness.page,
+        [{ ...candidate, url: "https://tenant.sharepoint.com/report.pdf" }],
+        context("viewer")
+      );
+      expect(result).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed", stage: "html-rejected" }
+      ]);
+      expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mistake a viewer's sign-in links or credential discussion for a sign-in page", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-no-retry-"));
+    const body = Buffer.from(
+      "<!doctype html><title>Document viewer</title><p>Sign in to view credential examples.</p>" +
+        '<a href="https://login.microsoftonline.com/">サインイン</a>'
+    );
+    const harness = fetchHarness([{ headers: { "content-type": "text/html" }, body }]);
+    try {
+      expect(
+        await saverFor(directory).save(
+          harness.page,
+          [{ ...candidate, url: "https://tenant.sharepoint.com/report.pdf" }],
+          context("viewer-links")
+        )
+      ).toMatchObject([{ status: "not-saved", stage: "html-rejected" }]);
+      expect(harness.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([401, 403])(
+    "opens exactly one passive sign-in tab and refetches once for a %i response",
+    async (status) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-auth-"));
+      const harness = fetchHarness([], (_call, url) =>
+        _call === 0
+          ? { status, headers: { "content-type": "application/json" }, body: Buffer.from("{}") }
+          : { headers: { "content-type": "application/pdf" }, body: fileBody, ...{ url } }
+      );
+      try {
+        const result = await saverFor(directory).save(harness.page, [candidate], context(`auth-${status}`));
+        expect(result).toMatchObject([{ status: "saved", name: "report.pdf", sizeBytes: fileBody.length }]);
+        expect(harness.counts()).toEqual({ http: 2, signInTabs: 1, closedTabs: 1 });
+        expect(harness.navigated).toEqual(["https://tenant.sharepoint.com/:b:/g/report"]);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("opens exactly one passive sign-in tab and refetches once for a sign-in page", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-auth-"));
+    const harness = fetchHarness([
+      { headers: { "content-type": "text/html" }, body: signInBody },
+      { headers: { "content-type": "application/pdf" }, body: fileBody }
+    ]);
+    try {
+      const result = await saverFor(directory).save(harness.page, [candidate], context("signin"));
+      expect(result).toMatchObject([{ status: "saved", sizeBytes: fileBody.length }]);
+      expect(harness.counts()).toEqual({ http: 2, signInTabs: 1, closedTabs: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the retry's own failure stage once, without a second bootstrap", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-auth-"));
+    const harness = fetchHarness([
+      { status: 401, headers: {}, body: Buffer.alloc(0) },
+      { status: 404, headers: {}, body: Buffer.alloc(0) }
+    ]);
+    try {
+      const result = await saverFor(directory).save(harness.page, [candidate], context("retry-fails"));
+      expect(result).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed", stage: "sso-retry-failed" }
+      ]);
+      expect(harness.counts()).toEqual({ http: 2, signInTabs: 1, closedTabs: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the first attempt's stage when no passive tab can be opened", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-auth-"));
+    let http = 0;
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      context: () => ({
+        request: {
+          get: async () => {
+            http++;
+            return {
+              ok: () => false,
+              status: () => 401,
+              headers: () => ({}),
+              body: async () => Buffer.alloc(0)
+            };
+          }
+        }
+      })
+    };
+    const result = await saverFor(directory).save(page, [candidate], context("no-tab"));
+    expect(result).toMatchObject([
+      { status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }
+    ]);
+    expect(http).toBe(1);
+  });
+
+  it("stops a sign-in retry without opening another tab once the request is cancelled", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-auth-"));
+    const controller = new AbortController();
+    let signInTabs = 0;
+    let http = 0;
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      context: () => ({
+        request: {
+          get: async () => {
+            http++;
+            controller.abort();
+            return {
+              ok: () => true,
+              status: () => 200,
+              headers: () => ({ "content-type": "text/html" }),
+              body: async () => signInBody
+            };
+          }
+        },
+        newPage: async () => {
+          signInTabs++;
+          return {
+            url: () => "https://login.microsoftonline.com/synthetic",
+            goto: async () => undefined,
+            waitForTimeout: async () => undefined,
+            close: async () => undefined
+          };
+        }
+      })
+    };
+    const started = Date.now();
+    const result = await saverFor(directory).save(page, [candidate], {
+      workspaceKey: "workspace",
+      requestId: "cancel",
+      signal: controller.signal
+    });
+    expect(result).toMatchObject([{ status: "not-saved", errorCode: "download-failed", stage: "cancelled" }]);
+    expect(http).toBe(1);
+    expect(signInTabs).toBeLessThanOrEqual(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("keeps two concurrent saves' auth retries independent", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "apl-sso-concurrent-"));
+    const first = fetchHarness([
+      { status: 401, headers: {}, body: Buffer.alloc(0) },
+      { headers: { "content-type": "application/pdf" }, body: fileBody }
+    ]);
+    const second = fetchHarness([{ status: 404, headers: {}, body: Buffer.alloc(0) }]);
+    try {
+      const [a, b] = await Promise.all([
+        saverFor(directory).save(first.page, [candidate], context("concurrent-a")),
+        saverFor(directory).save(second.page, [candidate], context("concurrent-b"))
+      ]);
+      expect(a).toMatchObject([{ status: "saved", sizeBytes: fileBody.length }]);
+      expect(b).toMatchObject([
+        { status: "not-saved", errorCode: "download-failed", stage: "http-rejected" }
+      ]);
+      expect(first.counts()).toEqual({ http: 2, signInTabs: 1, closedTabs: 1 });
+      expect(second.counts()).toEqual({ http: 1, signInTabs: 0, closedTabs: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
