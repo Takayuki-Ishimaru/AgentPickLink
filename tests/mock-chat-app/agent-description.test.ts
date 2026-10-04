@@ -228,14 +228,17 @@ describe.skipIf(!executable)("agent description discovery through a real browser
           appHosts: ["127.0.0.1"],
           neutralAppUrl: `${origin}/chat`,
           navigationTimeoutMs: 3_000,
-          descriptionWaitMs: 1_000,
+          // This fixture checks bounded missing-metadata revisits, not a one-second latency
+          // requirement. Include the real locator RPCs and click within the same per-card
+          // budget: a dispatched click can otherwise time out before its metadata is read.
+          descriptionWaitMs: 3_000,
           renderTimeoutMs: 500,
           rowsSettleMs: 20,
           storeWaitMs: 100,
           storeItemWaitMs: 3_000
         });
         // Use the production card-click budget: 500ms can expire during navigation even
-        // when the click succeeds. Keep the description inspection at one second.
+        // when the click succeeds. Description inspection uses the same per-card budget.
         // Keep enough total budget for the real browser to start alongside the other
         // integration fixtures. The description retry itself remains bounded by the
         // implementation's per-card wait and the assertions below still require exactly
