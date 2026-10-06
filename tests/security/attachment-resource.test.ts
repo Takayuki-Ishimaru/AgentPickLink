@@ -205,3 +205,69 @@ describe("attachment resource containment", () => {
     }
   });
 });
+
+/** v0.2.7 review: a missing or out-of-bounds attachment came back as JSON-RPC -32603 (Internal
+ * error). resources/read reports a resource it cannot serve as Invalid Params with the URI (the
+ * SDK's ResourceNotFoundError), and both refusals still read identically. */
+describe("attachment resource refusals are protocol errors, not internal errors", () => {
+  const closers: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    await Promise.all(closers.splice(0).map((close) => close()));
+  });
+  async function connect(attachmentsDirectory: string, maxAttachmentReadBytes?: number) {
+    const server = await createSdkServer(minimalBroker, () => "C:\\workspace", {
+      attachmentsDirectory,
+      maxAttachmentReadBytes
+    });
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    closers.push(
+      () => client.close(),
+      () => server.close()
+    );
+    return client;
+  }
+  const refusal = (promise: Promise<unknown>) =>
+    promise.then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (error: { code?: number; message?: string }) => ({ code: error.code, message: error.message })
+    );
+
+  it("refuses a missing file and a file outside the directory identically with -32602", async () => {
+    const attachmentsDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-refusal-"));
+    const outsideDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-outside-refusal-"));
+    const outsideFile = path.join(outsideDirectory, "outside.txt");
+    await writeFile(outsideFile, "outside the attachments directory", "utf8");
+    try {
+      const client = await connect(attachmentsDirectory);
+      const missing = await refusal(
+        client.readResource({ uri: pathToFileURL(path.join(attachmentsDirectory, "missing.txt")).href })
+      );
+      const outside = await refusal(client.readResource({ uri: pathToFileURL(outsideFile).href }));
+      expect(missing).toEqual({ code: -32602, message: expect.stringContaining("Attachment not found.") });
+      expect(outside).toEqual(missing);
+    } finally {
+      await rm(attachmentsDirectory, { recursive: true, force: true });
+      await rm(outsideDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an oversize file with -32602 and says why", async () => {
+    const attachmentsDirectory = await mkdtemp(path.join(os.tmpdir(), "apl-attachments-refusal-big-"));
+    const bigPath = path.join(attachmentsDirectory, "big.txt");
+    await writeFile(bigPath, "x".repeat(64), "utf8");
+    try {
+      const client = await connect(attachmentsDirectory, 16);
+      expect(await refusal(client.readResource({ uri: pathToFileURL(bigPath).href }))).toEqual({
+        code: -32602,
+        message: expect.stringContaining("Attachment is too large to read.")
+      });
+    } finally {
+      await rm(attachmentsDirectory, { recursive: true, force: true });
+    }
+  });
+});

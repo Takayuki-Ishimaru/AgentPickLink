@@ -1,4 +1,5 @@
 /** Public MCP contract.  Keep this module independent of the browser and broker. */
+import { MESSAGE_MAX_CHARACTERS } from "../domain/text.js";
 
 export const ALIAS_PATTERN = "^[a-z0-9][a-z0-9-]{0,63}$";
 export const HANDLE_PATTERN = "^conv_[A-Za-z0-9_-]+$";
@@ -175,7 +176,7 @@ export const askInputSchema = strict(
     message: {
       type: "string",
       minLength: 1,
-      maxLength: 12000,
+      maxLength: MESSAGE_MAX_CHARACTERS,
       description:
         "The message to send to the agent (1-12000 characters). Do not include secrets or large source files unless organizational policy explicitly permits it."
     },

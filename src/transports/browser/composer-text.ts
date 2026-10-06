@@ -5,11 +5,50 @@ export function normalizeComposerText(value: string): string {
   return value.replace(/\r\n?/g, "\n");
 }
 
+/** Whether text read back from a composer is exactly the requested message. A rich-text editor
+ * without `white-space: pre-wrap` stores a typed ordinary space as U+00A0 (NBSP) wherever HTML
+ * would otherwise collapse it, so an NBSP in the composer may stand for a requested space. The
+ * reverse is a change: an NBSP the message itself contains must still be an NBSP. Line endings
+ * compare as LF; every other character must match exactly. */
+export function composerTextMatches(observed: string, requested: string): boolean {
+  const actual = normalizeComposerText(observed);
+  const expected = normalizeComposerText(requested);
+  if (actual.length !== expected.length) return false;
+  for (let index = 0; index < actual.length; index++) {
+    const held = actual.charCodeAt(index);
+    const wanted = expected.charCodeAt(index);
+    if (held !== wanted && !(held === 0xa0 && wanted === 0x20)) return false;
+  }
+  return true;
+}
+
+/** NBSP and an ordinary space as one character. Only for recognising text that was already
+ * verified with composerTextMatches (the user's own message bubble, an unchanged draft); never for
+ * deciding that a message may be submitted. */
+export function foldComposerWhitespace(value: string): string {
+  return normalizeComposerText(value).replace(/\u00a0/g, " ");
+}
+
+/** What kind of change a composer made to the requested message. Classifies without retaining or
+ * reporting the text: `no-break-space` means only requested NBSPs became ordinary spaces,
+ * `surrounding-whitespace` only leading or trailing whitespace differs, `whitespace` only
+ * whitespace inside the message differs, and `characters` covers everything else. */
+export type ComposerMismatch = "no-break-space" | "surrounding-whitespace" | "whitespace" | "characters";
+
+export function describeComposerMismatch(observed: string, requested: string): ComposerMismatch {
+  const actual = foldComposerWhitespace(observed);
+  const expected = foldComposerWhitespace(requested);
+  if (actual === expected) return "no-break-space";
+  if (actual.trim() === expected.trim()) return "surrounding-whitespace";
+  if (actual.replace(/\s+/g, "") === expected.replace(/\s+/g, "")) return "whitespace";
+  return "characters";
+}
+
 /** Self-contained for Playwright evaluation. Read editor structure, independently of CSS margins
  * and innerText's extra line breaks. A final BR inside a paragraph is the browser's caret
- * placeholder; empty paragraphs still contribute a line. No Unicode folding or trimming.
- * Chromium encodes typed ordinary spaces as NBSP in rich text to prevent HTML collapsing them.
- * Text controls use their value verbatim, including literal NBSP. */
+ * placeholder; empty paragraphs still contribute a line. No Unicode folding or trimming, and NBSP
+ * stays NBSP: whether it may stand for a requested space is composerTextMatches' decision.
+ * Text controls use their value verbatim. */
 export function readDomPlainText(elementOrSelector: Element | string): string | undefined {
   let element: Element | undefined;
   if (typeof elementOrSelector === "string") {
@@ -48,9 +87,7 @@ export function readDomPlainText(elementOrSelector: Element | string): string | 
     }
     return result;
   };
-  return read(element)
-    .replace(/\u00a0/g, " ")
-    .replace(/\r\n?/g, "\n");
+  return read(element).replace(/\r\n?/g, "\n");
 }
 
 export async function readComposerPlainText(composer: LocatorLike): Promise<string> {

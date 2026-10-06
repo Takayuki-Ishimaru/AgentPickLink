@@ -38,3 +38,14 @@ export function pathPattern(pathname: string): string {
     )
     .join("/")}$`;
 }
+
+/** The longest message one request may send. Counted as JSON Schema's `maxLength` counts (Unicode
+ * code points), so the published tool schema, the MCP argument check and the broker's IPC check
+ * all accept exactly the same messages, emoji and other astral characters included. */
+export const MESSAGE_MAX_CHARACTERS = 12_000;
+
+export function messageCharacterCount(value: string): number {
+  let count = 0;
+  for (const _character of value) count++;
+  return count;
+}

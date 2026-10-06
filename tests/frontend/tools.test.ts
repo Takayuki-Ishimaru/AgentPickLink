@@ -53,6 +53,31 @@ describe("frontend tool contract", () => {
     expect(result.isError).toBe(true);
     expect(result.structuredContent.error.code).toBe("INVALID_ARGUMENT");
   });
+  // The published schema's maxLength counts code points (JSON Schema); the check used to count
+  // UTF-16 units, so a schema-valid message with emoji was rejected, and a number was reported as
+  // a length problem.
+  it.each([
+    ["12000 emoji, schema-valid", "😀".repeat(12_000), true],
+    ["12000 ASCII characters", "x".repeat(12_000), true],
+    ["12001 characters", "x".repeat(12_001), false],
+    ["12001 emoji", "😀".repeat(12_001), false],
+    ["an empty message", "", false]
+  ])("counts message length as the published schema does: %s", async (_name, message, accepted) => {
+    const result = await tools.m365_agent_ask({ agent: "requirements", message });
+    expect(result.isError ?? false).toBe(!accepted);
+    if (!accepted)
+      expect(result.structuredContent.error).toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "message must contain 1 to 12000 characters."
+      });
+  });
+  it("names a non-string message as a type error", async () => {
+    const result = await tools.m365_agent_ask({ agent: "requirements", message: 12 });
+    expect(result.structuredContent.error).toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "message must be a string."
+    });
+  });
   it("reports unknown list fields as INVALID_ARGUMENT", async () => {
     const result = await tools.m365_agent_list({ revealRegistry: true });
     expect(result.isError).toBe(true);

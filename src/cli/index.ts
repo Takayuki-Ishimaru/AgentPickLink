@@ -176,7 +176,7 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
         verbose: ctx.verbose
       });
       if (isCliError(result)) {
-        if (ctx.json) ctx.out(JSON.stringify(result));
+        if (ctx.json) ctx.out(JSON.stringify(result, null, 2));
         else
           ctx.error(
             `${result.code}: ${result.message}${result.remediation ? `\n${result.remediation}` : ""}`
@@ -312,7 +312,7 @@ export async function main(argv = process.argv): Promise<void> {
       error instanceof CommanderError
         ? { code: "INVALID_ARGUMENT", message: error.message, retryable: false }
         : toToolError(error);
-    if (json) process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else process.stderr.write(`${result.code}: ${result.message}\n`);
     process.exitCode = 1;
   }

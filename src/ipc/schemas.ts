@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AliasSchema } from "../domain/agent.js";
 import { DomainError } from "../domain/errors.js";
+import { MESSAGE_MAX_CHARACTERS, messageCharacterCount } from "../domain/text.js";
 const RequestIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 export const IpcEnvelopeSchema = z
   .object({
@@ -36,7 +37,10 @@ export const BrokerMethodSchemas = {
   "conversation.create": WorkspaceSchema.extend({ agent: AliasSchema }).strict(),
   "conversation.invoke": WorkspaceSchema.extend({
     agent: AliasSchema,
-    message: z.string().min(1).max(12000),
+    message: z.string().refine((value) => {
+      const characters = messageCharacterCount(value);
+      return characters >= 1 && characters <= MESSAGE_MAX_CHARACTERS;
+    }),
     conversationHandle: ConversationHandleSchema.optional()
   }).strict(),
   "conversation.list": WorkspaceSchema,

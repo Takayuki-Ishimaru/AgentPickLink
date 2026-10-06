@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { escapeRegex, pathPattern, slug } from "../../src/domain/text.js";
+import {
+  escapeRegex,
+  MESSAGE_MAX_CHARACTERS,
+  messageCharacterCount,
+  pathPattern,
+  slug
+} from "../../src/domain/text.js";
+import { parseMethod } from "../../src/ipc/schemas.js";
 
 describe("slug", () => {
   it("lowercases, hyphenates, and strips non-alphanumeric characters", () => {
@@ -59,5 +66,26 @@ describe("pathPattern", () => {
     const pattern = new RegExp(pathPattern("/chat/agent/fixed-id/conversation/abc"));
     expect(pattern.test("/chat/agent/fixed-id/conversation/xyz")).toBe(true);
     expect(pattern.test("/chat/agent/different-id/conversation/xyz")).toBe(false);
+  });
+});
+
+describe("message length (one rule for the MCP schema, the MCP check and the broker)", () => {
+  it("counts code points, as JSON Schema's maxLength does", () => {
+    expect(messageCharacterCount("abc")).toBe(3);
+    expect(messageCharacterCount("😀日本")).toBe(3);
+    expect(messageCharacterCount("👩\u200d💻")).toBe(3);
+    expect(messageCharacterCount("")).toBe(0);
+  });
+
+  it.each([
+    ["😀".repeat(MESSAGE_MAX_CHARACTERS), true],
+    ["x".repeat(MESSAGE_MAX_CHARACTERS), true],
+    ["x".repeat(MESSAGE_MAX_CHARACTERS + 1), false],
+    ["", false]
+  ])("the broker's conversation.invoke accepts what the MCP tool accepts (#%#)", (message, accepted) => {
+    const parse = () =>
+      parseMethod("conversation.invoke", { root: "/workspace", agent: "requirements", message });
+    if (accepted) expect(parse().params).toMatchObject({ message });
+    else expect(parse).toThrow(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
   });
 });

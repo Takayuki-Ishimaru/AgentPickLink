@@ -1,6 +1,6 @@
 # 対応環境と検証範囲
 
-v0.2.7 Beta の対応環境と確認範囲を説明します。
+v0.2.8 Beta の対応環境と確認範囲を説明します。
 
 ## 対応環境
 
@@ -19,7 +19,7 @@ Windows ARM64、macOS Intel、Linux x64 のアーカイブも配布しますが�
 
 ## この版で未確認の範囲
 
-v0.2.7 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。
+v0.2.8 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。
 
 以前の版や限定した環境での確認結果を、すべての環境の動作保証として扱いません。PDF のフォント・レイアウト・ページ数は、生成された実ファイルを確認してください。
 
@@ -29,11 +29,11 @@ SmartScreen、AppLocker / WDAC、Gatekeeper などの実行制御や、組織の
 
 ## English
 
-v0.2.7 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
+v0.2.8 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
 
 Public CI is configured for Windows, macOS, and Ubuntu with Node.js 22 / 24. It uses local mock browser pages and VS Code API mocks, and does not verify a live tenant or the actual VS Code interface. Select the relevant version or commit in [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) to view its results.
 
-Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.7 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified.
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.8 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified.
 
 Earlier or limited checks do not establish compatibility for all environments. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content. Inspect generated PDFs for correct fonts, layout, and page counts.
 

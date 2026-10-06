@@ -189,6 +189,120 @@ describe("conversation submission guard", () => {
     expect(assertions).toBeGreaterThan(2);
   });
 
+  it("reports a cancel during the post-submit identity wait as a cancellation, not a context change", async () => {
+    // AGENT_CONTEXT_CHANGED is a UI-drift incident; a caller's own cancel used to be reported as one.
+    const registered = registeredAgent();
+    const route = registered.entryPoint.url;
+    const page: PageLike = { url: () => route, on: () => undefined, off: () => undefined };
+    const controller = new AbortController();
+    let assertions = 0;
+    const adapter = fixtureAdapter({
+      assertAgentIdentity: async () => {
+        assertions++;
+        if (assertions <= 2)
+          return {
+            valid: true,
+            identity: {
+              displayName: registered.displayName,
+              stableAgentId: registered.verification.expectedStableAgentId,
+              surface: "m365-copilot",
+              digest: "expected",
+              evidence: ["visible-name"]
+            }
+          };
+        // The empty assistant header while a reply starts: the driver waits for the name.
+        if (assertions === 4) controller.abort();
+        return {
+          valid: false,
+          identity: {
+            stableAgentId: registered.verification.expectedStableAgentId,
+            surface: "m365-copilot",
+            digest: "expected",
+            evidence: []
+          },
+          code: "AGENT_IDENTITY_UNVERIFIED"
+        };
+      },
+      captureSubmissionMarker: async () => ({
+        userCount: 0,
+        assistantCount: 0,
+        url: route,
+        identityDigest: "expected",
+        composerValue: "hello",
+        capturedAt: 0
+      })
+    });
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      undefined,
+      { responseStartTimeoutMs: 5_000, attachmentSettleMs: 0 }
+    );
+
+    await expect(
+      driver.invoke(page, conversation(), registered, adapter, {
+        message: "hello",
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({
+      code: "RESPONSE_TIMEOUT",
+      message: "Waiting was cancelled after the message was submitted.",
+      details: { submissionState: "sent" }
+    });
+    expect(assertions).toBe(4);
+  });
+
+  it("still reports a conflicting identity seen during a cancel as a context change", async () => {
+    const registered = registeredAgent();
+    const route = registered.entryPoint.url;
+    const page: PageLike = { url: () => route, on: () => undefined, off: () => undefined };
+    const controller = new AbortController();
+    let assertions = 0;
+    const adapter = fixtureAdapter({
+      assertAgentIdentity: async () => {
+        assertions++;
+        if (assertions <= 2)
+          return {
+            valid: true,
+            identity: {
+              displayName: registered.displayName,
+              stableAgentId: registered.verification.expectedStableAgentId,
+              surface: "m365-copilot",
+              digest: "expected",
+              evidence: ["visible-name"]
+            }
+          };
+        controller.abort();
+        // Another agent's ID after submission is a real context change, cancelled or not.
+        return {
+          valid: false,
+          identity: { stableAgentId: "other-agent", surface: "m365-copilot", digest: "other", evidence: [] },
+          code: "AGENT_IDENTITY_MISMATCH"
+        };
+      },
+      captureSubmissionMarker: async () => ({
+        userCount: 0,
+        assistantCount: 0,
+        url: route,
+        identityDigest: "expected",
+        composerValue: "hello",
+        capturedAt: 0
+      })
+    });
+    const driver = new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      undefined,
+      { responseStartTimeoutMs: 5_000, attachmentSettleMs: 0 }
+    );
+
+    await expect(
+      driver.invoke(page, conversation(), registered, adapter, {
+        message: "hello",
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ code: "AGENT_CONTEXT_CHANGED", details: { submissionState: "sent" } });
+    expect(assertions).toBe(3);
+  });
+
   it.each(["visible-name", "stable-id", "surface", "route"] as const)(
     "fails immediately when the post-submit %s identity signal conflicts",
     async (conflict) => {

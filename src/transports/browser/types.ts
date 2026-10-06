@@ -87,7 +87,9 @@ export interface LocatorLike {
   fill?(value: string): Promise<void>;
   pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   press?(key: string, options?: { timeout?: number }): Promise<void>;
-  click?(options?: { timeout?: number }): Promise<void>;
+  /** Playwright semantics: `trial: true` runs the actionability checks only and never activates
+   * the element, which the send path relies on to wait without a pending click. */
+  click?(options?: { timeout?: number; trial?: boolean }): Promise<void>;
   textContent?(): Promise<string | null>;
   getAttribute?(name: string): Promise<string | null>;
   locator?(selector: string): LocatorLike;

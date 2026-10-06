@@ -1869,8 +1869,9 @@ describe("response attachment saving", () => {
           [{ index: 1, name: "interrupted.docx", downloadControlIndex: 0 }],
           { workspaceKey: "workspace", requestId: "request" }
         );
-        expect(result).toMatchObject([{ status: "not-saved", errorCode: "download-failed" }]);
-        expect(result[0]!.stage).toBeUndefined();
+        expect(result).toMatchObject([
+          { status: "not-saved", errorCode: "download-failed", stage: "browser-download-failed" }
+        ]);
         expect(result[0]!.localPath).toBeUndefined();
       });
 
@@ -1902,8 +1903,15 @@ describe("response attachment saving", () => {
           [{ index: 1, name: "unapproved.docx", downloadControlIndex: 0 }],
           { workspaceKey: "workspace", requestId: "request" }
         );
-        expect(result).toMatchObject([{ status: "not-saved", errorCode: "download-failed" }]);
-        expect(result[0]!.stage).toBeUndefined();
+        // The same refusal as a response URL outside the allowlist: same error code, same stage.
+        expect(result).toMatchObject([
+          {
+            status: "not-saved",
+            errorCode: "host-not-allowed",
+            stage: "source-host-not-allowed",
+            kind: "download-control"
+          }
+        ]);
         expect(bytesAwaited).toBe(false);
         expect(cancelled).toBe(true);
       });

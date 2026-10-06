@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
 import { AuthDetector } from "../auth-detector.js";
 import { CompletionDetector } from "../completion-detector.js";
-import { normalizeComposerText, readComposerPlainText, readDomPlainText } from "../composer-text.js";
+import {
+  composerTextMatches,
+  describeComposerMismatch,
+  foldComposerWhitespace,
+  normalizeComposerText,
+  readComposerPlainText,
+  readDomPlainText,
+  type ComposerMismatch
+} from "../composer-text.js";
 import { identityDigest, assertIdentity, directAgentIdFromUrl } from "../identity.js";
 import { ResponseExtractor } from "../response-extractor.js";
+import { activateSendControl, cancelledBeforeSubmission } from "../send-activation.js";
 import {
   ASSISTANT_MESSAGE_SELECTORS,
   COMPOSER_SELECTORS,
@@ -51,6 +60,9 @@ export interface BaseAdapterOptions {
   /** Per-character delay used when typing into a rich-text composer. Unset means: type the first
    * attempt without any per-character delay and retry once with a conservative delay. */
   typingDelayMs?: number;
+  /** How long a found send control may stay unclickable (covered, moving, disabled again) before
+   * the request fails as not sent; defaults to send-activation.ts's SEND_CLICKABLE_TIMEOUT_MS. */
+  sendClickableTimeoutMs?: number;
   attachmentHosts?: string[];
 }
 
@@ -72,6 +84,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   protected readonly extractor: ResponseExtractor;
   private readonly composerStabilityWindowMs: number;
   private readonly typingDelayMs: number | undefined;
+  private readonly sendClickableTimeoutMs: number | undefined;
   constructor(options: BaseAdapterOptions) {
     this.id = options.id;
     this.hostnames = new Set(options.hostnames.map((h) => h.toLowerCase()));
@@ -80,6 +93,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     this.extractor = new ResponseExtractor({ attachmentHosts: options.attachmentHosts });
     this.composerStabilityWindowMs = options.stabilityWindowMs ?? 2_500;
     this.typingDelayMs = options.typingDelayMs;
+    this.sendClickableTimeoutMs = options.sendClickableTimeoutMs;
     this.completion = new CompletionDetector({
       stabilityWindowMs: options.stabilityWindowMs,
       pollIntervalMs: options.pollIntervalMs,
@@ -507,6 +521,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
           this.typingDelayMs === undefined || this.typingDelayMs === 0
             ? [0, 20]
             : [this.typingDelayMs, this.typingDelayMs];
+        let observed: string | undefined;
         for (let attempt = 0; attempt < 2; attempt++) {
           assertInputActive(signal);
           if (!(await this.clearRichTextComposer(page, composer, signal))) break;
@@ -533,16 +548,15 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
             });
           }
           assertInputActive(signal);
-          if (await this.composerTextStayedExact(page, composer, requested, signal)) return;
+          observed = await this.composerTextChange(page, composer, requested, signal);
+          if (observed === undefined) return;
           await this.clearRichTextComposer(page, composer, signal);
+          // An editor that turns a no-break space into an ordinary space does so every time;
+          // typing the message again more slowly cannot change that.
+          if (describeComposerMismatch(observed, requested) === "no-break-space") break;
           if (attempt === 0) await delay(500, page, signal);
         }
-        throw new BrowserTransportError(
-          "UI_CHANGED",
-          "The rich-text composer did not retain the exact requested message.",
-          undefined,
-          { submissionState: "not-sent" }
-        );
+        throw composerChangedError(observed, requested, "The rich-text composer");
       }
       if (!composer.fill)
         throw new BrowserTransportError(
@@ -554,13 +568,8 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       assertInputActive(signal);
       await composer.fill(requested);
       assertInputActive(signal);
-      if (!(await this.composerTextStayedExact(page, composer, requested, signal)))
-        throw new BrowserTransportError(
-          "UI_CHANGED",
-          "The composer did not retain the exact requested message.",
-          undefined,
-          { submissionState: "not-sent" }
-        );
+      const observed = await this.composerTextChange(page, composer, requested, signal);
+      if (observed !== undefined) throw composerChangedError(observed, requested, "The composer");
     } catch (error) {
       await this.clearComposer(page);
       assertInputActive(signal);
@@ -621,16 +630,12 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       );
     }
     assertInputActive(signal);
-    try {
-      await send.click();
-    } catch {
-      throw new BrowserTransportError(
-        "SUBMIT_STATE_UNKNOWN",
-        "The send control was activated, but submission acknowledgement could not be established.",
-        "Inspect the existing conversation before deciding whether to send again.",
-        { submissionState: "unknown" }
-      );
-    }
+    // Never a bare click: its own actionability wait cannot be cancelled and would press the
+    // control whenever it became clickable, even long after the request was cancelled.
+    await activateSendControl(page, send, signal, {
+      clickableTimeoutMs: this.sendClickableTimeoutMs,
+      diagnostics: () => this.sendControlDiagnostics(page)
+    });
   }
   async waitForUserMessageAck(
     page: PageLike,
@@ -645,9 +650,11 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       const now = await this.captureConversationMarker(page);
       if (now.userCount === marker.userCount + 1) {
         const latest = await this.latestUserMessage(page);
+        // The composer text was verified before submission; this only recognises it again, and
+        // the message bubble may render spaces differently from the editor.
         if (
           latest !== undefined &&
-          normalizeComposerText(latest) === normalizeComposerText(marker.composerValue)
+          foldComposerWhitespace(latest) === foldComposerWhitespace(marker.composerValue)
         )
           return { state: "sent" };
         return {
@@ -668,7 +675,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
     if (marker.composerValue) {
       const composerNow = await this.composerValue(page);
-      if (normalizeComposerText(composerNow) === normalizeComposerText(marker.composerValue))
+      if (foldComposerWhitespace(composerNow) === foldComposerWhitespace(marker.composerValue))
         return { state: "not-sent", reason: "the composer still holds the submitted text unchanged" };
     }
     return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
@@ -788,28 +795,32 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     return false;
   }
 
-  private async composerTextStayedExact(
+  /** Undefined when the composer showed exactly `expected` (see composerTextMatches) and kept it
+   * for the whole stability window; otherwise the text last read from it, kept in memory only to
+   * classify the change. */
+  private async composerTextChange(
     page: PageLike,
     composer: LocatorLike,
     expected: string,
     signal?: AbortSignal
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     assertInputActive(signal);
-    const expectedText = normalizeComposerText(expected);
     const appearedBy = Date.now() + 750;
-    while (Date.now() < appearedBy) {
-      if ((await readComposerPlainText(composer)) === expectedText) break;
+    let observed = await readComposerPlainText(composer);
+    while (!composerTextMatches(observed, expected) && Date.now() < appearedBy) {
       await delay(50, page, signal);
+      observed = await readComposerPlainText(composer);
     }
     assertInputActive(signal);
-    if ((await readComposerPlainText(composer)) !== expectedText) return false;
+    if (!composerTextMatches(observed, expected)) return observed;
     const stableUntil = Date.now() + this.composerStabilityWindowMs;
     while (Date.now() < stableUntil) {
       await delay(Math.min(250, Math.max(1, stableUntil - Date.now())), page, signal);
-      if ((await readComposerPlainText(composer)) !== expectedText) return false;
+      observed = await readComposerPlainText(composer);
+      if (!composerTextMatches(observed, expected)) return observed;
     }
     assertInputActive(signal);
-    return true;
+    return undefined;
   }
   protected responseSelectors = RESPONSE_SELECTORS;
 
@@ -907,13 +918,36 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 function assertInputActive(signal?: AbortSignal): void {
-  if (signal?.aborted)
-    throw new BrowserTransportError(
-      "SUBMIT_FAILED",
-      "The request was cancelled before submission.",
-      undefined,
-      { submissionState: "not-sent" }
-    );
+  if (signal?.aborted) throw cancelledBeforeSubmission();
+}
+/** The not-sent failure for a composer that did not keep the requested message. Names the kind of
+ * change so the caller can decide whether an adjusted message is acceptable; never the text. */
+function composerChangedError(
+  observed: string | undefined,
+  requested: string,
+  subject: "The composer" | "The rich-text composer"
+): BrowserTransportError {
+  const kind = observed === undefined ? "characters" : describeComposerMismatch(observed, requested);
+  const explained: Record<ComposerMismatch, { message: string; remediation?: string }> = {
+    "no-break-space": {
+      message: `${subject} replaced a no-break space (U+00A0) in the message with an ordinary space; no other character changed. The message was not sent.`,
+      remediation:
+        "Use ordinary spaces instead of no-break spaces (U+00A0) if that is acceptable, then send the request again."
+    },
+    "surrounding-whitespace": {
+      message: `${subject} changed whitespace at the start or end of the message. The message was not sent.`,
+      remediation:
+        "Remove leading and trailing spaces and line breaks from the message if that is acceptable, then send the request again."
+    },
+    whitespace: {
+      message: `${subject} changed spaces, tabs or line breaks within the message. The message was not sent.`
+    },
+    characters: { message: `${subject} did not retain the exact requested message.` }
+  };
+  return new BrowserTransportError("UI_CHANGED", explained[kind].message, explained[kind].remediation, {
+    submissionState: "not-sent",
+    composerChange: kind
+  });
 }
 async function delay(ms: number, page: PageLike, signal?: AbortSignal): Promise<void> {
   assertInputActive(signal);

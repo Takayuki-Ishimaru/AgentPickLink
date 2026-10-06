@@ -54,13 +54,21 @@ Windows の標準保存先は `%LOCALAPPDATA%\M365AgentWorkspace\`、macOS は `
 
 ### 質問入力の速度
 
-`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.7 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
+`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.8 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
 
 既存の設定に保存された正の値は更新時にも保持します。例えば `20` を保存していた環境は、そのまま 20 ミリ秒で入力します。新しい入力速度を使うには値を `0` に変更し、接続プロセスを再起動してください。正の値を指定した場合は、入力し直す場合にも同じ値を使います。入力操作の時間上限は質問の長さと設定に応じて調整しますが、各試行で最大 2 分です。
 
-English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.7. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
+English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.8. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
 
 入力検証では段落・改行・空行を確認し、CRLF / CR を LF として比較します。全角・半角の変換、ZWJ・ゼロ幅文字の削除、前後空白やコードの字下げの変更は一致扱いにしません。入力や送信前の確認待ちでキャンセルを受け取ると、入力を止め、下書きを消去して `SUBMIT_FAILED / not-sent` を返します。送信済みの質問は取り消しません。
+
+NBSP（改行しない空白、U+00A0）は、その文字を保持して入力・確認します。要求した通常の空白が入力欄で NBSP として表現される場合は受け付けますが、要求した NBSP が通常の空白に変わった場合は送信せず、理由と対処を返します。
+
+送信ボタンが覆われている・動いている・無効になっている場合は、押せる状態を最大 10 秒待ちます。待機中のキャンセルは `not-sent`、上限まで押せることを確認できなければ `UI_CHANGED / not-sent` です。送信操作の最中は、押下を止められたことを確認できた場合だけ未送信とし、送信された可能性を否定できなければ `SUBMIT_STATE_UNKNOWN` を返します。自動再送はしません。
+
+質問の上限は Unicode コードポイント数で 12,000 文字です。絵文字などの補助文字もコードポイントごとに数えます。
+
+English: NBSP (U+00A0) must be preserved when requested; ordinary spaces represented as NBSP by the editor are accepted. Conversion of a requested NBSP to an ordinary space prevents submission and reports a remedy. Waiting for a covered, moving, or disabled send button is limited to 10 seconds: cancellation returns `not-sent`, and failure to confirm clickability returns `UI_CHANGED / not-sent`. During the click, only a confirmed blocked press is classified as not sent; uncertain submission returns `SUBMIT_STATE_UNKNOWN` without automatic resending. Questions are limited to 12,000 Unicode code points, including emoji.
 
 時間のかかる回答・ファイル生成では、回答待ち時間とクライアント側のツール待ち時間を調整してください。生成された Codex 連携設定では、ツール呼び出しに 15 分を設定します。
 

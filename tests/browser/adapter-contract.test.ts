@@ -495,8 +495,9 @@ describe("current M365 direct-agent landing", () => {
       count: async () => 1,
       isVisible: async () => true,
       isEnabled: async () => true,
-      click: async () => {
-        clicks++;
+      click: async (options) => {
+        // A trial click only checks actionability (Playwright semantics); it never activates.
+        if (!options?.trial) clicks++;
       }
     };
     const page: PageLike = {
@@ -572,7 +573,9 @@ function pageFixture(
         count: async () => 1,
         isVisible: async () => true,
         isEnabled: async () => true,
-        click: async () => {
+        click: async (options?: { trial?: boolean }) => {
+          // A trial click only checks actionability (Playwright semantics); it never activates.
+          if (options?.trial) return;
           if (isNew) {
             conversationId = "fresh";
             userCount = 0;

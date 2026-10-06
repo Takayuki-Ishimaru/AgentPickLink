@@ -1,6 +1,7 @@
 import type { FrontendBrokerPort } from "./broker-port.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
+import { MESSAGE_MAX_CHARACTERS, messageCharacterCount } from "../domain/text.js";
 import { asError, failure, requestId, success } from "./tool-results.js";
 import type { AskInput, SessionInput } from "./schemas.js";
 import { ALIAS_PATTERN, HANDLE_PATTERN } from "./schemas.js";
@@ -88,8 +89,10 @@ function validateAsk(value: unknown): AskInput {
   const object = validateObject(value, ["agent", "message"], ["agent", "message", "conversationHandle"]);
   if (typeof object.agent !== "string" || !new RegExp(ALIAS_PATTERN).test(object.agent))
     throw invalid("agent must be a lowercase alias.");
-  if (typeof object.message !== "string" || object.message.length < 1 || object.message.length > 12000)
-    throw invalid("message must contain 1 to 12000 characters.");
+  if (typeof object.message !== "string") throw invalid("message must be a string.");
+  const characters = messageCharacterCount(object.message);
+  if (characters < 1 || characters > MESSAGE_MAX_CHARACTERS)
+    throw invalid(`message must contain 1 to ${MESSAGE_MAX_CHARACTERS} characters.`);
   if (
     object.conversationHandle !== undefined &&
     (typeof object.conversationHandle !== "string" ||

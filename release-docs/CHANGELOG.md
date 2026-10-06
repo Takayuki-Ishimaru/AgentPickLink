@@ -1,5 +1,64 @@
 # リリースノート
 
+## v0.2.8 Beta
+
+### 主な変更
+
+- **送信ボタンが一時的に押せない間のキャンセルを修正しました。** ボタンがほかの表示に覆われている、動いている、または一時的に無効になっている間にキャンセルすると、その後ボタンが押せる状態に戻った時点で質問が送信されることがありました。待機中のキャンセルは送信せず、未送信（`not-sent`）を返します。10 秒以内にボタンを押せることを確認できない場合も、送信せず `UI_CHANGED` と未送信を返します。
+- **改行しない空白（NBSP、U+00A0）の入力を修正しました。** NBSP を保持する入力欄では、そのまま入力・確認します。NBSP が通常の空白に変換された場合は、変更された質問を送らず、理由と対処を示します。通常の空白がブラウザーの表示上 NBSP になる場合は受け付けます。
+- **添付が保存されなかった理由を統一しました。** 回答のリンク・ファイルカード・ダウンロードボタンのいずれでも、同じ失敗に同じ `errorCode` と `stage` を返します。許可されていない取得元は `host-not-allowed / source-host-not-allowed` として報告します。通信エラー、空の応答、サイズ超過、保存失敗も段階を確認できます。
+- **保存されていない添付の読み出しを修正しました。** MCP の添付リソースが見つからない場合は、リソース未検出として返します。
+- **絵文字を含む質問の文字数判定を修正しました。** 公開スキーマと同じ Unicode コードポイント数で、MCP とローカル接続の両方が上限 12,000 文字を確認します。上限内の質問が絵文字を含むために拒否される不具合を修正しました。
+
+送信操作の最中にキャンセルした場合は、ページに届く前に押下を止められたことを確認できれば未送信を返します。送信された可能性を否定できない場合は `SUBMIT_STATE_UNKNOWN` を返し、自動再送しません。キャンセルは Microsoft 365 に送信済みの質問や生成処理を取り消すものではありません。キャンセル前に保存済みのファイルはディスクに残ります。クライアントがキャンセル通知を送らず待機だけをやめた場合は、処理が続くことがあります。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.8.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+新しい設定項目の追加は不要です。NBSP を通常の空白に変える入力欄では、必要に応じて質問内の NBSP を通常の空白に置き換えてください。送信結果が不明な場合は、Microsoft 365 の会話を確認してから再送を判断してください。詳しくは [設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.8.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.8-win-x64.zip` / `AgentPickLink-0.2.8-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.8-darwin-arm64.tgz` / `AgentPickLink-0.2.8-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.8-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.8-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.8 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。利用する環境で質問・回答・ファイル取得を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+PDF の案内は生成を依頼する AI クライアントへの助言です。生成物のフォント・レイアウト・ページ数の正しさを保証するものではなく、実ファイルの確認が必要です。
+
+### English
+
+- **Fixed cancellation while the send button cannot be clicked.** Cancelling while the button was covered, moving, or temporarily disabled could still submit the question once it became clickable. Cancellation during that wait now returns `not-sent` without submitting. If the button cannot be confirmed clickable within 10 seconds, the request returns `UI_CHANGED` with `not-sent`.
+- **Fixed entry of no-break spaces (NBSP, U+00A0).** Editors that preserve NBSP accept and verify it as entered. If an editor converts NBSP to an ordinary space, the changed question is not submitted and the reason and remedy are reported. Ordinary spaces represented as NBSP by the browser are accepted.
+- **Made unsaved-attachment reasons consistent.** Response links, file cards, and download buttons return the same `errorCode` and `stage` for the same failure. A disallowed source reports `host-not-allowed / source-host-not-allowed`. Connection failures, empty responses, size limits, and write failures also report their stage.
+- **Fixed reading missing attachment resources.** An unavailable MCP attachment resource returns a resource-not-found error.
+- **Fixed question-length checks for emoji.** Both MCP and the local connection use Unicode code points, matching the published schema's 12,000-character limit. Questions within the limit are no longer rejected because they contain emoji.
+
+If cancellation arrives during the click, `not-sent` is returned when the press is confirmed to have been blocked before reaching the page. If submission cannot be ruled out, the request returns `SUBMIT_STATE_UNKNOWN` and is not resent automatically. Cancellation does not retract questions already sent to Microsoft 365 or stop generation there. Saved files remain on disk. Processing may continue if a client stops waiting without sending a cancellation notification.
+
+To update, install `agent-pick-link-0.2.8.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused. No new configuration setting is required. If an editor converts NBSP, replace it with an ordinary space where appropriate. Inspect the existing Microsoft 365 conversation before deciding to resend after an uncertain submission. See [Configuration](CONFIGURATION.md) and [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`.
+
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.8 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Verify questions, answers, and file retrieval in your deployment environment. See [Supported environments and validation scope](RELEASE-CHECKLIST.md) and the [English README](README.en.md).
+
+PDF guidance advises the AI client requesting generation; it does not guarantee fonts, layout, or page counts. Inspect the actual files.
+
 ## v0.2.7 Beta
 
 ### 主な変更

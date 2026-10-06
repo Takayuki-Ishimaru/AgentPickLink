@@ -1,7 +1,7 @@
 import type { ProgressPhase, ProgressSink } from "../../domain/progress.js";
 import { AgentNavigator } from "./agent-navigator.js";
 import { AttachmentSaver } from "./attachment-saver.js";
-import { normalizeComposerText } from "./composer-text.js";
+import { composerTextMatches } from "./composer-text.js";
 import { RESPONSE_SELECTORS } from "./selectors/common.js";
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { SubmissionTracker } from "./submission-tracker.js";
@@ -66,6 +66,13 @@ export class ConversationDriver {
     // Metadata only: a phase, the elapsed time and a character count. Never message text.
     const report = (phase: ProgressPhase, message?: string) =>
       request.onProgress?.({ phase, message, elapsedMs: Date.now() - started });
+    // Only the post-submit identity wait can be cut short by a cancel (see identity() below).
+    const cancelledWhileVerifying = new BrowserTransportError(
+      "RESPONSE_TIMEOUT",
+      "Waiting was cancelled after the message was submitted.",
+      undefined,
+      { submissionState: "sent" }
+    );
     const identity = async (
       fallback: "AGENT_IDENTITY_UNVERIFIED" | "AGENT_IDENTITY_MISMATCH" | "AGENT_CONTEXT_CHANGED",
       forceFallback = false,
@@ -89,7 +96,8 @@ export class ConversationDriver {
           (observed?.surface && observed.surface !== expected.expectedSurface)
         )
           break;
-        if (request.signal?.aborted) break;
+        // The name is merely still missing and nothing conflicts: a cancel ends only the wait.
+        if (request.signal?.aborted) throw cancelledWhileVerifying;
         await new Promise<void>((resolve) => setTimeout(resolve, Math.min(200, nameDeadline - Date.now())));
         result = await adapter.assertAgentIdentity(page, expected);
       }
@@ -118,6 +126,9 @@ export class ConversationDriver {
         this.navigator.assertNavigationSafe(page, "app");
         await identity("AGENT_CONTEXT_CHANGED", true, Math.min(this.responseStartTimeoutMs, remaining()));
       } catch (error) {
+        // A cancel that ended the wait for a still-missing name is a cancellation after submission,
+        // not evidence that the context changed; a conflict or policy violation stays one.
+        if (error === cancelledWhileVerifying) throw error;
         const diagnostic = error instanceof BrowserTransportError ? ` ${error.message}` : "";
         throw new BrowserTransportError(
           "AGENT_CONTEXT_CHANGED",
@@ -181,7 +192,7 @@ export class ConversationDriver {
           { submissionState: "not-sent" }
         );
       }
-      if (normalizeComposerText(marker.composerValue) !== normalizeComposerText(request.message)) {
+      if (!composerTextMatches(marker.composerValue, request.message)) {
         await adapter.clearComposer(page);
         throw new BrowserTransportError(
           "UI_CHANGED",

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { M365CopilotChatAdapter } from "../../src/transports/browser/adapters/index.js";
-import { readComposerPlainText } from "../../src/transports/browser/composer-text.js";
+import { composerTextMatches, readComposerPlainText } from "../../src/transports/browser/composer-text.js";
 import { ConversationDriver } from "../../src/transports/browser/conversation-driver.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
@@ -54,7 +54,8 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
     const adapter = create();
     await adapter.fillComposer(page as unknown as PageLike, text);
     const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
-    expect(marker.composerValue).toBe(text.replace(/\r\n?/g, "\n"));
+    // This editor has no pre-wrap, so Chromium stores some typed spaces as NBSP; nothing else differs.
+    expect(composerTextMatches(marker.composerValue, text)).toBe(true);
     await page.evaluate(() => {
       const user = document.createElement("article");
       user.setAttribute("data-message-author-role", "user");
@@ -270,14 +271,110 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
       ]);
       expect(first.status).toBe("rejected");
       expect(other.status).toBe("fulfilled");
-      expect(await readComposerPlainText(second.locator("[contenteditable]") as unknown as LocatorLike)).toBe(
-        "第二の入力👩‍💻\n  code"
-      );
+      expect(
+        composerTextMatches(
+          await readComposerPlainText(second.locator("[contenteditable]") as unknown as LocatorLike),
+          "第二の入力👩‍💻\n  code"
+        )
+      ).toBe(true);
       expect(await page.locator("[contenteditable]").textContent()).toBe("");
     } finally {
       clearTimeout(timer);
       await second.close();
     }
+  });
+
+  // v0.2.7 review P2: a literal NBSP was always rejected from rich text, because the read-back
+  // folded NBSP into a space. Chromium stores a typed space as NBSP only without pre-wrap, and
+  // there it also turns a typed NBSP into a space; with pre-wrap (as Lexical requires) both stay.
+  describe("no-break spaces", () => {
+    const NBSP = "\u00a0";
+    const sends = () => page.evaluate(() => (window as unknown as { sends: number }).sends);
+    const preWrap = () =>
+      page.locator("[contenteditable]").evaluate((element) => {
+        (element as HTMLElement).style.whiteSpace = "pre-wrap";
+      });
+
+    it.each([
+      `a${NBSP}b`,
+      `a ${NBSP} b`,
+      `${NBSP}lead`,
+      `trail${NBSP}`,
+      `日本語${NBSP}${NBSP}テキスト\n${NBSP}x`
+    ])(
+      "keeps a literal NBSP in a pre-wrap rich-text editor and recognises the sent message: %j",
+      async (text) => {
+        await preWrap();
+        const adapter = create();
+        await adapter.fillComposer(page as unknown as PageLike, text);
+        expect(await readComposerPlainText(page.locator("[contenteditable]") as unknown as LocatorLike)).toBe(
+          text
+        );
+        const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
+        expect(marker.composerValue).toBe(text);
+        await page.evaluate(() => {
+          const user = document.createElement("article");
+          user.setAttribute("data-message-author-role", "user");
+          user.innerHTML = `<div data-testid="chatOutput">${document.querySelector("[contenteditable]")!.innerHTML}</div>`;
+          document.querySelector("[role=log]")!.append(user);
+        });
+        await expect(
+          adapter.waitForUserMessageAck(page as unknown as PageLike, marker, 500)
+        ).resolves.toEqual({
+          state: "sent"
+        });
+      }
+    );
+
+    it.each(["a  b", "abc ", " abc", "x  y  z", "a\n  b  "])(
+      "accepts ordinary spaces that a plain rich-text editor stores as NBSP: %j",
+      async (text) => {
+        const adapter = create();
+        await adapter.fillComposer(page as unknown as PageLike, text);
+        const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
+        expect(marker.composerValue.replace(/\u00a0/g, " ")).toBe(text);
+      }
+    );
+
+    it("names the change, clears the draft and does not retype when a literal NBSP becomes a space", async () => {
+      const typed: string[] = [];
+      const wrapped = new Proxy(page, {
+        get(target, key) {
+          if (key === "locator")
+            return (selector: string) =>
+              new Proxy(target.locator(selector), {
+                get(item, method) {
+                  if (method === "pressSequentially")
+                    return async (text: string, options: { delay?: number; timeout?: number }) => {
+                      typed.push(text);
+                      await item.pressSequentially(text, options);
+                    };
+                  const value = Reflect.get(item, method);
+                  return typeof value === "function" ? value.bind(item) : value;
+                }
+              });
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+      });
+      await expect(create().fillComposer(wrapped as unknown as PageLike, `a${NBSP}b`)).rejects.toMatchObject({
+        code: "UI_CHANGED",
+        message: expect.stringContaining("no-break space (U+00A0)"),
+        remediation: expect.stringContaining("ordinary spaces"),
+        details: { submissionState: "not-sent", composerChange: "no-break-space" }
+      });
+      expect(typed).toEqual([`a${NBSP}b`]);
+      expect(await page.locator("[contenteditable]").textContent()).toBe("");
+      expect(await sends()).toBe(0);
+    });
+
+    it("keeps a literal NBSP in a textarea composer", async () => {
+      await page.evaluate(() => {
+        document.querySelector("[contenteditable]")!.replaceWith(document.createElement("textarea"));
+      });
+      await create().fillComposer(page as unknown as PageLike, `a${NBSP}b `);
+      expect(await page.locator("textarea").inputValue()).toBe(`a${NBSP}b `);
+    });
   });
 
   it("cancels the stability wait and a delayed send control before clicking", async () => {

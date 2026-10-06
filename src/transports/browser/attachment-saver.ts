@@ -166,17 +166,7 @@ export class AttachmentSaver {
           totalBytes += attachment.sizeBytes ?? 0;
           attachments.push(attachment);
         } catch (error) {
-          const stage = stageOf(error);
-          attachments.push(
-            notSaved(
-              candidate,
-              stage === "preview-host-not-allowed" || stage === "redirect-host-not-allowed"
-                ? "host-not-allowed"
-                : "download-failed",
-              page.url(),
-              stage
-            )
-          );
+          attachments.push(notSavedAfter(candidate, error, page.url()));
         }
         continue;
       }
@@ -197,7 +187,7 @@ export class AttachmentSaver {
           totalBytes += attachment.sizeBytes ?? 0;
           attachments.push(attachment);
         } catch (error) {
-          attachments.push(notSaved(candidate, "download-failed", page.url(), stageOf(error)));
+          attachments.push(notSavedAfter(candidate, error, page.url()));
         }
         continue;
       }
@@ -211,11 +201,11 @@ export class AttachmentSaver {
         continue;
       }
       if (!isAllowedHttpsUrl(source, this.allowedHosts)) {
-        attachments.push(notSaved(candidate, "host-not-allowed"));
+        attachments.push(notSaved(candidate, "host-not-allowed", undefined, "source-host-not-allowed"));
         continue;
       }
       if (!request) {
-        attachments.push(notSaved(candidate, "download-failed"));
+        attachments.push(notSaved(candidate, "download-failed", undefined, "download-unavailable"));
         continue;
       }
 
@@ -298,14 +288,7 @@ export class AttachmentSaver {
           kind: "url"
         });
       } catch (error) {
-        attachments.push(
-          notSaved(
-            candidate,
-            stageOf(error) === "redirect-host-not-allowed" ? "host-not-allowed" : "download-failed",
-            undefined,
-            stageOf(error)
-          )
-        );
+        attachments.push(notSavedAfter(candidate, error));
       }
     }
     return withOverflow(attachments);
@@ -369,7 +352,9 @@ async function fetchAttachment(
         maxRedirects: 0
       }),
       signal
-    );
+    ).catch((error: unknown) => {
+      throw transportFailure(error, signal);
+    });
     const responseHeaders = lowerCaseHeaders(response.headers());
     const status = response.status();
     if (status >= 300 && status < 400) {
@@ -407,9 +392,11 @@ async function fetchAttachment(
       throw new AttachmentStageError("attachment-response-rejected", "oversize");
     if (Number.isFinite(declaredBytes) && declaredBytes > remainingTotalBytes)
       throw new AttachmentStageError("attachment-response-rejected", "quota-exceeded");
-    const body = await unlessCancelled(response.body(), signal);
+    const body = await unlessCancelled(response.body(), signal).catch((error: unknown) => {
+      throw transportFailure(error, signal);
+    });
     if (body.length === 0 && !isExplicitAttachment(headers["content-disposition"]))
-      throw new Error("attachment-body-rejected");
+      throw new AttachmentStageError("attachment-body-rejected", "empty-body");
     if (body.length > maxAttachmentBytes)
       throw new AttachmentStageError("attachment-body-rejected", "oversize");
     if (body.length > remainingTotalBytes)
@@ -418,6 +405,18 @@ async function fetchAttachment(
       throw new AttachmentStageError("attachment-body-rejected", "html-rejected", isSignInHtml(body));
     return { body, headers, url: response.url?.() ?? currentUrl.toString() };
   }
+}
+
+/** A failure of the HTTP request itself (connection, TLS, its own timeout). Cancellation and an
+ * expired phase budget keep their own stage. */
+function transportFailure(error: unknown, signal: AbortSignal | undefined): AttachmentStageError {
+  if (error instanceof AttachmentStageError) return error;
+  try {
+    throwIfCancelled(signal);
+  } catch (cancelled) {
+    return cancelled as AttachmentStageError;
+  }
+  return new AttachmentStageError("attachment-request-failed", "request-failed");
 }
 
 async function establishPassiveFileSession(
@@ -509,9 +508,25 @@ function notSaved(
   };
 }
 
-/** The acquisition stage recorded on a saver-internal failure, if any (metadata only). */
-function stageOf(error: unknown): string | undefined {
-  return error instanceof AttachmentStageError ? error.stage : undefined;
+/** The acquisition stage recorded on a saver-internal failure, if any (metadata only). A page
+ * script's named failure maps through PAGE_SCRIPT_FAILURE_STAGES; anything else has no stage. */
+function stageOf(error: unknown): AttachmentStage | undefined {
+  if (error instanceof AttachmentStageError) return error.stage;
+  if (!(error instanceof Error)) return undefined;
+  const name = /\battachment-[a-z]+(?:-[a-z]+)*\b/.exec(error.message)?.[0];
+  return name !== undefined && Object.hasOwn(PAGE_SCRIPT_FAILURE_STAGES, name)
+    ? PAGE_SCRIPT_FAILURE_STAGES[name]
+    : undefined;
+}
+
+/** The not-saved result for a failed acquisition, its error code following from its stage. */
+function notSavedAfter(
+  candidate: AttachmentCandidate,
+  error: unknown,
+  fallbackSourceUrl?: string
+): AgentAttachment {
+  const stage = stageOf(error);
+  return notSaved(candidate, errorCodeForStage(stage), fallbackSourceUrl, stage);
 }
 
 // All explicitly delivered filenames are accepted after path/filename sanitization.
@@ -542,6 +557,9 @@ const FILE_CARD_HOVER_EVENTS = ["mouseover", "mouseenter", "pointerenter"];
  * is bounded by the same timeout (see saveDownloadControl and completedDownloadPath); the next are
  * raised by the authenticated-fetch URL flow (see fetchAttachment and the retry it feeds); and
  * `cancelled` marks every file not finished when the request was cancelled (AttachmentSaveContext).
+ * One refusal has one stage on every path: a file whose source is outside the allowlist is
+ * `source-host-not-allowed` whether it was a response URL or a browser download, and an oversize
+ * body is `oversize` either way. errorCodeForStage derives the public error code from the stage.
  */
 export type AttachmentStage =
   | "card-missing"
@@ -549,20 +567,59 @@ export type AttachmentStage =
   | "control-visible"
   | "card-activation-timeout"
   | "control-activation-timeout"
+  | "control-missing"
+  | "control-changed"
+  | "response-missing"
   | "download-not-started"
   | "download-incomplete"
+  | "download-source-unverified"
+  | "browser-download-failed"
+  | "download-unavailable"
   | "preview-frame-not-found"
+  | "preview-control-missing"
   | "preview-download-control-not-found"
   | "preview-host-not-allowed"
+  | "source-host-not-allowed"
   | "redirect-host-not-allowed"
+  | "request-failed"
   | "http-rejected"
   | "html-rejected"
+  | "empty-body"
   | "oversize"
   | "quota-exceeded"
   | "viewer-url-unparseable"
   | "sso-retry-failed"
+  | "write-failed"
   | "attachment-phase-timeout"
   | "cancelled";
+
+/** Stages that mean a URL involved in fetching the file is outside the configured host allowlist. */
+const HOST_REFUSAL_STAGES: ReadonlySet<string> = new Set<AttachmentStage>([
+  "source-host-not-allowed",
+  "redirect-host-not-allowed",
+  "preview-host-not-allowed",
+  "viewer-url-unparseable"
+]);
+
+/** The public error code of a not-saved file, derived from its stage alone so that the URL,
+ * file-card and download-control paths report the same refusal the same way. */
+function errorCodeForStage(stage: string | undefined): "host-not-allowed" | "download-failed" {
+  return stage !== undefined && HOST_REFUSAL_STAGES.has(stage) ? "host-not-allowed" : "download-failed";
+}
+
+/** Errors a page script throws by name (it cannot construct an AttachmentStageError), with the stage
+ * each one stands for. The name reaches Node inside Playwright's evaluation error message. */
+const PAGE_SCRIPT_FAILURE_STAGES: Readonly<Record<string, AttachmentStage>> = {
+  "attachment-response-missing": "response-missing",
+  "attachment-download-control-missing": "control-missing",
+  "attachment-download-anchor-scheme-rejected": "source-host-not-allowed",
+  "attachment-download-anchor-url-mismatch": "control-changed",
+  "attachment-download-anchor-name-mismatch": "control-changed",
+  "attachment-download-activation-expired": "control-activation-timeout",
+  "attachment-file-card-missing": "card-missing",
+  "attachment-file-card-activation-expired": "card-activation-timeout",
+  "attachment-file-card-preview-control-missing": "preview-control-missing"
+};
 
 /** Internal failure carrying the stage it happened at (see AttachmentStage). */
 class AttachmentStageError extends Error {
@@ -667,7 +724,8 @@ async function saveDownloadControl(
   remainingTotalBytes: number,
   signal?: AbortSignal
 ): Promise<AgentAttachment> {
-  if (!page.waitForEvent || !page.evaluate) throw new Error("attachment-download-control-unavailable");
+  if (!page.waitForEvent || !page.evaluate)
+    throw new AttachmentStageError("attachment-download-control-unavailable", "download-unavailable");
   const downloadPromise = waitForDownloadStart(page, timeoutMs, candidate.url, signal);
   const verifiedPageOrigin = secureHttpsOrigin(page.url());
   let expectedBlobUrl: string | undefined;
@@ -783,7 +841,8 @@ async function saveFileCard(
   remainingTotalBytes: number,
   signal?: AbortSignal
 ): Promise<AgentAttachment> {
-  if (!page.waitForEvent || !page.evaluate) throw new Error("attachment-file-card-unavailable");
+  if (!page.waitForEvent || !page.evaluate)
+    throw new AttachmentStageError("attachment-file-card-unavailable", "download-unavailable");
   // Hover/focus first: on Microsoft 365 the preview and download controls of a file card exist in
   // the DOM only while the card is hovered or focused.
   const stage = await revealFileCardControls(
@@ -1131,28 +1190,34 @@ async function persistBrowserDownload(
   } catch {
     // Unparseable: rejected below like any other untrusted source.
   }
-  if (source?.protocol === "blob:") {
-    if (!isVerifiedBlobDownload(sourceValue, validation)) {
-      await cancelBrowserDownload(download, timeoutMs, signal);
-      throw new Error("attachment-blob-download-rejected");
-    }
-  } else if (
-    !source ||
-    source.protocol !== "https:" ||
-    source.username ||
-    source.password ||
-    (source.port && source.port !== "443") ||
-    !allowedHosts.allows(source.hostname) ||
-    (validation.expectedBlobUrl && sourceValue !== validation.expectedBlobUrl)
-  ) {
+  // A blob anchor was selected, so only its own blob download is that file; anything else is not
+  // the file the control stood for, whatever its host.
+  const refusal: AttachmentStage | undefined =
+    source?.protocol === "blob:"
+      ? isVerifiedBlobDownload(sourceValue, validation)
+        ? undefined
+        : "download-source-unverified"
+      : validation.expectedBlobUrl
+        ? "download-source-unverified"
+        : !source || !isAllowedHttpsUrl(source, allowedHosts)
+          ? "source-host-not-allowed"
+          : undefined;
+  if (refusal || !source) {
     await cancelBrowserDownload(download, timeoutMs, signal);
-    throw new Error("attachment-download-host-rejected");
+    const stage = refusal ?? "source-host-not-allowed";
+    throw new AttachmentStageError(`attachment-${stage}`, stage);
   }
   const suggestedName = download.suggestedFilename().trim() || `attachment-${candidate.index}`;
   const temporaryPath = await completedDownloadPath(download, timeoutMs, signal);
-  const body = await unlessCancelled(readFile(temporaryPath), signal);
-  if (body.length > maxAttachmentBytes || body.length > remainingTotalBytes)
-    throw new Error("attachment-download-body-rejected");
+  const body = await unlessCancelled(readFile(temporaryPath), signal).catch((error: unknown) => {
+    // The browser's finished file vanished or is locked (e.g. by a Windows virus scanner).
+    if (error instanceof AttachmentStageError) throw error;
+    throw new AttachmentStageError("attachment-download-unreadable", "browser-download-failed");
+  });
+  if (body.length > maxAttachmentBytes)
+    throw new AttachmentStageError("attachment-body-rejected", "oversize");
+  if (body.length > remainingTotalBytes)
+    throw new AttachmentStageError("attachment-body-rejected", "quota-exceeded");
   const name = uniqueFilename(
     completeAttachmentFilename(
       selectAttachmentFilename(candidate, suggestedName, sourceValue),
@@ -1265,9 +1330,11 @@ async function completedDownloadPath(
   signal?: AbortSignal
 ): Promise<string> {
   const completion = (async () => {
-    if (await download.failure?.()) throw new Error("attachment-browser-download-failed");
+    if (await download.failure?.())
+      throw new AttachmentStageError("attachment-browser-download-failed", "browser-download-failed");
     const temporaryPath = await download.path();
-    if (!temporaryPath) throw new Error("attachment-download-path-missing");
+    if (!temporaryPath)
+      throw new AttachmentStageError("attachment-download-path-missing", "browser-download-failed");
     return temporaryPath;
   })();
   try {
@@ -1357,7 +1424,15 @@ function boundedTimeout(timeoutMs: number, signal?: AbortSignal): number {
 }
 async function persistAttachment(localPath: string, body: Buffer, signal?: AbortSignal): Promise<void> {
   throwIfCancelled(signal);
-  await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
+  try {
+    await writeFile(localPath, body, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    // "wx" never touches an existing file (EEXIST). Any other failure, such as a full disk, can
+    // leave a partial file this call created: remove it, so not-saved never leaves bytes behind.
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST")
+      await rm(localPath, { force: true }).catch(() => undefined);
+    throw new AttachmentStageError("attachment-write-failed", "write-failed");
+  }
   if (signal?.aborted || (signal && (phaseBudgets.get(signal)?.deadline ?? Infinity) <= Date.now())) {
     // Wait for the file operation, then roll it back before completing the cancelled call.
     await rm(localPath, { force: true });
