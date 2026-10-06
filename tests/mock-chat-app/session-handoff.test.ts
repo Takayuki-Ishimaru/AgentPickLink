@@ -33,7 +33,9 @@ const executable = [
 const FAST_DISCOVERY = {
   rowsSettleMs: 1_000,
   storeWaitMs: 1_000,
-  storeItemWaitMs: 1_000,
+  // Real Edge/Chrome clicks include actionability and navigation round trips even on the mock.
+  // Allow the production 3s card budget so a slow CI runner does not trigger an incidental retry.
+  storeItemWaitMs: 3_000,
   descriptionWaitMs: 1_000
 };
 // The sign-in handoff describes open a visible browser window. They never run on CI (no desktop)
