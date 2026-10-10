@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFailed, onTestFinished } from "vitest";
 import { chromium } from "playwright-core";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { ConversationService } from "../../src/services/conversation-service.js";
@@ -237,7 +237,21 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       discovery: FAST_DISCOVERY
     });
 
-    const result = await hinted.discoverAgents(60_000);
+    // Preserve the discovery and harness budgets, and retain the last completed stage even when
+    // Vitest times the test out before the browser call returns. A done mark without a returned
+    // mark separates page cleanup from discovery; CI also prints successful timelines.
+    const started = performance.now();
+    const marks = ["0 ms: discovery requested"];
+    const mark = (step: string) => marks.push(`${Math.round(performance.now() - started)} ms: ${step}`);
+    const print = () => void process.stderr.write(`store discovery timeline:\n  ${marks.join("\n  ")}\n`);
+    if (process.env.M365_AGENT_TEST_STEP_TIMELINE === "1") onTestFinished(print);
+    else onTestFailed(print);
+    const result = await hinted.discoverAgents(60_000, (event) =>
+      mark(
+        `${event.phase}: ${event.message ?? ""}${event.current === undefined ? "" : ` (${event.current}/${event.total})`}`
+      )
+    );
+    mark("discovery returned after page cleanup");
 
     const fromStore = result.agents.filter((agent) => agent.source === "store");
     expect(fromStore.map((agent) => agent.stableAgentId).sort()).toEqual([
