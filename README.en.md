@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.8 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.9 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,12 +16,13 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.8
+## What's new in v0.2.9
 
-- Fixed questions being submitted later after cancellation while the send button was covered, moving, or disabled.
-- Fixed entry and verification of no-break spaces (NBSP). If NBSP is converted to an ordinary space, the question is not submitted and the reason and remedy are reported.
-- Made unsaved-attachment reasons consistent across links, file cards, and download buttons.
-- Fixed reading missing attachment resources and checking the length of questions containing emoji.
+- Verify the question, agent, and conversation immediately before sending, and stop if they change. Fixed multiline questions being sent during entry.
+- Report uncertain submission accurately and use `action: "read"` to inspect the conversation and collect its reply without resending.
+- Separate input stability from response waiting; use `expectFiles: false` for text-only questions to skip the file wait after the reply.
+- Improve completion checks and progress; reject whitespace-only questions and fields unrelated to a session action.
+- Show total, visible, and selected agent counts separately.
 
 See the [release notes](release-docs/CHANGELOG.md) for details and update instructions.
 
@@ -40,21 +41,21 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.8.vsix` from **Releases → v0.2.8 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.9.vsix` from **Releases → v0.2.9 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.8.vsix
+code --install-extension agent-pick-link-0.2.9.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
 ### Updating from an earlier version
 
-Install the v0.2.8 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.9 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
 ## Install without the extension
 
@@ -100,13 +101,13 @@ Reopening a configured workspace restores its saved agents and checks its connec
 
 Enable the `m365-agents` MCP tools in your client. For example, ask it to list the available Microsoft 365 agents and send your question to the agent you select. Calls also follow the client's own tool settings and approval requirements.
 
-| Tool                 | Purpose                                        |
-| -------------------- | ---------------------------------------------- |
-| `m365_agent_list`    | Check the requested agents and their readiness |
-| `m365_agent_ask`     | Ask an approved agent a question               |
-| `m365_agent_session` | Create, list, or close ongoing conversations   |
+| Tool                 | Purpose                                                    |
+| -------------------- | ---------------------------------------------------------- |
+| `m365_agent_list`    | Check the requested agents and their readiness             |
+| `m365_agent_ask`     | Ask an approved agent a question                           |
+| `m365_agent_session` | Create, list, close, or read conversations without sending |
 
-A single-use question automatically closes its conversation after the response is retrieved. For multiple turns, create a session, use it for subsequent questions, and close it when finished. Responses and file generation can take several minutes. Requests are not automatically resent when submission status is uncertain.
+A single-use question automatically closes its conversation after the response is retrieved. If an uncertain-submission or response-timeout error carries `conversationHandle`, that conversation is kept open. Use `m365_agent_session` with `action: "read"` to inspect it without resending; it closes when its complete reply is collected. See [Troubleshooting](release-docs/TROUBLESHOOTING.md). For multiple turns, create a session, use it for subsequent questions, and close it when finished. Responses and file generation can take several minutes. Requests are not automatically resent when submission status is uncertain.
 
 ## Generated files
 
@@ -143,7 +144,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](release-docs/OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](release-docs/THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.8-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.9-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -154,7 +155,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.8.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.9.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 

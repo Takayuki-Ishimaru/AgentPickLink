@@ -53,6 +53,17 @@ export const USER_MESSAGE_SELECTORS =
 export const ASSISTANT_MESSAGE_SELECTORS =
   '[data-message-author-role="assistant"], [data-author="assistant"], [data-testid*="assistant-message" i], [role="article"].fai-CopilotMessage';
 export const CONVERSATION_ID_SELECTOR = "[data-conversation-id], [data-thread-id]";
+/** Attributes that name the agent or the conversation a page shows. */
+export const PAGE_CONTEXT_ATTRIBUTES = [
+  "data-agent-id",
+  "data-agent-name",
+  "data-application-id",
+  "data-conversation-id",
+  "data-thread-id"
+] as const;
+/** Regions whose content is not the page's own context: navigation lists and messages, where an
+ * agent or a reply can name any other agent. */
+export const NON_CONTEXT_REGION_SELECTOR = `nav, article, [role="navigation"], [role="log"], [role="feed"], [role="article"], [data-message-id], ${USER_MESSAGE_SELECTORS}, ${ASSISTANT_MESSAGE_SELECTORS}`;
 /** UI-owned assistant header; deliberately separate from generated response content. */
 export const M365_ASSISTANT_ARTICLE_SELECTOR = '.fai-CopilotMessage[role="article"]';
 export const M365_ASSISTANT_AUTHOR_SELECTOR = ".fai-CopilotMessage__name";

@@ -46,9 +46,12 @@ export function describeComposerMismatch(observed: string, requested: string): C
 
 /** Self-contained for Playwright evaluation. Read editor structure, independently of CSS margins
  * and innerText's extra line breaks. A final BR inside a paragraph is the browser's caret
- * placeholder; empty paragraphs still contribute a line. No Unicode folding or trimming, and NBSP
- * stays NBSP: whether it may stand for a requested space is composerTextMatches' decision.
- * Text controls use their value verbatim. */
+ * placeholder; empty paragraphs still contribute a line. An editor that keeps line breaks as text
+ * (white-space: pre-wrap and the like) gets the same placeholder as text instead: Chromium ends a
+ * line break typed at the end with a second line feed, so a final line feed of an editable
+ * element's last text is dropped once. No Unicode folding or trimming, and NBSP stays NBSP: whether
+ * it may stand for a requested space is composerTextMatches' decision. Text controls use their
+ * value verbatim. */
 export function readDomPlainText(elementOrSelector: Element | string): string | undefined {
   let element: Element | undefined;
   if (typeof elementOrSelector === "string") {
@@ -87,7 +90,21 @@ export function readDomPlainText(elementOrSelector: Element | string): string | 
     }
     return result;
   };
-  return read(element).replace(/\r\n?/g, "\n");
+  const text = read(element).replace(/\r\n?/g, "\n");
+  if (!(element instanceof HTMLElement) || !element.isContentEditable) return text;
+  if (!/^(?:pre|pre-wrap|pre-line|break-spaces)$/.test(getComputedStyle(element).whiteSpace)) return text;
+  let last: Node | null = element;
+  while (last && !(last.nodeType === Node.TEXT_NODE || last instanceof HTMLBRElement)) {
+    let child: Node | null = last.lastChild;
+    while (
+      child &&
+      (child.nodeType === Node.COMMENT_NODE ||
+        (child instanceof Element && child.matches("script, style, [hidden], [aria-hidden='true']")))
+    )
+      child = child.previousSibling;
+    last = child;
+  }
+  return last?.nodeType === Node.TEXT_NODE && /\n$/.test(last.textContent ?? "") ? text.slice(0, -1) : text;
 }
 
 export async function readComposerPlainText(composer: LocatorLike): Promise<string> {

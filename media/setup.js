@@ -21,7 +21,11 @@
       cancelDiscovery: "一覧の更新を中止",
       discoveryCancelled: "更新を中止しました。取得済み・保存済みの一覧は残しています。",
       savedNeedsSignIn: "設定は保存済みです。利用するにはサインインしてください。",
-      descriptionSummary: "{total}件を表示・説明あり {descriptions}件",
+      // The discovery banner describes the run, never the list: how many rows the search leaves is
+      // listStatusFiltered / listStatusAll's job.
+      descriptionSummary: "{total}件を取得・説明あり {descriptions}件",
+      listStatusFiltered: "{total}件中 {visible}件を表示・{selected}件選択中",
+      listStatusAll: "{total}件を表示・{selected}件選択中",
       partialSummary:
         "一覧の追加取得が一部完了していません。取得済みの候補は選択できます。必要に応じて更新してください。",
       discoveryPartialNotice:
@@ -148,7 +152,9 @@
       cancelDiscovery: "Cancel list update",
       discoveryCancelled: "Update cancelled. Retrieved and saved agents have been kept.",
       savedNeedsSignIn: "Settings are saved. Sign in to use these agents.",
-      descriptionSummary: "{total} agents shown · {descriptions} with descriptions",
+      descriptionSummary: "{total} agents found · {descriptions} with descriptions",
+      listStatusFiltered: "Showing {visible} of {total} · {selected} selected",
+      listStatusAll: "Showing all {total} · {selected} selected",
       partialSummary:
         "Some additional agents could not be checked. Retrieved agents can still be selected. Refresh to try again.",
       discoveryPartialNotice:
@@ -351,11 +357,43 @@
     return strings.agents + " (" + local.selected.size + " " + strings.selected + ")";
   }
 
+  // The candidates the search box leaves in the list -- the one place that knows how a search
+  // matches (name, URL and description, case-insensitive, surrounding whitespace ignored).
+  function visibleCandidates() {
+    var needle = local.search.trim().toLowerCase();
+    return state.candidates.filter(function (candidate) {
+      if (needle.length === 0) return true;
+      return (
+        (candidateName(candidate) + " " + candidate.url + " " + (candidate.description || ""))
+          .toLowerCase()
+          .indexOf(needle) >= 0
+      );
+    });
+  }
+
+  // The line under the search box: the list's total, how many rows the search leaves (only worth
+  // saying while a search is active) and how many agents are selected -- selected agents the search
+  // hides still count, like in the heading. Empty when there are no candidates at all; the list's
+  // own empty-state text covers that.
+  function listStatusText(visibleCount) {
+    if (state.candidates.length === 0) return "";
+    var strings = t();
+    var template = local.search.trim().length === 0 ? strings.listStatusAll : strings.listStatusFiltered;
+    return template
+      .replace("{total}", String(state.candidates.length))
+      .replace("{visible}", String(visibleCount))
+      .replace("{selected}", String(local.selected.size));
+  }
+
   // Ticking an agent must not rebuild the whole panel: render() recreates the agent list, which
-  // resets its scroll position. Refresh the heading, Save button and completion rows in place.
+  // resets its scroll position. Refresh the heading, the list status line, the Save button and the
+  // completion rows in place. The search text and the candidates did not change, so the number of
+  // rows the list shows is recomputed rather than read back from the DOM.
   function syncSelection() {
     var count = document.getElementById("agent-count");
     if (count) count.textContent = selectionSummary();
+    var listStatus = document.getElementById("agent-list-status");
+    if (listStatus) listStatus.textContent = listStatusText(visibleCandidates().length);
     var save = document.getElementById("save-button");
     if (save) save.disabled = !canSave();
     syncCompletion();
@@ -837,15 +875,8 @@
 
   function agentsSection() {
     var strings = t();
-    var needle = local.search.trim().toLowerCase();
-    var visible = state.candidates.filter(function (candidate) {
-      if (needle.length === 0) return true;
-      return (
-        (candidateName(candidate) + " " + candidate.url + " " + (candidate.description || ""))
-          .toLowerCase()
-          .indexOf(needle) >= 0
-      );
-    });
+    var visible = visibleCandidates();
+    var listStatus = listStatusText(visible.length);
     var list =
       state.candidates.length === 0
         ? [
@@ -877,6 +908,10 @@
           render();
         }
       }),
+      // A polite live region; syncSelection() keeps its text current when a box is ticked.
+      listStatus
+        ? h("p", { id: "agent-list-status", class: "muted", role: "status", text: listStatus })
+        : null,
       h("div", { class: "agents", id: "agent-list", "aria-busy": String(busy()) }, list),
       // WP-D: a small, count-bearing notice under the list itself -- distinct from the broader
       // "partialSummary" banner above it (discoverySummary()), which covers the same run without a

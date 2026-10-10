@@ -45,6 +45,44 @@ function fixture(): PanelState {
   };
 }
 
+/**
+ * The review scenario for the list status line: 100 discovered agents, 20 of them (every fifth)
+ * about 経理, and two selected -- agent-0, which the search "経理" keeps, and agent-1, which it hides.
+ */
+function largeFixture(overrides: Partial<PanelState> = {}): PanelState {
+  return {
+    ...fixture(),
+    candidates: Array.from({ length: 100 }, (_, i) =>
+      candidate({
+        key: `agent-${i}`,
+        displayName: `${i % 5 === 0 ? "経理" : "営業"}エージェント ${i}`,
+        description: `説明 ${i}。${"社内の資料を参照して回答します。".repeat(3)}`
+      })
+    ),
+    selectedKeys: ["agent-0", "agent-1"],
+    discoverySummary: { total: 100, descriptions: 100, partial: false },
+    ...overrides
+  };
+}
+
+/** What the 100-agent scenario reads like in each language (the total is always 100). */
+const LIST_TEXT = {
+  ja: {
+    found: "100件を取得・説明あり 100件",
+    shownWord: "表示",
+    all: (selected: number) => `100件を表示・${selected}件選択中`,
+    some: (visible: number, selected: number) => `100件中 ${visible}件を表示・${selected}件選択中`,
+    heading: (selected: number) => `エージェント (${selected} 選択中)`
+  },
+  en: {
+    found: "100 agents found · 100 with descriptions",
+    shownWord: "shown",
+    all: (selected: number) => `Showing all 100 · ${selected} selected`,
+    some: (visible: number, selected: number) => `Showing ${visible} of 100 · ${selected} selected`,
+    heading: (selected: number) => `Agents (${selected} selected)`
+  }
+} as const;
+
 describe.skipIf(!executable)("setup webview in a real browser", () => {
   let browser: Browser;
   let page: Page;
@@ -114,7 +152,9 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     state.discoverySummary = { total: 10, descriptions: 10, partial: true };
     state.diagnostics = ["store-expansion-failed:TimeoutError:locator.click"];
     await post(state);
-    expect(await page.getByText("10件を表示・説明あり 10件", { exact: true }).isVisible()).toBe(true);
+    expect(await page.getByText("10件を取得・説明あり 10件", { exact: true }).isVisible()).toBe(true);
+    // The banner describes the discovery run; it must not claim how many rows the list shows.
+    expect(await page.locator(".banner", { hasText: "説明あり" }).innerText()).not.toContain("表示");
     expect(
       await page.getByText("store-expansion-failed:TimeoutError:locator.click", { exact: true }).count()
     ).toBe(0);
@@ -212,6 +252,8 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     await post({ ...state, liveBrowser: { channel: "chrome", headless: true } });
     expect(await page.getByRole("searchbox").inputValue()).toBe("エージェント 1");
     expect(await page.getByRole("searchbox").evaluate((node) => node === document.activeElement)).toBe(true);
+    // 13 agents, 3 of them (1, 10, 11) match the search, and the unsaved ticks are the selection.
+    expect(await page.locator("#agent-list-status").innerText()).toBe("13件中 3件を表示・1件選択中");
   });
 
   it("updates completion, count and save availability for 0 → 1 → 2 → 0 without replacing the list", async () => {
@@ -233,6 +275,9 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
         }
       }, count);
       expect(await page.locator("#agent-count").innerText()).toBe(`エージェント (${count} 選択中)`);
+      expect(await page.locator("#agent-list-status").innerText()).toBe(
+        `12件中 12件を表示・${count}件選択中`
+      );
       expect(await page.locator("#completion-selection").innerText()).toBe(
         count ? `${count} 件を選択` : "未確認"
       );
@@ -247,6 +292,139 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
         true
       );
     }
+  });
+
+  // Review 2026-10-10, finding 5: the banner above the list used to say "100件を表示" while a search
+  // had cut the list to 20 rows. The banner now describes the discovery only, and this line under
+  // the search box says what the list shows.
+  describe("list status line under the search box", () => {
+    const status = () => page.locator("#agent-list-status");
+    const heading = () => page.locator("#agent-count");
+    const banner = () => page.locator(".banner", { hasText: /説明あり|with descriptions/ });
+    const rows = () => page.locator("#agent-list .agent").count();
+    const search = (text: string) => page.getByRole("searchbox").fill(text);
+    // A box's own click() fires the same change event as a user's click, but unlike Playwright's
+    // check() it never scrolls the list to reach the box, so the list's scrollTop stays measurable.
+    const toggle = (key: string) =>
+      page.evaluate((id) => (document.getElementById(id) as HTMLInputElement).click(), `select-${key}`);
+
+    it("sits between the search box and the list as a polite status region", async () => {
+      // The default fixture: 12 agents, one selected, no search.
+      expect(await status().innerText()).toBe("12件を表示・1件選択中");
+      expect(
+        await status().evaluate((node) => ({
+          role: node.getAttribute("role"),
+          before: node.previousElementSibling?.id,
+          after: node.nextElementSibling?.id
+        }))
+      ).toEqual({ role: "status", before: "search", after: "agent-list" });
+    });
+
+    it.each(["ja", "en"] as const)(
+      "keeps the discovered total apart from the rows the search leaves (%s)",
+      async (locale) => {
+        const text = LIST_TEXT[locale];
+        state = largeFixture({ locale });
+        await post(state);
+        expect(await banner().innerText()).toBe(text.found);
+        expect(await banner().innerText()).not.toContain(text.shownWord);
+        expect(await status().innerText()).toBe(text.all(2));
+        expect(await rows()).toBe(100);
+
+        await search("経理");
+        // agent-1 is selected but hidden by the search; it still counts.
+        expect(await page.locator('[id="select-agent-1"]').count()).toBe(0);
+        expect(await rows()).toBe(20);
+        expect(await status().innerText()).toBe(text.some(20, 2));
+        expect(await heading().innerText()).toBe(text.heading(2));
+        // The banner is about the discovery run, so the search does not touch it.
+        expect(await banner().innerText()).toBe(text.found);
+
+        await search("");
+        expect(await rows()).toBe(100);
+        expect(await status().innerText()).toBe(text.all(2));
+        expect(await banner().innerText()).toBe(text.found);
+      }
+    );
+
+    it("keeps counting when nothing matches and treats a blank search as no search", async () => {
+      state = largeFixture();
+      await post(state);
+      await search("該当なし");
+      expect(await rows()).toBe(0);
+      expect(await page.locator("#agent-list .empty").innerText()).toBe(
+        "検索条件に一致するエージェントがありません。"
+      );
+      expect(await status().innerText()).toBe("100件中 0件を表示・2件選択中");
+      // The filter ignores surrounding whitespace, so a blank search leaves every row.
+      await search("   ");
+      expect(await rows()).toBe(100);
+      expect(await status().innerText()).toBe("100件を表示・2件選択中");
+    });
+
+    it("is omitted while there are no candidates and returns with the list", async () => {
+      await post({ ...fixture(), candidates: [], selectedKeys: [] });
+      expect(await status().count()).toBe(0);
+      expect(await page.locator("#agent-list .empty").count()).toBe(1);
+      await post(largeFixture());
+      expect(await status().innerText()).toBe("100件を表示・2件選択中");
+    });
+
+    it.each(["ja", "en"] as const)(
+      "follows a ticked box in place, without replacing the list or moving its scroll (%s)",
+      async (locale) => {
+        const text = LIST_TEXT[locale];
+        state = largeFixture({ locale });
+        await post(state);
+        await search("経理");
+        const list = await page.locator("#agent-list").elementHandle();
+        const line = await status().elementHandle();
+        await page.locator("#agent-list").evaluate((node) => {
+          node.scrollTop = 180;
+        });
+        const scroll = await page.locator("#agent-list").evaluate((node) => node.scrollTop);
+        expect(scroll).toBeGreaterThan(0);
+
+        let selected = 2;
+        // agent-5 and agent-10 are visible and unticked, agent-0 is visible and ticked.
+        for (const [key, ticks] of [
+          ["agent-5", 1],
+          ["agent-10", 1],
+          ["agent-0", -1],
+          ["agent-5", -1]
+        ] as const) {
+          await toggle(key);
+          selected += ticks;
+          expect(await status().innerText()).toBe(text.some(20, selected));
+          expect(await heading().innerText()).toBe(text.heading(selected));
+          expect(await list!.evaluate((node) => node === document.getElementById("agent-list"))).toBe(true);
+          expect(await line!.evaluate((node) => node === document.getElementById("agent-list-status"))).toBe(
+            true
+          );
+          expect(await page.locator("#agent-list").evaluate((node) => node.scrollTop)).toBe(scroll);
+          expect(await page.getByRole("searchbox").inputValue()).toBe("経理");
+        }
+      }
+    );
+
+    it("keeps the search box focused with its caret in place while typing re-renders the panel", async () => {
+      state = largeFixture();
+      await post(state);
+      const box = page.getByRole("searchbox");
+      await box.click();
+      await box.pressSequentially("理");
+      // Type the first character in front of the second: the caret must come back after it.
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.type("経");
+      expect(await box.inputValue()).toBe("経理");
+      expect(await status().innerText()).toBe("100件中 20件を表示・2件選択中");
+      expect(
+        await box.evaluate((node) => ({
+          focused: node === document.activeElement,
+          caret: (node as HTMLInputElement).selectionStart
+        }))
+      ).toEqual({ focused: true, caret: 1 });
+    });
   });
 
   it.each(["complete", "partial", "not-selected"] as const)(

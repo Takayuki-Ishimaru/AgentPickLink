@@ -11,7 +11,12 @@ import { DomainError } from "../../src/domain/errors.js";
 import { configDigest, WorkspaceConfigSchema, workspaceKey } from "../../src/domain/workspace.js";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AuditLogger } from "../../src/observability/audit.js";
-import { attachDiagnostics, IncidentLog, type IncidentBrowser } from "../../src/observability/incidents.js";
+import {
+  attachDiagnostics,
+  diagnosticsOf,
+  IncidentLog,
+  type IncidentBrowser
+} from "../../src/observability/incidents.js";
 import { ConversationService } from "../../src/services/conversation-service.js";
 import { InvocationService } from "../../src/services/invocation-service.js";
 import { PolicyService } from "../../src/services/policy-service.js";
@@ -20,7 +25,9 @@ import { WorkspaceService } from "../../src/services/workspace-service.js";
 import { TransportRouter } from "../../src/transports/transport-router.js";
 import type {
   AgentInvokeRequest,
+  AgentReadRequest,
   AgentTransport,
+  ConversationReading,
   InteractiveAgentTransport,
   InvocationContext,
   TransportConversation
@@ -71,6 +78,32 @@ class FakeTransport implements AgentTransport {
   isLoginPending?: InteractiveAgentTransport["isLoginPending"];
   lastRequest?: AgentInvokeRequest;
   lastCreateContext?: InvocationContext;
+  reads = 0;
+  readHook?: (call: number) => Promise<void>;
+  readFailWith?: unknown;
+  /** What the next read finds in the conversation. */
+  reading: ConversationReading = {
+    message: "shown",
+    reply: "complete",
+    response: {
+      text: "the late answer",
+      citations: [],
+      attachments: [],
+      truncated: false,
+      actionRequired: false
+    }
+  };
+  lastReadConversation?: TransportConversation;
+  lastReadRequest?: AgentReadRequest;
+  /** Assign `undefined` to model a transport that cannot read a conversation. */
+  readConversation?: AgentTransport["readConversation"] = async (conversation, request) => {
+    this.reads++;
+    this.lastReadConversation = conversation;
+    this.lastReadRequest = request;
+    await this.readHook?.(this.reads);
+    if (this.readFailWith) throw this.readFailWith;
+    return this.reading;
+  };
   healthCheck = async () => ({ healthy: true });
   validateAgent = async () => ({ valid: true });
   async createConversation(_agent: unknown, context: InvocationContext): Promise<TransportConversation> {
@@ -185,7 +218,18 @@ async function harness(
   });
   const queued = (handle: string) =>
     (conversations as unknown as { queues: Map<string, number> }).queues.get(handle) ?? 0;
-  return { service, conversations, transport, approvals, loads, workspaceRoot, logs, diagnostics, queued };
+  return {
+    service,
+    conversations,
+    transport,
+    approvals,
+    registry,
+    loads,
+    workspaceRoot,
+    logs,
+    diagnostics,
+    queued
+  };
 }
 
 describe("InvocationService", () => {
@@ -923,5 +967,1022 @@ describe("InvocationService", () => {
     ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
 
     expect(incidents.list()).toEqual([expect.objectContaining({ code: "RESPONSE_TIMEOUT", completion })]);
+  });
+});
+
+type Fixture = Awaited<ReturnType<typeof harness>>;
+
+/** The audit records of a harness, oldest first. */
+async function auditEvents(logs: string): Promise<Array<Record<string, unknown>>> {
+  const raw = await readFile(path.join(logs, "audit.jsonl"), "utf8").catch(() => "");
+  return raw
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+const mayHaveBeenSent = () =>
+  new DomainError("SUBMIT_STATE_UNKNOWN", "The message may have been submitted.", false, {
+    submissionState: "unknown"
+  });
+
+/** Runs an ask that fails with `failure` and returns what the service threw. */
+async function failedAsk(
+  fixture: Fixture,
+  failure: DomainError,
+  options: { signal?: AbortSignal; handle?: string } = {}
+): Promise<DomainError> {
+  fixture.transport.failWith = failure;
+  const outcome = await fixture.service
+    .invoke(
+      fixture.workspaceRoot,
+      agent.alias,
+      "question",
+      options.handle,
+      "req-failed-ask",
+      undefined,
+      options.signal
+    )
+    .then(
+      () => undefined,
+      (error: unknown) => error
+    );
+  fixture.transport.failWith = undefined;
+  if (!(outcome instanceof DomainError)) throw new Error("The ask was expected to fail with a DomainError.");
+  return outcome;
+}
+
+/** A one-shot ask whose message may have been sent leaves its conversation open: its handle. */
+async function keptConversation(fixture: Fixture): Promise<string> {
+  const handle = (await failedAsk(fixture, mayHaveBeenSent())).options.conversationHandle;
+  if (!handle) throw new Error("The failed ask was expected to keep its conversation.");
+  return handle;
+}
+
+/** A second, otherwise valid workspace: a handle of the first must not be readable from it. */
+async function anotherWorkspace(): Promise<string> {
+  const root = normalizeRoot(await realpath(await mkdtemp(path.join(os.tmpdir(), "apl-invocation-other-"))));
+  await writeFile(
+    path.join(root, ".m365-agents.json"),
+    JSON.stringify(WorkspaceConfigSchema.parse({ version: 1, agents: [{ alias: agent.alias }] }))
+  );
+  return root;
+}
+
+describe("InvocationService: a failed ask whose message was or may have been sent", () => {
+  it.each([
+    ["SUBMIT_STATE_UNKNOWN", "unknown", false],
+    ["SUBMIT_STATE_UNKNOWN", "sent", false],
+    ["RESPONSE_TIMEOUT", "sent", true],
+    ["RESPONSE_TIMEOUT", "unknown", true]
+  ] as const)(
+    "keeps a one-shot conversation to be read after %s (%s) and returns its handle",
+    async (code, submissionState, retryable) => {
+      const fixture = await harness();
+      const partialResponse = { text: "so far", citations: [] };
+      const original = new DomainError(code, "original message text", retryable, {
+        submissionState,
+        partialResponse,
+        retryAfterMs: 1234,
+        remediation: "the original remediation"
+      });
+
+      const error = await failedAsk(fixture, original);
+
+      // A new error that says what the transport said and adds the handle and how to use it.
+      expect(error).toBeInstanceOf(DomainError);
+      expect(error).not.toBe(original);
+      expect(error).toMatchObject({ code, message: "original message text", retryable });
+      const handle = error.options.conversationHandle!;
+      expect(handle).toMatch(/^conv_[A-Za-z0-9_-]+$/);
+      expect(error.options).toEqual({
+        submissionState,
+        partialResponse,
+        retryAfterMs: 1234,
+        remediation: expect.any(String),
+        conversationHandle: handle
+      });
+      const remediation = error.options.remediation!;
+      expect(remediation).not.toBe("the original remediation");
+      expect(remediation).toContain("m365_agent_session");
+      expect(remediation).toContain("action=read");
+      expect(remediation).toContain(handle);
+      expect(error.toResult("req-failed-ask").error).toMatchObject({
+        code,
+        submissionState,
+        conversationHandle: handle,
+        remediation
+      });
+      expect(original.options.conversationHandle).toBeUndefined();
+      expect(original.options.remediation).toBe("the original remediation");
+
+      // Nothing was closed, retired or sent again: the conversation waits for its read.
+      expect(fixture.transport.invokes).toBe(1);
+      expect(fixture.transport.reads).toBe(0);
+      expect(fixture.transport.closes).toBe(0);
+      expect(fixture.conversations.get(handle)).toMatchObject({ state: "ready", closeAfterRead: true });
+      expect(fixture.conversations.activeCount()).toBe(1);
+      expect(await fixture.service.list(fixture.workspaceRoot)).toEqual([
+        expect.objectContaining({ handle })
+      ]);
+      // The failure is audited as before, against the conversation that stays open.
+      expect(await auditEvents(fixture.logs)).toEqual([
+        expect.objectContaining({
+          event: "agent.invoke.failed",
+          conversation: handle,
+          errorCode: code,
+          status: "failure"
+        })
+      ]);
+    }
+  );
+
+  it.each([
+    ["SUBMIT_STATE_UNKNOWN", "not-sent"],
+    ["SUBMIT_STATE_UNKNOWN", undefined],
+    ["RESPONSE_TIMEOUT", "not-sent"],
+    ["RESPONSE_TIMEOUT", undefined],
+    ["SUBMIT_FAILED", "unknown"],
+    ["SUBMIT_FAILED", "sent"],
+    ["UI_CHANGED", "not-sent"],
+    ["UI_CHANGED", "unknown"],
+    ["AGENT_CONTEXT_CHANGED", "sent"],
+    ["AGENT_CONTEXT_CHANGED", "unknown"],
+    ["RESPONSE_EXTRACTION_FAILED", "sent"],
+    ["AUTH_REQUIRED", "sent"],
+    ["BROKER_UNAVAILABLE", "unknown"],
+    ["BROWSER_CRASHED", "unknown"]
+  ] as const)("still retires and closes a one-shot conversation after %s (%s)", async (code, state) => {
+    const fixture = await harness();
+
+    const error = await failedAsk(
+      fixture,
+      new DomainError(code, "fixture failure", false, state ? { submissionState: state } : {})
+    );
+
+    expect(error).toMatchObject({ code });
+    expect(error.options.conversationHandle).toBeUndefined();
+    expect(error.toResult("req-failed-ask").error).not.toHaveProperty("conversationHandle");
+    expect(fixture.transport.closes).toBe(1);
+    expect(fixture.conversations.activeCount()).toBe(0);
+    expect(await fixture.service.list(fixture.workspaceRoot)).toEqual([]);
+  });
+
+  it.each(["SUBMIT_STATE_UNKNOWN", "RESPONSE_TIMEOUT"] as const)(
+    "retires the conversation when the caller cancelled the ask (%s): nobody waits for its reply",
+    async (code) => {
+      const fixture = await harness();
+      const controller = new AbortController();
+      fixture.transport.invokeHook = async () => controller.abort();
+
+      const error = await failedAsk(
+        fixture,
+        new DomainError(code, "cancelled", false, { submissionState: "unknown" }),
+        { signal: controller.signal }
+      );
+
+      expect(error).toMatchObject({ code });
+      expect(error.options.conversationHandle).toBeUndefined();
+      expect(fixture.transport.closes).toBe(1);
+      expect(fixture.conversations.activeCount()).toBe(0);
+    }
+  );
+
+  it("does not offer a conversation that was invalidated while the ask ran", async () => {
+    const fixture = await harness();
+    fixture.transport.invokeHook = async () => fixture.conversations.failAll();
+
+    const error = await failedAsk(fixture, mayHaveBeenSent());
+
+    expect(error.options.conversationHandle).toBeUndefined();
+    expect(fixture.transport.closes).toBe(1);
+    expect(fixture.conversations.activeCount()).toBe(0);
+  });
+
+  it("never offers a handle for a failure that came before any conversation existed", async () => {
+    const fixture = await harness();
+    fixture.transport.createFailure = mayHaveBeenSent();
+
+    const outcome = await fixture.service
+      .invoke(fixture.workspaceRoot, agent.alias, "question", undefined, "req-create-failed")
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+    expect(outcome).toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+    expect((outcome as DomainError).options.conversationHandle).toBeUndefined();
+    expect(fixture.transport.invokes).toBe(0);
+    expect(fixture.conversations.activeCount()).toBe(0);
+  });
+
+  it("carries the handle of an explicit conversation too, and leaves it the caller's own", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+
+    const error = await failedAsk(fixture, mayHaveBeenSent(), { handle: conversation.handle });
+
+    expect(error.options.conversationHandle).toBe(conversation.handle);
+    expect(error.options.remediation).toContain("m365_agent_session");
+    expect(error.options.remediation).toContain("action=read");
+    expect(error.options.remediation).toContain(conversation.handle);
+    expect(fixture.transport.closes).toBe(0);
+    const kept = fixture.conversations.get(conversation.handle);
+    expect(kept.state).toBe("ready");
+    // It was never a one-shot conversation, so reading its reply does not end it.
+    expect(kept.closeAfterRead).toBeUndefined();
+  });
+
+  it("offers no handle for an explicit conversation when the caller cancelled or the failure is another kind", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+    const controller = new AbortController();
+    fixture.transport.invokeHook = async () => controller.abort();
+
+    const cancelled = await failedAsk(fixture, mayHaveBeenSent(), {
+      handle: conversation.handle,
+      signal: controller.signal
+    });
+    fixture.transport.invokeHook = undefined;
+    const other = await failedAsk(
+      fixture,
+      new DomainError("AGENT_CONTEXT_CHANGED", "The agent context changed.", false, {
+        submissionState: "sent"
+      }),
+      { handle: conversation.handle }
+    );
+
+    expect(cancelled.options.conversationHandle).toBeUndefined();
+    expect(other.options.conversationHandle).toBeUndefined();
+    expect(fixture.conversations.get(conversation.handle).state).toBe("ready");
+  });
+
+  it("keeps the diagnostics of the original failure and records one incident for it", async () => {
+    const incidents = new IncidentLog();
+    const fixture = await harness({ incidents });
+    const original = new DomainError("RESPONSE_TIMEOUT", "The response did not finish.", false, {
+      submissionState: "sent"
+    });
+    const completion = { reason: "timeout", sawStreamingSignal: true, finalChars: 42 };
+    attachDiagnostics(original, { completion });
+
+    const error = await failedAsk(fixture, original);
+
+    expect(error.options.conversationHandle).toBeDefined();
+    expect(diagnosticsOf(error)).toEqual({ completion });
+    expect(incidents.list()).toEqual([
+      expect.objectContaining({ code: "RESPONSE_TIMEOUT", phase: "invoke", completion })
+    ]);
+  });
+
+  // Independent review of the 2026-10-10 fixes: only a question that goes into the conversation makes
+  // it the caller's own session; an ask refused before that leaves it to close after its read.
+  it("keeps a kept conversation for its read when an ask continuing it is refused before its question goes in", async () => {
+    const fixture = await harness();
+    const handle = await keptConversation(fixture);
+    const cancelled = new AbortController();
+    cancelled.abort();
+
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "follow-up",
+        handle,
+        "req-refused",
+        undefined,
+        cancelled.signal
+      )
+    ).rejects.toMatchObject({ options: { submissionState: "not-sent" } });
+    expect(fixture.transport.invokes).toBe(1);
+    expect(fixture.conversations.get(handle).closeAfterRead).toBe(true);
+
+    // The fake transport's reading is a complete reply by default.
+    await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).resolves.toMatchObject({
+      reply: "complete",
+      conversationClosed: true
+    });
+  });
+
+  // A client of protocol minor 4 cannot read a conversation: it is offered none to read.
+  it("does not keep a one-shot conversation, or name it, for a client that cannot read", async () => {
+    const fixture = await harness();
+    fixture.transport.failWith = mayHaveBeenSent();
+    const error = await fixture.service
+      .invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "question",
+        undefined,
+        "req-old-client",
+        undefined,
+        undefined,
+        {
+          readable: false
+        }
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught as DomainError
+      );
+    fixture.transport.failWith = undefined;
+
+    expect(error).toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", options: { submissionState: "unknown" } });
+    expect(error?.options.conversationHandle).toBeUndefined();
+    expect(error?.options.remediation ?? "").not.toContain("action=read");
+    // Retired as before minor 5: its page released, nothing left to read or count against the limits.
+    expect(fixture.transport.closes).toBe(1);
+    expect(await fixture.service.list(fixture.workspaceRoot)).toHaveLength(0);
+  });
+
+  it("treats a kept conversation the caller then continues by its handle as the caller's own session", async () => {
+    const fixture = await harness();
+    const handle = await keptConversation(fixture);
+    expect(fixture.conversations.get(handle).closeAfterRead).toBe(true);
+
+    const continued = await fixture.service.invoke(
+      fixture.workspaceRoot,
+      agent.alias,
+      "follow-up",
+      handle,
+      "req-continue"
+    );
+    expect(continued).toMatchObject({ conversationHandle: handle, conversationClosed: false });
+    const reading = await fixture.service.read(fixture.workspaceRoot, handle, "req-read-after-continue");
+
+    // A read that now returns a complete reply no longer ends the conversation.
+    expect(reading).toMatchObject({ reply: "complete" });
+    expect(reading).not.toHaveProperty("conversationClosed");
+    expect(fixture.transport.closes).toBe(0);
+    expect(fixture.conversations.get(handle).state).toBe("ready");
+  });
+});
+
+describe("InvocationService: expectFiles", () => {
+  it.each([
+    ["false", { expectFiles: false }, true],
+    ["true", { expectFiles: true }, false],
+    ["undefined", { expectFiles: undefined }, false],
+    ["left out", {}, false]
+  ])("hands expectFiles=%s to the transport only when it is false", async (_name, options, forwarded) => {
+    const fixture = await harness();
+
+    await fixture.service.invoke(
+      fixture.workspaceRoot,
+      agent.alias,
+      "question",
+      undefined,
+      "req-expect-files",
+      undefined,
+      undefined,
+      options
+    );
+
+    const request = fixture.transport.lastRequest!;
+    expect(Object.hasOwn(request, "expectFiles")).toBe(forwarded);
+    if (forwarded) expect(request.expectFiles).toBe(false);
+  });
+
+  it("hands nothing extra to the transport when no options are given at all", async () => {
+    const fixture = await harness();
+    await fixture.service.invoke(fixture.workspaceRoot, agent.alias, "question", undefined, "req-no-options");
+    expect(Object.hasOwn(fixture.transport.lastRequest!, "expectFiles")).toBe(false);
+  });
+
+  it("applies to a continued conversation as well", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+    await fixture.service.invoke(
+      fixture.workspaceRoot,
+      agent.alias,
+      "question",
+      conversation.handle,
+      "req-continued",
+      undefined,
+      undefined,
+      { expectFiles: false }
+    );
+    expect(fixture.transport.lastRequest?.expectFiles).toBe(false);
+  });
+});
+
+describe("InvocationService.read", () => {
+  const completeReading = (overrides: Partial<ConversationReading> = {}): ConversationReading => ({
+    message: "shown",
+    reply: "complete",
+    response: {
+      text: "response-body-marker",
+      citations: [{ index: 1, title: "Doc", url: "https://example.test/doc" }],
+      attachments: [
+        {
+          index: 1,
+          name: "report.pdf",
+          mediaType: "application/pdf",
+          sourceUrl: "https://tenant.sharepoint.com/report",
+          status: "saved",
+          localPath: "/tmp/agent-pick-link/report.pdf",
+          sizeBytes: 100,
+          sha256: "a".repeat(64)
+        },
+        {
+          index: 2,
+          name: "blocked.docx",
+          mediaType: "application/octet-stream",
+          sourceUrl: "https://elsewhere.example/blocked",
+          status: "not-saved",
+          errorCode: "host-not-allowed"
+        }
+      ],
+      truncated: false,
+      actionRequired: false
+    },
+    ...overrides
+  });
+
+  describe("a conversation kept open by a failed one-shot ask", () => {
+    it.each(["shown", "differs"] as const)(
+      "returns the complete reply (message %s), then closes and forgets the conversation",
+      async (message) => {
+        const fixture = await harness();
+        const handle = await keptConversation(fixture);
+        fixture.transport.reading = completeReading({ message });
+
+        const result = await fixture.service.read(fixture.workspaceRoot, handle, "req-read");
+
+        expect(result).toEqual({
+          conversation: {
+            handle,
+            agentAlias: agent.alias,
+            createdAt: expect.any(String),
+            lastUsedAt: expect.any(String)
+          },
+          message,
+          reply: "complete",
+          text: "response-body-marker",
+          citations: [{ index: 1, title: "Doc", url: "https://example.test/doc" }],
+          attachments: fixture.transport.reading.response!.attachments,
+          truncated: false,
+          actionRequired: false,
+          sourceType: "m365-agent",
+          conversationClosed: true
+        });
+        // Nothing was sent: the one invoke is the ask that failed.
+        expect(fixture.transport.invokes).toBe(1);
+        expect(fixture.transport.reads).toBe(1);
+        expect(fixture.transport.closes).toBe(1);
+        expect(fixture.conversations.has(handle)).toBe(false);
+        expect(() => fixture.conversations.get(handle)).toThrow(
+          expect.objectContaining({ code: "CONVERSATION_EXPIRED" })
+        );
+        expect(await fixture.service.list(fixture.workspaceRoot)).toEqual([]);
+        // The read is audited as metadata only.
+        const events = await auditEvents(fixture.logs);
+        expect(events.map((event) => event.event)).toEqual(["agent.invoke.failed", "agent.read.complete"]);
+        expect(events[1]).toEqual({
+          event: "agent.read.complete",
+          requestId: "req-read",
+          workspace: workspaceKey(fixture.workspaceRoot),
+          agent: agent.alias,
+          conversation: handle,
+          durationMs: expect.any(Number),
+          requestChars: 0,
+          responseChars: "response-body-marker".length,
+          citationCount: 1,
+          attachmentCount: 1,
+          attachmentBytes: 100,
+          attachmentFailuresByStage: { "host-not-allowed": 1 },
+          status: "success"
+        });
+        expect(JSON.stringify(events)).not.toContain("response-body-marker");
+        await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-again")).rejects.toMatchObject({
+          code: "CONVERSATION_EXPIRED"
+        });
+      }
+    );
+
+    it.each([
+      [
+        "an incomplete reply with what it showed so far",
+        { message: "shown", reply: "incomplete", partialResponse: { text: "so far", citations: [] } }
+      ],
+      ["an incomplete reply that showed nothing", { message: "shown", reply: "incomplete" }],
+      ["no reply started", { message: "shown", reply: "none" }],
+      ["a message that is not shown", { message: "not-shown", reply: "none" }],
+      ["a message that is not confirmed", { message: "unconfirmed", reply: "none" }],
+      ["no message entered at all", { message: "none", reply: "none" }]
+    ] as const)("keeps the conversation open when the read ends with %s", async (_name, reading) => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.reading = reading;
+
+      const result = await fixture.service.read(fixture.workspaceRoot, handle, "req-read");
+
+      // Only what the read found, and the conversation is not closed.
+      expect(result).toEqual({
+        conversation: {
+          handle,
+          agentAlias: agent.alias,
+          createdAt: expect.any(String),
+          lastUsedAt: expect.any(String)
+        },
+        ...reading,
+        conversationClosed: false
+      });
+      expect(fixture.transport.closes).toBe(0);
+      expect(fixture.conversations.get(handle)).toMatchObject({ state: "ready", closeAfterRead: true });
+      expect(await fixture.service.list(fixture.workspaceRoot)).toHaveLength(1);
+
+      // The read can be repeated until the reply is complete; that read ends the conversation.
+      fixture.transport.reading = completeReading();
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read-2")).resolves.toMatchObject({
+        reply: "complete",
+        conversationClosed: true
+      });
+      expect(fixture.transport.closes).toBe(1);
+      expect(fixture.conversations.has(handle)).toBe(false);
+    });
+
+    // Independent review of the 2026-10-10 fixes: a reply collected for a caller who stopped waiting
+    // reached nobody, so the conversation must stay to be read again.
+    it("stays open when the caller stopped waiting for the read that collected its reply", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      const controller = new AbortController();
+      fixture.transport.reading = completeReading();
+      fixture.transport.readHook = async () => controller.abort();
+
+      const reading = await fixture.service.read(
+        fixture.workspaceRoot,
+        handle,
+        "req-read-cancelled",
+        undefined,
+        controller.signal
+      );
+
+      expect(reading).toMatchObject({ reply: "complete", conversationClosed: false });
+      expect(fixture.transport.closes).toBe(0);
+      expect(fixture.conversations.get(handle)).toMatchObject({ state: "ready", closeAfterRead: true });
+      fixture.transport.readHook = undefined;
+      await expect(
+        fixture.service.read(fixture.workspaceRoot, handle, "req-read-again")
+      ).resolves.toMatchObject({
+        reply: "complete",
+        conversationClosed: true
+      });
+      expect(fixture.transport.closes).toBe(1);
+    });
+
+    it("passes on which ask's message it judged", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.reading = { ...completeReading(), messageRequestId: "req-failed-ask" };
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).resolves.toMatchObject({
+        message: "shown",
+        messageRequestId: "req-failed-ask"
+      });
+    });
+
+    it("marks the conversation failed when closing its page fails, but still returns the reply", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.closeFailure = new DomainError("BROWSER_START_FAILED", "page close failed");
+      fixture.transport.closeFailuresRemaining = 2;
+      fixture.transport.reading = completeReading();
+
+      const result = await fixture.service.read(fixture.workspaceRoot, handle, "req-read");
+
+      expect(result).toMatchObject({
+        reply: "complete",
+        text: "response-body-marker",
+        conversationClosed: false
+      });
+      // The close ran under the lock and once more in the sweep that follows; the record stays
+      // indexed so that maintenance can retry the page, and the handle is no longer usable.
+      expect(fixture.transport.closes).toBe(2);
+      expect(fixture.conversations.has(handle)).toBe(true);
+      expect(() => fixture.conversations.get(handle)).toThrow(
+        expect.objectContaining({ code: "CONVERSATION_EXPIRED" })
+      );
+      expect(fixture.conversations.activeCount()).toBe(0);
+      await fixture.service.cleanupExpiredPages();
+      expect(fixture.transport.closes).toBe(3);
+      expect(fixture.conversations.has(handle)).toBe(false);
+      expect(fixture.transport.reads).toBe(1);
+    });
+
+    it("lets only one of two simultaneous reads collect the reply", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      const gate = Promise.withResolvers<void>();
+      fixture.transport.readHook = async (call) => {
+        if (call === 1) await gate.promise;
+      };
+
+      const first = fixture.service.read(fixture.workspaceRoot, handle, "req-read-1");
+      await vi.waitFor(() => expect(fixture.transport.reads).toBe(1));
+      const second = fixture.service.read(fixture.workspaceRoot, handle, "req-read-2");
+      await vi.waitFor(() => expect(fixture.queued(handle)).toBe(2));
+      gate.resolve();
+
+      await expect(first).resolves.toMatchObject({ reply: "complete", conversationClosed: true });
+      await expect(second).rejects.toMatchObject({ code: "CONVERSATION_EXPIRED" });
+      expect(fixture.transport.reads).toBe(1);
+      await fixture.service.cleanupExpiredPages();
+      expect(fixture.conversations.has(handle)).toBe(false);
+    });
+  });
+
+  describe("a conversation the caller opened", () => {
+    it("is read without being closed, and says nothing about closing", async () => {
+      const fixture = await harness();
+      const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+      fixture.transport.reading = completeReading();
+
+      const result = await fixture.service.read(fixture.workspaceRoot, conversation.handle, "req-read");
+
+      expect(result).toMatchObject({ reply: "complete", sourceType: "m365-agent" });
+      expect(result).not.toHaveProperty("conversationClosed");
+      expect(fixture.transport.closes).toBe(0);
+      expect(fixture.conversations.get(conversation.handle).state).toBe("ready");
+      expect(await fixture.service.list(fixture.workspaceRoot)).toHaveLength(1);
+    });
+
+    it("reports a conversation nothing has been entered in as message none, reply none", async () => {
+      const fixture = await harness();
+      const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+      fixture.transport.reading = { message: "none", reply: "none" };
+
+      const result = await fixture.service.read(fixture.workspaceRoot, conversation.handle, "req-read");
+
+      expect(result).toEqual({
+        conversation: expect.objectContaining({ handle: conversation.handle }),
+        message: "none",
+        reply: "none"
+      });
+    });
+  });
+
+  it("never exposes the transport handle or any internal field of the conversation", async () => {
+    const fixture = await harness();
+    const handle = await keptConversation(fixture);
+    fixture.transport.reading = completeReading();
+
+    const result = await fixture.service.read(fixture.workspaceRoot, handle, "req-read");
+
+    expect(Object.keys(result.conversation).sort()).toEqual([
+      "agentAlias",
+      "createdAt",
+      "handle",
+      "lastUsedAt"
+    ]);
+    const wire = JSON.stringify(result);
+    for (const leak of [
+      `page-${handle}`,
+      "opaque",
+      "transportId",
+      "bindingFingerprint",
+      "workspaceKey",
+      "brokerInstanceId"
+    ])
+      expect(wire).not.toContain(leak);
+  });
+
+  it("gives the transport its own handle for the conversation, with the request id, progress sink and signal", async () => {
+    const fixture = await harness();
+    const handle = await keptConversation(fixture);
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+
+    await fixture.service.read(fixture.workspaceRoot, handle, "req-read", onProgress, controller.signal);
+
+    expect(fixture.transport.lastReadConversation).toEqual({
+      transportId: "browser",
+      opaque: `page-${handle}`
+    });
+    expect(fixture.transport.lastReadRequest).toEqual({
+      requestId: "req-read",
+      onProgress,
+      signal: controller.signal
+    });
+    expect(fixture.transport.lastReadRequest!.onProgress).toBe(onProgress);
+    expect(fixture.transport.lastReadRequest!.signal).toBe(controller.signal);
+  });
+
+  describe("refuses a conversation it may not read", () => {
+    it("refuses a handle of another workspace without touching the transport", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      const other = await anotherWorkspace();
+
+      await expect(fixture.service.read(other, handle, "req-read")).rejects.toMatchObject({
+        code: "CONVERSATION_OWNERSHIP_MISMATCH"
+      });
+
+      expect(fixture.transport.reads).toBe(0);
+      expect(fixture.conversations.get(handle).state).toBe("ready");
+    });
+
+    it("answers an unknown handle with CONVERSATION_NOT_FOUND", async () => {
+      const fixture = await harness();
+      await expect(
+        fixture.service.read(fixture.workspaceRoot, "conv_never_issued", "req-read")
+      ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND" });
+      expect(fixture.transport.reads).toBe(0);
+    });
+
+    it.each([
+      [
+        "closed",
+        async (fixture: Fixture, handle: string) => {
+          await fixture.service.close(fixture.workspaceRoot, handle);
+        }
+      ],
+      [
+        "closed and swept",
+        async (fixture: Fixture, handle: string) => {
+          await fixture.service.close(fixture.workspaceRoot, handle);
+          await fixture.service.cleanupExpiredPages();
+        }
+      ],
+      [
+        "invalidated by a browser crash",
+        async (fixture: Fixture) => {
+          fixture.conversations.failAll();
+        }
+      ]
+    ])("answers a handle that was %s with CONVERSATION_EXPIRED", async (_name, end) => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      await end(fixture, handle);
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).rejects.toMatchObject({
+        code: "CONVERSATION_EXPIRED"
+      });
+      expect(fixture.transport.reads).toBe(0);
+    });
+
+    it.each([
+      [
+        "its approval is removed",
+        async (fixture: Fixture) => {
+          fixture.approvals.approvals = [];
+        },
+        "WORKSPACE_APPROVAL_REQUIRED"
+      ],
+      [
+        "it is no longer assigned to the workspace",
+        async (fixture: Fixture) => {
+          await writeFile(
+            path.join(fixture.workspaceRoot, ".m365-agents.json"),
+            JSON.stringify(WorkspaceConfigSchema.parse({ version: 1, agents: [{ alias: "other" }] }))
+          );
+        },
+        "AGENT_NOT_ASSIGNED"
+      ],
+      [
+        "it is disabled",
+        async (fixture: Fixture) => {
+          fixture.registry.agents = [{ ...agent, enabled: false }];
+        },
+        "AGENT_DISABLED"
+      ],
+      [
+        "its binding changes",
+        async (fixture: Fixture) => {
+          const changed: BrowserAgentDefinition = {
+            ...agent,
+            verification: { ...agent.verification, expectedStableAgentId: "agent-2" }
+          };
+          changed.verification.bindingFingerprint = deriveBindingFingerprint(changed);
+          fixture.registry.agents = [changed];
+          fixture.approvals.approvals[0]!.approvedBindings = [
+            {
+              alias: agent.alias,
+              bindingFingerprint: changed.verification.bindingFingerprint,
+              capabilityClass: "knowledge-only"
+            }
+          ];
+        },
+        "CONVERSATION_OWNERSHIP_MISMATCH"
+      ]
+    ])("refuses to read once %s, and audits the refusal", async (_name, revoke, code) => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      await revoke(fixture);
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).rejects.toMatchObject({
+        code
+      });
+
+      expect(fixture.transport.reads).toBe(0);
+      expect(fixture.transport.closes).toBe(0);
+      expect(await auditEvents(fixture.logs)).toEqual([
+        expect.objectContaining({ event: "agent.invoke.failed" }),
+        expect.objectContaining({
+          event: "agent.read.failed",
+          requestId: "req-read",
+          conversation: handle,
+          requestChars: 0,
+          responseChars: 0,
+          status: "failure",
+          errorCode: code
+        })
+      ]);
+    });
+
+    it("reads again once the approval is restored: a refusal does not poison the conversation", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      const approvals = fixture.approvals.approvals;
+      fixture.approvals.approvals = [];
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-refused")).rejects.toMatchObject({
+        code: "WORKSPACE_APPROVAL_REQUIRED"
+      });
+
+      fixture.approvals.approvals = approvals;
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-allowed")).resolves.toMatchObject(
+        {
+          reply: "complete"
+        }
+      );
+    });
+
+    it("refuses with AGENT_ENTRYPOINT_UNSUPPORTED when the transport cannot read a conversation", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.readConversation = undefined;
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).rejects.toMatchObject({
+        code: "AGENT_ENTRYPOINT_UNSUPPORTED"
+      });
+
+      expect(fixture.conversations.get(handle)).toMatchObject({ state: "ready", closeAfterRead: true });
+      expect(await auditEvents(fixture.logs)).toContainEqual(
+        expect.objectContaining({ event: "agent.read.failed", errorCode: "AGENT_ENTRYPOINT_UNSUPPORTED" })
+      );
+    });
+
+    it("counts a read against the workspace's request rate, like an ask", async () => {
+      const fixture = await harness({ maxPerMinute: 1 });
+      const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+      await fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "question",
+        conversation.handle,
+        "req-ask"
+      );
+
+      await expect(
+        fixture.service.read(fixture.workspaceRoot, conversation.handle, "req-read")
+      ).rejects.toMatchObject({ code: "RATE_LIMITED", retryable: true });
+
+      expect(fixture.transport.reads).toBe(0);
+    });
+  });
+
+  describe("shares the conversation's lock with asks", () => {
+    it("waits for an ask running on the same conversation instead of reading underneath it", async () => {
+      const fixture = await harness();
+      const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+      const gate = Promise.withResolvers<void>();
+      const order: string[] = [];
+      fixture.transport.invokeHook = async () => {
+        order.push("ask started");
+        await gate.promise;
+        order.push("ask finished");
+      };
+      fixture.transport.readHook = async () => {
+        order.push("read started");
+      };
+
+      const ask = fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "question",
+        conversation.handle,
+        "req-ask"
+      );
+      await vi.waitFor(() => expect(order).toEqual(["ask started"]));
+      const read = fixture.service.read(fixture.workspaceRoot, conversation.handle, "req-read");
+      await vi.waitFor(() => expect(fixture.queued(conversation.handle)).toBe(2));
+      expect(fixture.transport.reads).toBe(0);
+      gate.resolve();
+
+      await expect(ask).resolves.toMatchObject({ text: "an answer" });
+      await expect(read).resolves.toMatchObject({ reply: "complete" });
+      expect(order).toEqual(["ask started", "ask finished", "read started"]);
+    });
+
+    it("holds off an ask on the same conversation while it reads", async () => {
+      const fixture = await harness();
+      const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+      const gate = Promise.withResolvers<void>();
+      const order: string[] = [];
+      fixture.transport.readHook = async () => {
+        order.push("read started");
+        await gate.promise;
+        order.push("read finished");
+      };
+      fixture.transport.invokeHook = async () => {
+        order.push("ask started");
+      };
+
+      const read = fixture.service.read(fixture.workspaceRoot, conversation.handle, "req-read");
+      await vi.waitFor(() => expect(order).toEqual(["read started"]));
+      const ask = fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "question",
+        conversation.handle,
+        "req-ask"
+      );
+      await vi.waitFor(() => expect(fixture.queued(conversation.handle)).toBe(2));
+      expect(fixture.transport.invokes).toBe(0);
+      gate.resolve();
+
+      await expect(read).resolves.toMatchObject({ reply: "complete" });
+      await expect(ask).resolves.toMatchObject({ text: "an answer" });
+      expect(order).toEqual(["read started", "read finished", "ask started"]);
+    });
+  });
+
+  describe("when reading fails", () => {
+    it("audits agent.read.failed with the error code and leaves the conversation open to be read again", async () => {
+      const incidents = new IncidentLog();
+      const fixture = await harness({ incidents });
+      const handle = await keptConversation(fixture);
+      fixture.transport.readFailWith = new DomainError(
+        "RESPONSE_EXTRACTION_FAILED",
+        "The reply could not be extracted."
+      );
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).rejects.toMatchObject({
+        code: "RESPONSE_EXTRACTION_FAILED"
+      });
+
+      const events = await auditEvents(fixture.logs);
+      expect(events.at(-1)).toEqual({
+        event: "agent.read.failed",
+        requestId: "req-read",
+        workspace: workspaceKey(fixture.workspaceRoot),
+        agent: agent.alias,
+        conversation: handle,
+        durationMs: expect.any(Number),
+        requestChars: 0,
+        responseChars: 0,
+        citationCount: 0,
+        attachmentCount: 0,
+        attachmentBytes: 0,
+        status: "failure",
+        errorCode: "RESPONSE_EXTRACTION_FAILED"
+      });
+      expect(incidents.list()).toEqual([
+        expect.objectContaining({ code: "RESPONSE_EXTRACTION_FAILED", phase: "read" })
+      ]);
+      expect(fixture.transport.closes).toBe(0);
+      expect(fixture.conversations.get(handle)).toMatchObject({ state: "ready", closeAfterRead: true });
+
+      fixture.transport.readFailWith = undefined;
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read-2")).resolves.toMatchObject({
+        reply: "complete",
+        conversationClosed: true
+      });
+    });
+
+    it("reports an error that is not a DomainError as INTERNAL_ERROR, without its message", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.readFailWith = new TypeError("secret internal detail");
+
+      const error = await fixture.service.read(fixture.workspaceRoot, handle, "req-read").then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      expect(error).toBeInstanceOf(DomainError);
+      expect(error).toMatchObject({ code: "INTERNAL_ERROR" });
+      expect((error as DomainError).message).not.toContain("secret internal detail");
+      expect(await auditEvents(fixture.logs)).toContainEqual(
+        expect.objectContaining({ event: "agent.read.failed", errorCode: "INTERNAL_ERROR" })
+      );
+    });
+
+    it("does not record a caller's own cancellation as an incident", async () => {
+      const incidents = new IncidentLog();
+      const fixture = await harness({ incidents });
+      const handle = await keptConversation(fixture);
+      const controller = new AbortController();
+      fixture.transport.readHook = async () => controller.abort();
+      fixture.transport.readFailWith = new DomainError("RESPONSE_TIMEOUT", "The request was cancelled.");
+
+      await expect(
+        fixture.service.read(fixture.workspaceRoot, handle, "req-read", undefined, controller.signal)
+      ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+
+      expect(incidents.list()).toEqual([]);
+    });
   });
 });

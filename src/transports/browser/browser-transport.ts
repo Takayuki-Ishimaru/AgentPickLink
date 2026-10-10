@@ -8,8 +8,10 @@ import { pathPattern } from "../../domain/text.js";
 import { attachDiagnostics, isUiDriftCode, type IncidentDiagnostics } from "../../observability/incidents.js";
 import type {
   AgentInvokeRequest,
+  AgentReadRequest,
   BrowserInvalidationEvent,
   CapturedAgent,
+  ConversationReading,
   DiscoveryResult,
   InteractiveAgentTransport,
   InvocationContext,
@@ -23,7 +25,7 @@ import { AttachmentSaver } from "./attachment-saver.js";
 import { AuthDetector } from "./auth-detector.js";
 import { BROWSER_ADAPTER_REGISTRY, GenericDiagnosticAdapter } from "./adapters/index.js";
 import { BrowserManager } from "./browser-manager.js";
-import { ConversationDriver } from "./conversation-driver.js";
+import { ConversationDriver, enteredMessage } from "./conversation-driver.js";
 import { NavigationPolicy } from "./navigation-policy.js";
 import { SessionManager } from "./session-manager.js";
 import { createBrowserLauncher } from "./session-preserving-launcher.js";
@@ -32,6 +34,7 @@ import {
   type BrowserAgentDefinition,
   type BrowserContextLike,
   type BrowserPageConversation,
+  type EnteredMessage,
   type PageLike
 } from "./types.js";
 import type { ChatUiAdapter } from "./ui-adapter.js";
@@ -65,9 +68,13 @@ export interface BrowserTransportOptions {
   responseStartTimeoutMs?: number;
   /** Per-character delay used when typing into a rich-text composer. */
   typingDelayMs?: number;
-  /** Grace period after completion before one cheap attachment re-scan. */
+  /** After the answer, how long the set of attachment cards must hold still (re-scanned every
+   * pollIntervalMs, for at most 6 s or this time plus one poll); skipped for a text-only request. */
   attachmentSettleMs?: number;
+  /** How long a response's text must hold still before it counts as complete. */
   stabilityWindowMs?: number;
+  /** How long the composer must keep the entered message before it is verified for sending. */
+  composerStabilityMs?: number;
   pollIntervalMs?: number;
   /** Extra quiet time before an unchanged response counts as complete with no streaming signal. */
   quietStreamingGraceMs?: number;
@@ -109,6 +116,8 @@ type Active = {
   page: PageLike;
   workspaceKey: string;
   workspaceRoot?: string;
+  /** The last message entered in this conversation, for a later read (a digest, never the text). */
+  entered?: EnteredMessage;
 };
 
 type DiscoveryFlight = {
@@ -231,7 +240,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
       {
         ackTimeoutMs: options.ackTimeoutMs,
         responseStartTimeoutMs: options.responseStartTimeoutMs,
-        attachmentSettleMs: options.attachmentSettleMs
+        attachmentSettleMs: options.attachmentSettleMs,
+        attachmentPollIntervalMs: options.pollIntervalMs
       }
     );
     this.adapters = options.adapters ?? [
@@ -240,6 +250,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
           hostnames: this.appHosts,
           attachmentHosts: options.downloadHosts,
           stabilityWindowMs: options.stabilityWindowMs,
+          composerStabilityMs: options.composerStabilityMs,
           pollIntervalMs: options.pollIntervalMs,
           quietStreamingGraceMs: options.quietStreamingGraceMs,
           typingDelayMs: options.typingDelayMs
@@ -401,17 +412,60 @@ export class BrowserTransport implements InteractiveAgentTransport {
         );
       diagnosticPage = item.page;
       diagnosticAdapter = item.adapter;
-      const response = await this.driver.invoke(item.page, item.conversation, item.agent, item.adapter, {
-        message: request.message,
+      // A later read judges the last message typed into this conversation: an ask that ends before
+      // typing begins leaves the previous record in place.
+      const entered = enteredMessage(request.message, request.requestId);
+      try {
+        const response = await this.driver.invoke(item.page, item.conversation, item.agent, item.adapter, {
+          message: request.message,
+          requestId: request.requestId,
+          signal: request.signal,
+          onProgress: request.onProgress,
+          workspaceKey: item.workspaceKey,
+          workspaceRoot: item.workspaceRoot,
+          timeoutMs: this.responseTimeoutMs,
+          entered,
+          ...(request.expectFiles === false ? { expectFiles: false } : {})
+        });
+        item.conversation.state = "ready";
+        return response as AgentResponse;
+      } finally {
+        if (entered.typed) item.entered = entered;
+      }
+    } catch (error) {
+      await this.attachFingerprint(error, diagnosticPage, diagnosticAdapter);
+      throw mapTransportError(error);
+    }
+  }
+
+  /** m365_agent_session action=read: reads the conversation's page without sending anything (see
+   * ConversationDriver.read), judging the last message entered in it. */
+  async readConversation(
+    conversation: TransportConversation,
+    request: AgentReadRequest
+  ): Promise<ConversationReading> {
+    let diagnosticPage: PageLike | undefined;
+    let diagnosticAdapter: ChatUiAdapter | undefined;
+    try {
+      const item = this.lookup(conversation);
+      if (!item)
+        throw new BrowserTransportError(
+          this.manager.isRunning() && !this.contextInvalidated ? "CONVERSATION_NOT_FOUND" : "BROWSER_CRASHED",
+          "The browser conversation is invalid or the browser context closed."
+        );
+      diagnosticPage = item.page;
+      diagnosticAdapter = item.adapter;
+      const reading = await this.driver.read(item.page, item.conversation, item.agent, item.adapter, {
         requestId: request.requestId,
         signal: request.signal,
         onProgress: request.onProgress,
         workspaceKey: item.workspaceKey,
         workspaceRoot: item.workspaceRoot,
-        timeoutMs: this.responseTimeoutMs
+        timeoutMs: this.responseTimeoutMs,
+        entered: item.entered
       });
       item.conversation.state = "ready";
-      return response as AgentResponse;
+      return reading;
     } catch (error) {
       await this.attachFingerprint(error, diagnosticPage, diagnosticAdapter);
       throw mapTransportError(error);
@@ -816,10 +870,16 @@ export class BrowserTransport implements InteractiveAgentTransport {
 function mapTransportError(error: unknown): DomainError {
   if (error instanceof DomainError) return error;
   if (error instanceof BrowserTransportError) {
-    const retry = retryAdvice(error.code);
+    const submissionState = error.details?.submissionState as "not-sent" | "sent" | "unknown" | undefined;
+    // A failure whose message was or may have been submitted is never offered for a blind retry,
+    // whatever its code: retrying could send the message twice.
+    const retry =
+      submissionState === "sent" || submissionState === "unknown"
+        ? { retryable: false }
+        : retryAdvice(error.code);
     const domainError = new DomainError(error.code, error.message, retry.retryable, {
       remediation: error.remediation,
-      submissionState: error.details?.submissionState as "not-sent" | "sent" | "unknown" | undefined,
+      submissionState,
       partialResponse: error.details?.partialResponse as never,
       // item 1: forwarded across IPC (see domain/errors.ts's ApplicationError and
       // ipc/protocol.ts's IpcResponse error shape) so the CLI/extension can append the redacted

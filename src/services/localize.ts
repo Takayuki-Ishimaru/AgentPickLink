@@ -593,8 +593,8 @@ const ERROR_CODE_TEXT = {
     ja: "応答が制限時間内に完了しませんでした。",
     en: "The response did not finish within the time budget.",
     remediation: {
-      ja: "プロンプトは再送されていません。非表示のブラウザーで応答が続いている可能性があります。同じ会話ハンドルで続きを読むか、browser.responseTimeoutMs を延ばしてください。",
-      en: "The prompt was not resubmitted. The response may still complete in the hidden browser; continue the same conversation handle to read it, or raise browser.responseTimeoutMs."
+      ja: "プロンプトは再送されていません。非表示のブラウザーで応答が続いている可能性があります。エラーに conversationHandle が含まれていれば、m365_agent_session の action=read でその会話を読むと、再送せずに応答を回収できます。最初から長く待つには browser.responseTimeoutMs を延ばしてください。",
+      en: "The prompt was not resubmitted. The response may still complete in the hidden browser: if the error includes a conversationHandle, m365_agent_session with action=read collects it without sending the prompt again. To wait longer in the first place, raise browser.responseTimeoutMs."
     }
   },
   RESPONSE_EXTRACTION_FAILED: {

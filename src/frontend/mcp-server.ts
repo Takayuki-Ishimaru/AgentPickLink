@@ -156,14 +156,20 @@ function describeProgressPhase(event: ProgressEvent): string {
       return "submitting";
     case "submitted":
       return "submitted";
+    case "checking-message":
+      return "checking whether the message is in the conversation";
     case "waiting-response":
       return "waiting for response";
     case "streaming":
       return typeof event.responseChars === "number"
         ? `streaming: ${event.responseChars.toLocaleString("en-US")} chars`
         : "streaming";
+    case "confirming-response":
+      return "confirming the answer is complete";
     case "extracting":
       return "extracting response";
+    case "checking-attachments":
+      return "checking for files that arrive after the answer";
     case "saving-attachments":
       return "saving attachments";
     case "login-waiting":
@@ -338,9 +344,11 @@ export async function createSdkServer(
     args: unknown,
     mcpReq: ProgressCapableRequest & { signal: AbortSignal }
   ) => {
+    // Creating a conversation can wait for a sign-in, and reading one waits for its reply: both
+    // report progress like an ask.
+    const sessionAction = name === "m365_agent_session" ? (args as { action?: unknown })?.action : undefined;
     const forwarder =
-      name === "m365_agent_ask" ||
-      (name === "m365_agent_session" && (args as { action?: unknown })?.action === "new")
+      name === "m365_agent_ask" || sessionAction === "new" || sessionAction === "read"
         ? createProgressForwarder(mcpReq)
         : { onProgress: undefined, dispose: () => {} };
     try {

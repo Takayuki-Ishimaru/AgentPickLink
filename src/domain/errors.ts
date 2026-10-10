@@ -74,6 +74,10 @@ export type ApplicationError = {
   /** Sibling to `callLog`: true when the root cause was a launch timeout (ours or Playwright's
    * own). Same "logs only, never the MCP tool result" rule applies. */
   timedOut?: boolean;
+  /** The conversation a failed ask left open because its message was or may have been sent: read
+   * it with `m365_agent_session` action `read` to learn whether the message arrived and to collect
+   * the reply, without sending the message again. */
+  conversationHandle?: string;
 };
 export type ApplicationErrorResult = { ok: false; requestId: string; error: ApplicationError };
 
@@ -84,7 +88,7 @@ const remediation: Partial<Record<ErrorCode, string>> = {
   AGENT_BINDING_MISMATCH:
     "The workspace alias resolves to a different local Microsoft 365 agent binding. Review the registry and run: m365-agent workspace approve",
   SUBMIT_STATE_UNKNOWN:
-    "The message might have been submitted. It was not retried automatically. Inspect the existing conversation before deciding whether to send another request.",
+    "The message might have been submitted. It was not retried automatically. Do not send it again blindly: if this error includes a conversationHandle, call m365_agent_session with action=read and that handle to learn whether the message arrived and to collect the reply; otherwise check the conversation in Microsoft 365 first.",
   UI_CHANGED:
     "The Microsoft 365 page structure differs from what this version expects. Open the AgentPickLink panel, copy the diagnostic, and report it to the developer. Do not retry blindly.",
   WORKSPACE_NOT_CONFIGURED:
@@ -101,7 +105,7 @@ const remediation: Partial<Record<ErrorCode, string>> = {
     "Wait for the operation that is already using this conversation or the dedicated browser profile (an interactive sign-in window, for example) to finish, then retry.",
   // The automation browser is hidden, so remediation must never tell anyone to look at it.
   RESPONSE_TIMEOUT:
-    "The prompt was not resubmitted. The response may still complete in the hidden browser; continue the same conversation handle to read it, or raise browser.responseTimeoutMs."
+    "The prompt was not resubmitted. The response may still complete in the hidden browser: if this error includes a conversationHandle, call m365_agent_session with action=read and that handle to collect it without sending the prompt again. To wait longer in the first place, raise browser.responseTimeoutMs."
 };
 export class DomainError extends Error {
   constructor(

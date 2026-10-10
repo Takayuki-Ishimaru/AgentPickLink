@@ -1,7 +1,8 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 export type AuditEvent = {
-  event: "agent.invoke.complete" | "agent.invoke.failed";
+  /** agent.read.*: m365_agent_session action=read, which sends nothing (requestChars is 0). */
+  event: "agent.invoke.complete" | "agent.invoke.failed" | "agent.read.complete" | "agent.read.failed";
   requestId: string;
   workspace: string;
   agent: string;

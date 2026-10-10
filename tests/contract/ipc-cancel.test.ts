@@ -115,6 +115,46 @@ describe("IPC request cancellation (protocol minor 4)", () => {
     }
   });
 
+  // The broker may already have pressed send when its connection is lost: a request that can
+  // submit a message is then unknown and must not invite a blind retry. Others stay retryable.
+  it("never offers a lost in-flight submission for retry", async () => {
+    const pipe = await makePipe("apl-ipc-lost-");
+    const secret = "k".repeat(43);
+    const { server, signals } = await startCancellableServer(pipe, secret);
+    const client = new IpcClient(makeDescriptor(pipe, secret));
+    try {
+      await client.connect();
+      const failure = (pending: Promise<unknown>) =>
+        pending.then(
+          () => undefined,
+          (reason: unknown) => reason
+        );
+      const [invoke, test, check, list] = [
+        client.call("conversation.invoke", invokeParams, "req-invoke"),
+        client.call("agent.validate", { agent: "requirements", sendTestMessage: true }, "req-test"),
+        client.call("agent.validate", { agent: "requirements" }, "req-check"),
+        client.call("workspace.list", { root: "/workspace" }, "req-list")
+      ].map(failure);
+      await expect.poll(() => signals.size).toBe(4);
+      await server.close();
+      const lost = {
+        code: "BROKER_UNAVAILABLE",
+        retryable: false,
+        options: { submissionState: "unknown" }
+      };
+      expect(await invoke).toMatchObject(lost);
+      expect(await test).toMatchObject(lost);
+      for (const pending of [check, list]) {
+        const error = await pending;
+        expect(error).toMatchObject({ code: "BROKER_UNAVAILABLE", retryable: true });
+        expect((error as { options: { submissionState?: string } }).options.submissionState).toBeUndefined();
+      }
+    } finally {
+      client.close();
+      await server.close();
+    }
+  });
+
   it("fails only the request whose result cannot be sent, keeping the broker and connection up", async () => {
     const pipe = await makePipe("apl-ipc-oversize-");
     const secret = "g".repeat(43);

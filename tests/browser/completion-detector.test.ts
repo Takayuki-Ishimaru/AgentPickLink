@@ -6,8 +6,12 @@ import type { LocatorLike, PageLike } from "../../src/transports/browser/types.j
 
 type Signal = { text: string; streaming?: boolean; stopControl?: boolean };
 
-/** A page whose observable state is a scripted sequence: one entry per completion poll. */
-function scriptedPage(steps: Signal[]): { page: PageLike; polls: () => number } {
+/** A page whose observable state is a scripted sequence: one entry per completion poll. `onWait`
+ * sees each wait between two polls, so a test can move a virtual clock with it. */
+function scriptedPage(
+  steps: Signal[],
+  onWait?: (ms: number) => void
+): { page: PageLike; polls: () => number } {
   let index = 0;
   const current = () => steps[Math.min(index, steps.length - 1)] ?? { text: "" };
   const page: PageLike = {
@@ -23,11 +27,33 @@ function scriptedPage(steps: Signal[]): { page: PageLike; polls: () => number } 
       const locator: LocatorLike = { count: async () => (visible ? 1 : 0), isVisible: async () => true };
       return locator;
     },
-    waitForTimeout: async () => {
+    waitForTimeout: async (ms) => {
       index++;
+      onWait?.(ms);
     }
   };
   return { page, polls: () => index };
+}
+
+/** One run of the detector on a virtual clock (`Date.now()` moves only when it waits) that notes the
+ * poll each `onSettling` call came on: poll 0 is the first look at the page. */
+async function settlingRun(steps: Signal[], stabilityWindowMs: number) {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const { page, polls } = scriptedPage(steps, (ms) => {
+      now += ms;
+    });
+    const settledOnPoll: number[] = [];
+    const result = await new CompletionDetector({
+      stabilityWindowMs,
+      pollIntervalMs: 1,
+      quietStreamingGraceMs: 0
+    }).wait(page, { assistantCount: 1 }, 60_000, undefined, () => settledOnPoll.push(polls()));
+    return { result, settledOnPoll };
+  } finally {
+    clock.mockRestore();
+  }
 }
 
 describe("CompletionDetector", () => {
@@ -112,6 +138,115 @@ describe("CompletionDetector", () => {
     await expect(detector.wait(page, { assistantCount: 1 }, 1_000, controller.signal)).resolves.toMatchObject(
       { complete: false, cancelled: true, reason: "cancelled" }
     );
+  });
+
+  // v0.2.8 review 2026-10-10: text that merely held still while the agent was still generating (a
+  // status line while it searches) is not an answer the moment the stop control goes away.
+  it("requires the text to hold still for the whole window after the stop control disappears", async () => {
+    const start = 1_000_000;
+    let now = start;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const steps: Signal[] = [
+        ...Array.from({ length: 10 }, () => ({ text: "Searching…", stopControl: true })),
+        ...Array.from({ length: 40 }, () => ({ text: "Searching…" }))
+      ];
+      let index = 0;
+      const page: PageLike = {
+        ...scriptedPage(steps).page,
+        evaluate: async () =>
+          ({ text: steps[Math.min(index, steps.length - 1)]!.text, streaming: false }) as never,
+        getByRole: (_role, options) => {
+          const visible =
+            options?.name instanceof RegExp &&
+            options.name.test("生成を停止") &&
+            steps[Math.min(index, steps.length - 1)]!.stopControl === true;
+          return { count: async () => (visible ? 1 : 0), isVisible: async () => true };
+        },
+        waitForTimeout: async (ms) => {
+          index++;
+          now += ms;
+        }
+      };
+      const detector = new CompletionDetector({ stabilityWindowMs: 1_000, pollIntervalMs: 100 });
+      const result = await detector.wait(page, { assistantCount: 1 }, 60_000);
+      expect(result).toMatchObject({ complete: true, sawStreamingSignal: true });
+      // The control was last seen at 900 ms and gone from 1000 ms: complete no earlier than 2000 ms
+      // (before the fix: at 1000 ms, as the text had not changed since the start).
+      expect(now - start).toBeGreaterThanOrEqual(2_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("calls back when a quiet period starts, never while the agent is still generating", async () => {
+    const { page } = scriptedPage([
+      { text: "part", stopControl: true },
+      { text: "part two", stopControl: true },
+      { text: "part two" },
+      { text: "part two, done" },
+      { text: "part two, done" },
+      { text: "part two, done" }
+    ]);
+    const settling = vi.fn();
+    const detector = new CompletionDetector({ stabilityWindowMs: 0, pollIntervalMs: 1 });
+    await expect(
+      detector.wait(page, { assistantCount: 1 }, 5_000, undefined, settling)
+    ).resolves.toMatchObject({ complete: true });
+    // Once when the control went away, then the completion at the same poll (window 0).
+    expect(settling).toHaveBeenCalledTimes(1);
+  });
+
+  // v0.2.8 review 2026-10-10: "confirming the answer is complete" is only true once the answer held
+  // still. A text that changes on every poll with no streaming signal used to alternate it with
+  // "streaming", because the poll that showed a changed text reported it as well.
+  it("does not call back while the text grows on every poll, then calls back once when it stops", async () => {
+    const growing = ["a", "ab", "abc", "abcd", "abcde"].map((text) => ({ text }));
+
+    const { result, settledOnPoll } = await settlingRun([...growing, { text: "abcde" }], 3);
+
+    // Polls 0-4 each showed a longer text; poll 5 is the first to show the final text again. The
+    // answer then holds still for the rest of the window without a second call.
+    expect(settledOnPoll).toEqual([5]);
+    expect(result).toMatchObject({ complete: true, sawStreamingSignal: false, finalChars: 5 });
+  });
+
+  it("calls back once when a streaming signal clears and the text is unchanged", async () => {
+    const generating = { text: "answer", stopControl: true };
+
+    const { result, settledOnPoll } = await settlingRun(
+      [generating, generating, generating, { text: "answer" }],
+      3
+    );
+
+    // Never while the control is shown (polls 0-2); on the first poll without it, and not again on
+    // the polls that follow while the window runs out.
+    expect(settledOnPoll).toEqual([3]);
+    expect(result).toMatchObject({ complete: true, sawStreamingSignal: true });
+  });
+
+  it("calls back for each quiet period: again after the text changed in between", async () => {
+    const { result, settledOnPoll } = await settlingRun(
+      [{ text: "first" }, { text: "first" }, { text: "first" }, { text: "second" }, { text: "second" }],
+      10
+    );
+
+    // The text first held still on poll 1; the change on poll 3 ended that period, and the new
+    // text held still on poll 4.
+    expect(settledOnPoll).toEqual([1, 4]);
+    expect(result).toMatchObject({ complete: true, finalChars: 6 });
+  });
+
+  it("ends a quiet period when a streaming signal appears, and calls back again when it clears", async () => {
+    const generating = { text: "answer", stopControl: true };
+
+    const { result, settledOnPoll } = await settlingRun(
+      [{ text: "answer" }, { text: "answer" }, generating, generating, { text: "answer" }],
+      3
+    );
+
+    expect(settledOnPoll).toEqual([1, 4]);
+    expect(result).toMatchObject({ complete: true, sawStreamingSignal: true });
   });
 
   it("never reports completion for an empty response node", async () => {

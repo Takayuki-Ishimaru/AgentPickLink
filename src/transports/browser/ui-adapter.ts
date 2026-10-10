@@ -1,6 +1,7 @@
 import type {
   BrowserAgentVerification,
   CompletionResult,
+  ConversationExchange,
   ConversationMarker,
   ExtractedResponse,
   LocatorLike,
@@ -29,6 +30,16 @@ export interface IdentityAssertion {
   identity?: DetectedAgentIdentity;
   code?: "AGENT_IDENTITY_UNVERIFIED" | "AGENT_IDENTITY_MISMATCH" | "AGENT_CONTEXT_CHANGED";
 }
+/** What a submission must still match when the send control is pressed (see activateSendControl). */
+export interface SubmitGuard {
+  /** The requested message, which the composer must still hold. */
+  message: string;
+  /** The submission marker captured when the message was verified, with its page context. */
+  marker: SubmissionMarker;
+  /** Verifies again the agent identity, page address, conversation and composer text that were
+   * verified before submission. Rejects with a BrowserTransportError when any changed. */
+  verifyBeforePress(): Promise<void>;
+}
 export interface ChatUiAdapter {
   readonly id: string;
   readonly canSubmit: boolean;
@@ -46,7 +57,7 @@ export interface ChatUiAdapter {
   captureSubmissionMarker(page: PageLike, verifiedIdentityDigest?: string): Promise<SubmissionMarker>;
   fillComposer(page: PageLike, message: string, signal?: AbortSignal): Promise<void>;
   clearComposer(page: PageLike): Promise<void>;
-  submitComposer(page: PageLike, signal?: AbortSignal): Promise<void>;
+  submitComposer(page: PageLike, signal?: AbortSignal, guard?: SubmitGuard): Promise<void>;
   waitForUserMessageAck(
     page: PageLike,
     marker: SubmissionMarker,
@@ -59,13 +70,20 @@ export interface ChatUiAdapter {
     timeoutMs: number,
     signal?: AbortSignal
   ): Promise<ResponseMarker>;
+  /** `onSettling` is called once per quiet period -- when the same response text has been seen on
+   * two polls in a row with nothing generating, never on the poll where the text changed -- so the
+   * caller can say it is confirming the answer. */
   waitForResponseComplete(
     page: PageLike,
     marker: ResponseMarker,
     timeoutMs: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSettling?: () => void
   ): Promise<CompletionResult>;
   extractLatestResponse(page: PageLike, marker: ResponseMarker): Promise<ExtractedResponse>;
+  /** The conversation's latest exchange, for reading it without sending anything. Optional so a
+   * hand-built test double stays a valid adapter; every real adapter (BaseChatUiAdapter) has it. */
+  captureExchange?(page: PageLike): Promise<ConversationExchange>;
   /** Best-effort, metadata-only structural snapshot (which regions/controls were detected -- see
    * UiFingerprint), used to enrich a UI-drift incident so it can be diagnosed without reading DOM
    * text. Optional so a hand-built test double that does not need it stays a valid ChatUiAdapter;

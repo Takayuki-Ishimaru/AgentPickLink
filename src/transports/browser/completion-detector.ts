@@ -22,16 +22,36 @@ export class CompletionDetector {
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
     this.quietStreamingGraceMs = options.quietStreamingGraceMs ?? 3_000;
   }
+  /**
+   * `onSettling` is called once per quiet period, when the answer has actually held still: the same
+   * non-empty text on two polls in a row, nothing generating on the second (so the caller can report
+   * that it is confirming the answer). It is not called on the poll where the text just changed, so
+   * text that grows on every poll never reports it. A quiet period ends when the text changes or a
+   * streaming signal appears; the next one reports again.
+   */
   async wait(
     page: PageLike,
     marker: ResponseMarker,
     timeoutMs = 300_000,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSettling?: () => void
   ): Promise<CompletionResult> {
     const started = Date.now();
     let last = "";
-    let stableSince = 0;
     let sawStreamingSignal = false;
+    // Where the stability measurement of the current text started: the poll that first showed it
+    // (non-empty, no streaming signal), or the first poll without a streaming signal when the text
+    // did not change meanwhile. Undefined while something is generating and while the text is empty.
+    // A streaming signal restarts the count when it clears: the page can still change the text right
+    // after it stops generating (a final re-render with citations), so text that merely held still
+    // while the agent was busy -- a status line while it searches -- must not count as an answer the
+    // moment the signal goes.
+    let quietSince: number | undefined;
+    // Whether `onSettling` was called for the current quiet period: the same non-empty text on two
+    // polls in a row, the second without a streaming signal. A poll where the text just changed only
+    // starts the stability measurement above; the next poll that shows that text reports. A change of
+    // the text, or a streaming signal, ends the period.
+    let settlingReported = false;
     while (Date.now() - started < timeoutMs) {
       if (signal?.aborted)
         return {
@@ -43,17 +63,30 @@ export class CompletionDetector {
           finalChars: last.length
         };
       const state = await this.signal(page, marker);
-      if (state.streaming) sawStreamingSignal = true;
-      if (state.text !== last) {
+      const now = Date.now();
+      if (state.streaming) {
+        sawStreamingSignal = true;
         last = state.text;
-        stableSince = Date.now();
-      } else if (!stableSince && state.text && !state.streaming) stableSince = Date.now();
+        quietSince = undefined;
+        settlingReported = false;
+      } else if (state.text !== last) {
+        last = state.text;
+        quietSince = state.text ? now : undefined;
+        settlingReported = false;
+      } else if (state.text) {
+        // The same text as on the previous poll, nothing generating: the answer held still.
+        quietSince ??= now;
+        if (!settlingReported) {
+          settlingReported = true;
+          onSettling?.();
+        }
+      }
       // A response is only complete when there is text, nothing is still generating, and the text
       // held still. Without any streaming evidence the wait additionally serves the grace period,
       // so a not-yet-started response is never mistaken for a finished one.
-      if (state.text && !state.streaming && stableSince) {
+      if (state.text && quietSince !== undefined) {
         const required = this.stabilityWindowMs + (sawStreamingSignal ? 0 : this.quietStreamingGraceMs);
-        if (Date.now() - stableSince >= required)
+        if (now - quietSince >= required)
           return { complete: true, reason: "stable", sawStreamingSignal, finalChars: state.text.length };
       }
       await delay(this.pollIntervalMs, page);

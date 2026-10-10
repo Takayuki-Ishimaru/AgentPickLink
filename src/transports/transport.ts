@@ -1,5 +1,5 @@
 import type { AgentDefinition } from "../domain/agent.js";
-import type { AgentResponse } from "../domain/response.js";
+import type { AgentResponse, ConversationReading } from "../domain/response.js";
 import type { ConversationTransportHandle } from "../domain/conversation.js";
 import type { ProgressSink } from "../domain/progress.js";
 /** Development relaxations a transport is running with. Reported through `broker.health` so the
@@ -38,7 +38,17 @@ export type AgentInvokeRequest = {
   signal?: AbortSignal;
   /** Optional metadata-only progress sink (see src/domain/progress.ts). */
   onProgress?: ProgressSink;
+  /** False when the caller asks only for a text answer: the transport then does not wait for files
+   * that can appear after the answer. Files shown with the answer are still saved. Default true. */
+  expectFiles?: boolean;
 };
+/** Reading a conversation (m365_agent_session action=read) sends nothing. */
+export type AgentReadRequest = {
+  requestId?: string;
+  signal?: AbortSignal;
+  onProgress?: ProgressSink;
+};
+export type { ConversationReading };
 /** Report returned by a LocalStatePreparer.verifyLocalState() implementation. */
 export type LocalStateReport = { owned: boolean };
 /**
@@ -86,6 +96,13 @@ export interface AgentTransport {
   validateAgent(agent: AgentDefinition): Promise<ValidationResult>;
   createConversation(agent: AgentDefinition, context: InvocationContext): Promise<TransportConversation>;
   invoke(conversation: TransportConversation, request: AgentInvokeRequest): Promise<AgentResponse>;
+  /** Reads the conversation without sending anything: whether the last message entered in it is
+   * shown, and the reply to the latest user message, waiting for it to finish. Optional: a
+   * transport without it cannot serve m365_agent_session action=read. */
+  readConversation?(
+    conversation: TransportConversation,
+    request: AgentReadRequest
+  ): Promise<ConversationReading>;
   closeConversation(conversation: TransportConversation): Promise<void>;
   dispose(): Promise<void>;
 }

@@ -62,12 +62,15 @@ describe("submission safety", () => {
     expect(ack.reason).toContain("after the send control was activated");
   });
 
-  it("reports not-sent only on the positive signal that the composer still holds the exact text", async () => {
+  it("stays unknown even when the composer still holds the exact text", async () => {
+    // v0.2.8 review: a UI can accept the message and only render it, and clear the composer, later.
+    // The text still showing in the composer is no evidence that nothing was sent.
     const adapter = new M365CopilotChatAdapter({ hostnames: ["m365.example.test"] });
 
     const ack = await adapter.waitForUserMessageAck(ackPage({ composerText: "hello" }), marker(), 30);
 
-    expect(ack).toMatchObject({ state: "not-sent" });
+    expect(ack.state).toBe("unknown");
+    expect(ack.reason).toContain("after the send control was activated");
   });
 
   it("stays unknown when a user message did appear but could not be correlated", async () => {

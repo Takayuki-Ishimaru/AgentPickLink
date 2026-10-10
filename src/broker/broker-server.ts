@@ -11,6 +11,7 @@ import {
   assertNever,
   BROKER_CAPABILITIES,
   BROKER_PROTOCOL,
+  BROKER_READ_MINOR,
   type BrokerDescriptor,
   type BrokerBuild
 } from "../ipc/protocol.js";
@@ -234,7 +235,8 @@ export class BrokerServer {
         capabilities: [...BROKER_CAPABILITIES],
         instanceId: this.instanceId
       },
-      (method, params, requestId, notify, signal) => this.dispatch(method, params, requestId, notify, signal)
+      (method, params, requestId, notify, signal, client) =>
+        this.dispatch(method, params, requestId, notify, signal, client)
     );
     this.unsubscribeCrash = this.deps.router.get("browser")?.onBrowserCrash?.((event) => {
       this.conversations?.failAll();
@@ -400,7 +402,8 @@ export class BrokerServer {
     params: Record<string, unknown>,
     requestId: string,
     notify: ProgressSink,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    client?: { protocolMinor: number }
   ): Promise<unknown> {
     const stopFailed = this.descriptor?.state === "stop-failed";
     if (this.stopping && method !== "broker.shutdown" && !(stopFailed && method === "broker.health"))
@@ -411,7 +414,7 @@ export class BrokerServer {
       this.lastActivity = Date.now();
     }
     try {
-      return await this.route(method, params, requestId, notify, signal);
+      return await this.route(method, params, requestId, notify, signal, client);
     } catch (error) {
       // browser.*/agent.* methods are the only ones that talk to the automation browser
       // directly (conversation.* goes through InvocationService, which records its own
@@ -446,7 +449,8 @@ export class BrokerServer {
     params: Record<string, unknown>,
     requestId: string,
     notify: ProgressSink,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    client?: { protocolMinor: number }
   ): Promise<unknown> {
     switch (method) {
       case "broker.cancel":
@@ -574,6 +578,19 @@ export class BrokerServer {
           params.agent as string,
           params.message as string,
           params.conversationHandle as string | undefined,
+          requestId,
+          notify,
+          signal,
+          {
+            expectFiles: params.expectFiles as boolean | undefined,
+            // A client that cannot read a conversation is not left one to read.
+            readable: (client?.protocolMinor ?? BROKER_PROTOCOL.minor) >= BROKER_READ_MINOR
+          }
+        );
+      case "conversation.read":
+        return this.invocationService().read(
+          params.root as string,
+          params.conversationHandle as string,
           requestId,
           notify,
           signal

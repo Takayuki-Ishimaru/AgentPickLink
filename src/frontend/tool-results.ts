@@ -94,8 +94,9 @@ export async function success(result: Exclude<ApplicationResult, { ok: false }>)
 }> {
   const safe = jsonSafe(result);
   const content: SuccessContent[] = [{ type: "text", text: JSON.stringify(safe) }];
+  // An ask result, or a read result that holds a complete reply.
   if ("sourceType" in safe && safe.sourceType === "m365-agent") {
-    for (const attachment of safe.attachments) {
+    for (const attachment of safe.attachments ?? []) {
       if (attachment.status !== "saved" || !attachment.localPath) continue;
       content.push({
         type: "resource_link",

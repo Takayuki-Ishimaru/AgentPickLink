@@ -19,5 +19,8 @@ export type Conversation = {
   createdAt: string;
   lastUsedAt: string;
   lastSubmissionState?: SubmissionState;
+  /** A one-shot ask's conversation that its failed ask left open, because the message was or may
+   * have been sent, so that it can be read: it closes once a read returns its complete reply. */
+  closeAfterRead?: boolean;
 };
 export const newConversationHandle = (): string => `conv_${randomBytes(24).toString("base64url")}`;

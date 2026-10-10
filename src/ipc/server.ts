@@ -13,7 +13,10 @@ export type BrokerHandler = (
   requestId: string,
   notify: ProgressSink,
   /** Aborted when the requesting client sends `broker.cancel` for this request. */
-  signal: AbortSignal
+  signal: AbortSignal,
+  /** The requesting connection: the protocol minor negotiated with its client, which decides what
+   * that client can be offered (a minor-4 client cannot read a conversation, for one). */
+  client?: { protocolMinor: number }
 ) => Promise<unknown>;
 export class IpcServer {
   private server?: net.Server;
@@ -81,6 +84,7 @@ export class IpcServer {
   private accept(socket: net.Socket): void {
     this.sockets.add(socket);
     let authenticated = false;
+    let protocolMinor = 0;
     // Requests of this connection still running, so only this client can cancel them.
     const inFlight = new Map<string, AbortController>();
     const decoder = new FrameDecoder();
@@ -99,6 +103,7 @@ export class IpcServer {
             if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
               throw new DomainError("BROKER_AUTH_FAILED", "Broker authentication failed.");
             authenticated = true;
+            protocolMinor = Math.min(BROKER_PROTOCOL.minor, handshake.protocolMinor);
             const capabilities = this.hello.capabilities.filter((capability) =>
               handshake.capabilities.includes(capability)
             );
@@ -108,7 +113,7 @@ export class IpcServer {
                 hello: {
                   ...this.hello,
                   protocolMajor: BROKER_PROTOCOL.major,
-                  protocolMinor: Math.min(BROKER_PROTOCOL.minor, handshake.protocolMinor),
+                  protocolMinor,
                   capabilities
                 }
               })
@@ -154,7 +159,9 @@ export class IpcServer {
           // Not awaited: a later frame of the same chunk -- a cancel above all -- must not wait
           // for this request, just as frames of later chunks already do not. dispatch() answers
           // every failure itself; anything else still ends only this connection.
-          void this.dispatch(socket, envelope.id, parsed, inFlight).catch(() => socket.destroy());
+          void this.dispatch(socket, envelope.id, parsed, inFlight, protocolMinor).catch(() =>
+            socket.destroy()
+          );
         }
       } catch (error) {
         const domain = asDomainError(error);
@@ -174,7 +181,8 @@ export class IpcServer {
     socket: net.Socket,
     id: string,
     parsed: ReturnType<typeof parseMethod>,
-    inFlight: Map<string, AbortController>
+    inFlight: Map<string, AbortController>,
+    protocolMinor: number
   ): Promise<void> {
     // Progress frames may be written on this socket, keyed to this request's id, any number of
     // times while the handler runs; they must never race or replace the final response. `settled`
@@ -190,7 +198,9 @@ export class IpcServer {
     inFlight.set(id, controller);
     let response: IpcResponse;
     try {
-      const result = await this.handler(parsed.method, parsed.params, id, notify, controller.signal);
+      const result = await this.handler(parsed.method, parsed.params, id, notify, controller.signal, {
+        protocolMinor
+      });
       response = { id, ok: true, result };
     } catch (error) {
       const domain = asDomainError(error);

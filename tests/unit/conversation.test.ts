@@ -114,6 +114,29 @@ describe("conversation ownership", () => {
     expect(() => service.get(second.handle)).toThrow(/expired/i);
     expect(third.state).toBe("creating");
   });
+  // A one-shot conversation kept open to be read was just handed to a caller who may read it at once
+  // to learn whether a message went out: it is evicted by its turn, least recently used first, not
+  // ahead of the caller's other sessions (independent review of the 2026-10-10 fixes).
+  it("evicts a conversation kept open for reading only by its turn, least recently used first", () => {
+    const owner = {
+      workspaceKey: "workspace-a",
+      agentAlias: "knowledge",
+      bindingFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    };
+    const service = new ConversationService("broker_a", {
+      maxPerWorkspace: 2,
+      maxTotal: 10,
+      idleExpirationMinutes: 30,
+      perConversationQueueLimit: 1
+    });
+    const session = service.ready(service.create(owner).handle);
+    session.lastUsedAt = new Date(Date.now() - 60_000).toISOString();
+    const kept = service.ready(service.create(owner).handle);
+    kept.closeAfterRead = true;
+    service.create(owner);
+    expect(() => service.get(session.handle)).toThrow(/expired/i);
+    expect(service.get(kept.handle)).toBe(kept);
+  });
   it("rejects handles created by another broker instance", () => {
     const first = new ConversationService("broker_a", {
       maxPerWorkspace: 6,

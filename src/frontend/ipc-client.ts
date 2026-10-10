@@ -16,6 +16,7 @@ export interface BrokerRpcTransport {
       | "conversation.list"
       | "conversation.close"
       | "conversation.closeAllForWorkspace"
+      | "conversation.read"
       | "agent.discover"
       | "browser.login"
       | "browser.cancelLogin"
@@ -70,7 +71,8 @@ export class IpcBrokerClient implements FrontendBrokerPort {
         root: workspaceRoot,
         agent: input.agent,
         message: input.message,
-        ...(input.conversationHandle ? { conversationHandle: input.conversationHandle } : {})
+        ...(input.conversationHandle ? { conversationHandle: input.conversationHandle } : {}),
+        ...(input.expectFiles === false ? { expectFiles: false } : {})
       },
       requestId,
       signal,
@@ -124,6 +126,27 @@ export class IpcBrokerClient implements FrontendBrokerPort {
         ? value
         : { ok: true, requestId, action: "close", conversation: publicConversation(value) };
     }
+    if (input.action === "read") {
+      const value = await this.call<Record<string, unknown>>(
+        "conversation.read",
+        { root: workspaceRoot, conversationHandle: input.conversationHandle },
+        requestId,
+        signal,
+        onProgress ? { onProgress } : undefined
+      );
+      if (isToolError(value)) return value;
+      // Only the published read fields: the output schema is strict.
+      const reading: Partial<SessionResult> = {};
+      for (const key of READ_RESULT_FIELDS)
+        if (value[key] !== undefined) (reading as Record<string, unknown>)[key] = value[key];
+      return {
+        ok: true,
+        requestId,
+        action: "read",
+        conversation: publicConversation(value.conversation as Record<string, unknown>),
+        ...reading
+      };
+    }
     const value = await this.call<unknown[]>(
       "conversation.closeAllForWorkspace",
       { root: workspaceRoot },
@@ -153,6 +176,21 @@ export class IpcBrokerClient implements FrontendBrokerPort {
     }
   }
 }
+
+/** What the broker's `conversation.read` result contributes to a read SessionResult. */
+const READ_RESULT_FIELDS = [
+  "message",
+  "messageRequestId",
+  "reply",
+  "text",
+  "citations",
+  "attachments",
+  "truncated",
+  "actionRequired",
+  "sourceType",
+  "partialResponse",
+  "conversationClosed"
+] as const satisfies readonly (keyof SessionResult)[];
 
 function publicConversation(value: Record<string, unknown>) {
   return {

@@ -219,6 +219,8 @@ export class ConversationService {
     const scoped = active.filter((item) => item.workspaceKey === workspaceKey);
     const overScoped = scoped.length >= this.limits.maxPerWorkspace;
     if (!overTotal && !overScoped) return;
+    // Least recently used first. A one-shot conversation kept open to be read is not preferred:
+    // it was just handed to a caller who may read it at once to learn whether a message went out.
     const candidate = (overScoped ? scoped : active)
       .filter((item) => item.state === "ready" && !this.queues.has(item.handle))
       .sort((a, b) => a.lastUsedAt.localeCompare(b.lastUsedAt))[0];

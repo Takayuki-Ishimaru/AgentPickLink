@@ -18,6 +18,7 @@ const cases = [
       new M365CopilotChatAdapter({
         hostnames: ["m365.example.test"],
         stabilityWindowMs: 1,
+        composerStabilityMs: 1,
         pollIntervalMs: 1,
         quietStreamingGraceMs: 1
       }),
@@ -30,6 +31,7 @@ const cases = [
       new AgentBuilderChatAdapter({
         hostnames: ["m365.example.test"],
         stabilityWindowMs: 1,
+        composerStabilityMs: 1,
         pollIntervalMs: 1,
         quietStreamingGraceMs: 1
       }),
@@ -42,6 +44,7 @@ const cases = [
       new CopilotStudioM365Adapter({
         hostnames: ["m365.example.test"],
         stabilityWindowMs: 1,
+        composerStabilityMs: 1,
         pollIntervalMs: 1,
         quietStreamingGraceMs: 1
       }),
@@ -54,6 +57,7 @@ const cases = [
       new TeamsWebAdapter({
         hostnames: ["teams.example.test"],
         stabilityWindowMs: 1,
+        composerStabilityMs: 1,
         pollIntervalMs: 1,
         quietStreamingGraceMs: 1
       }),
@@ -202,7 +206,7 @@ describe("current M365 direct-agent landing", () => {
   it("types through the rich-text composer's keyboard event path", async () => {
     const adapter = new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
-      stabilityWindowMs: 1
+      composerStabilityMs: 1
     });
     const calls: string[] = [];
     let value = "";
@@ -632,26 +636,50 @@ describe("rich-text composer typing latency", () => {
     typingError?: Error;
   }
   function richTextFixture(script: ComposerScript) {
+    /** What each typing attempt entered, every Shift+Enter as a line break, and the per-character
+     * delay it typed with. An attempt ends when the composer is read, except for the check of the
+     * composer right after a line break, which typing continues after. */
     const typed: { text: string; delay: number | undefined }[] = [];
+    /** Text handed to pressSequentially, which types "\n" as a bare Enter: never a line break. */
+    const sequences: string[] = [];
     const keys: string[] = [];
     const timeouts: (number | undefined)[] = [];
     let value = script.initialValue ?? "";
-    let attempt = 0;
+    let typing = false;
+    let afterLineBreak = false;
+    const input = (text: string, delay?: number) => {
+      if (!typing) typed.push({ text: "", delay });
+      typing = true;
+      afterLineBreak = text === "\n";
+      const attempt = typed.at(-1)!;
+      attempt.text += text;
+      if (delay !== undefined) attempt.delay = delay;
+      value += text;
+    };
     const composer: LocatorLike = {
       count: async () => 1,
       isVisible: async () => true,
       isEnabled: async () => true,
       getAttribute: async (name) => (name === "contenteditable" ? "true" : null),
-      textContent: async () => value,
+      textContent: async () => {
+        if (afterLineBreak) {
+          afterLineBreak = false;
+          return value;
+        }
+        if (typing) value = script.afterType?.[typed.length - 1] ?? value;
+        typing = false;
+        return value;
+      },
       click: async () => undefined,
       press: async (key) => {
         keys.push(key);
+        if (key === "Shift+Enter") input("\n");
         if (key === "Backspace" && script.clearable !== false) value = "";
       },
       pressSequentially: async (text, options) => {
-        typed.push({ text, delay: options?.delay });
+        sequences.push(text);
         timeouts.push(options?.timeout);
-        value = script.afterType?.[attempt++] ?? text;
+        input(text, options?.delay);
         if (script.typingError) throw script.typingError;
       }
     };
@@ -660,17 +688,19 @@ describe("rich-text composer typing latency", () => {
       locator: () => composer,
       waitForTimeout: async () => undefined
     };
-    return { page, typed, keys, timeouts };
+    return { page, typed, sequences, keys, timeouts };
   }
   const fastAdapter = () =>
-    new M365CopilotChatAdapter({ hostnames: ["m365.example.test"], stabilityWindowMs: 1 });
+    new M365CopilotChatAdapter({ hostnames: ["m365.example.test"], composerStabilityMs: 1 });
 
   it("types a CJK, multiline and emoji prompt with no per-character delay by default", async () => {
     const adapter = fastAdapter();
     const fixture = richTextFixture({});
     await expect(adapter.fillComposer(fixture.page, FAST_PROMPT)).resolves.toBeUndefined();
     expect(fixture.typed).toEqual([{ text: FAST_PROMPT, delay: 0 }]);
-    expect(fixture.keys).toEqual([]);
+    // The line break is Shift+Enter: a bare Enter is "send" in a chat composer (v0.2.8 review).
+    expect(fixture.keys).toEqual(["Shift+Enter"]);
+    expect(fixture.sequences.join("")).not.toContain("\n");
   });
 
   it("retries once with a conservative delay when the fast attempt corrupts the text", async () => {
@@ -681,15 +711,15 @@ describe("rich-text composer typing latency", () => {
       { text: FAST_PROMPT, delay: 0 },
       { text: FAST_PROMPT, delay: 20 }
     ]);
-    // Only the clear after the failed verification presses keys: the composer is empty before
-    // each attempt, so clearRichTextComposer returns early without pressing anything.
-    expect(fixture.keys).toEqual(["ControlOrMeta+A", "Backspace"]);
+    // Besides each attempt's line break, only the clear after the failed verification presses keys:
+    // the composer is empty before each attempt, so clearRichTextComposer returns early.
+    expect(fixture.keys).toEqual(["Shift+Enter", "ControlOrMeta+A", "Backspace", "Shift+Enter"]);
   });
 
   it("treats an explicit zero delay as fast first with the conservative fallback", async () => {
     const adapter = new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
-      stabilityWindowMs: 1,
+      composerStabilityMs: 1,
       typingDelayMs: 0
     });
     const fixture = richTextFixture({ afterType: [FAST_PROMPT.slice(0, -1), FAST_PROMPT] });
@@ -703,7 +733,7 @@ describe("rich-text composer typing latency", () => {
   it("honours an explicit custom delay on both attempts", async () => {
     const adapter = new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
-      stabilityWindowMs: 1,
+      composerStabilityMs: 1,
       typingDelayMs: 35
     });
     const fixture = richTextFixture({ afterType: ["", FAST_PROMPT] });
@@ -727,7 +757,7 @@ describe("rich-text composer typing latency", () => {
   it("allows enough bounded typing time for a long prompt and an explicit delay", async () => {
     const adapter = new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
-      stabilityWindowMs: 1,
+      composerStabilityMs: 1,
       typingDelayMs: 45
     });
     const fixture = richTextFixture({});

@@ -63,11 +63,17 @@ export const GlobalConfigSchema = z
         /** Per-character delay used when typing into a rich-text composer. 0 means: type the first
          * attempt without any per-character delay and retry once with a conservative delay. */
         typingDelayMs: z.number().int().min(0).max(200).default(0),
-        /** Grace period after completion before a second, cheap attachment re-scan. */
+        /** After the answer, how long the set of attachment cards must hold still (re-scanned every
+         * pollIntervalMs, for at most 6 s or this time plus one poll); 0 skips the wait. */
         attachmentSettleMs: z.number().int().min(0).max(60000).default(2000),
         /** Total budget across all attachment downloads, including retries. */
         attachmentPhaseTimeoutMs: z.number().int().positive().max(600000).default(45000),
+        /** How long a response's text must hold still before it counts as complete. */
         stabilityWindowMs: z.number().int().positive().default(1800),
+        /** How long the composer must keep the entered message before it is verified for sending.
+         * The press itself is guarded when it happens, so this only decides how early an editor
+         * that rewrites the message is noticed. */
+        composerStabilityMs: z.number().int().min(0).max(10000).default(500),
         pollIntervalMs: z.number().int().positive().default(250),
         idleShutdownMinutes: z.number().int().positive().default(30),
         acceptDownloads: z.boolean().default(true),

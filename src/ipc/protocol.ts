@@ -5,9 +5,14 @@ export { assertNever };
  * non-cancellable discovery path; the server negotiates the lower minor. Minor 4 adds
  * `broker.cancel`: a client stops one of its own in-flight requests by id, and handlers that honor
  * the request's signal (`conversation.invoke`) wind down. A client sends it only when the negotiated
- * minor is at least `BROKER_CANCEL_MINOR`, so an older broker never sees the method. */
-export const BROKER_PROTOCOL = { major: 1, minor: 4 } as const;
+ * minor is at least `BROKER_CANCEL_MINOR`, so an older broker never sees the method. Minor 5 adds
+ * `conversation.read` (reads a conversation without sending anything), `expectFiles` on
+ * `conversation.invoke`, and `conversationHandle` on a failed invoke that left its conversation
+ * open; a client calls `conversation.read` only when the negotiated minor is at least
+ * `BROKER_READ_MINOR`. */
+export const BROKER_PROTOCOL = { major: 1, minor: 5 } as const;
 export const BROKER_CANCEL_MINOR = 4;
+export const BROKER_READ_MINOR = 5;
 export const BROKER_CAPABILITIES = ["conversation", "workspace-policy", "interactive-setup"] as const;
 export type BrokerDescriptor = {
   pid: number;
@@ -65,5 +70,7 @@ export type IpcResponse =
          * src/frontend/tool-results.ts's `failure()`). */
         callLog?: string[];
         timedOut?: boolean;
+        /** Minor 5: the conversation a failed invoke left open (see ApplicationError). */
+        conversationHandle?: string;
       };
     };

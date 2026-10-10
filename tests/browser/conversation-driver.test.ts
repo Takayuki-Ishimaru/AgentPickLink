@@ -1,10 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
+import { DomainError } from "../../src/domain/errors.js";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
-import { ConversationDriver } from "../../src/transports/browser/conversation-driver.js";
+import {
+  ConversationDriver,
+  enteredMessage,
+  enteredMessageDigest,
+  type ConversationDriverOptions
+} from "../../src/transports/browser/conversation-driver.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
-import type { ChatUiAdapter } from "../../src/transports/browser/ui-adapter.js";
-import type { BrowserAgentDefinition, PageLike } from "../../src/transports/browser/types.js";
+import type { ChatUiAdapter, SubmitGuard } from "../../src/transports/browser/ui-adapter.js";
+import {
+  BrowserTransportError,
+  type AttachmentCandidate,
+  type BrowserAgentDefinition,
+  type ConversationExchange,
+  type EnteredMessage,
+  type PageLike
+} from "../../src/transports/browser/types.js";
 
 const fingerprint = `sha256:${"a".repeat(64)}`;
 const agent: BrowserAgentDefinition = {
@@ -680,11 +693,294 @@ describe("conversation submission guard", () => {
   });
 });
 
+// v0.2.8 review 01/02: what was verified before submission must hold when the control is pressed,
+// and every failure says how far the submission got -- never not-sent once the control was pressed.
+describe("the check before the press and the submission state of failures", () => {
+  const app = "https://m365.example.test/chat";
+  const plainPage = (url: () => string = () => app): PageLike => ({
+    url,
+    on: () => undefined,
+    off: () => undefined
+  });
+  const driver = () =>
+    new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      undefined,
+      { attachmentSettleMs: 0 }
+    );
+  const valid = {
+    valid: true,
+    identity: {
+      displayName: "Requirements",
+      surface: "m365-copilot",
+      digest: "expected",
+      evidence: ["visible-name"]
+    }
+  };
+  /** Runs the driver's check where the real adapter does: after the control became clickable. The
+   * composer still holds the typed message unless `composerText` says otherwise. */
+  function pressing(
+    overrides: Partial<ChatUiAdapter>,
+    record: { presses: number; cleared: number },
+    composerText = "hello"
+  ) {
+    return fixtureAdapter({
+      findComposer: async () => ({ inputValue: async () => composerText }),
+      submitComposer: async (_page, _signal, guard) => {
+        await guard!.verifyBeforePress();
+        record.presses++;
+      },
+      clearComposer: async () => {
+        record.cleared++;
+      },
+      ...overrides
+    });
+  }
+  /** A marker for each capture: the first is the verified one, the next the check's. */
+  const markers = (
+    ...changes: Array<
+      Partial<{ url: string; userCount: number; composerValue: string; pressContext: string }>
+    >
+  ) => {
+    let call = 0;
+    return async () => ({
+      userCount: 0,
+      assistantCount: 0,
+      url: app,
+      identityDigest: "expected",
+      composerValue: "hello",
+      capturedAt: 0,
+      ...changes[Math.min(call++, changes.length - 1)]
+    });
+  };
+
+  it("hands the adapter the message and the verified marker, and a check that passes when nothing changed", async () => {
+    const record = { presses: 0, cleared: 0 };
+    let handed: Pick<SubmitGuard, "message" | "marker"> | undefined;
+    const adapter = pressing(
+      {
+        captureSubmissionMarker: markers({ pressContext: "context at verification" }),
+        submitComposer: async (_page, _signal, guard) => {
+          handed = { message: guard!.message, marker: guard!.marker };
+          await guard!.verifyBeforePress();
+          record.presses++;
+        }
+      },
+      record
+    );
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).resolves.toMatchObject({ submissionState: "sent" });
+    expect(handed).toMatchObject({ message: "hello", marker: { pressContext: "context at verification" } });
+    expect(record).toEqual({ presses: 1, cleared: 0 });
+  });
+
+  it("does not refuse the press for a query or fragment the page added to its address", async () => {
+    const record = { presses: 0, cleared: 0 };
+    const adapter = pressing(
+      { captureSubmissionMarker: markers({}, { url: `${app}?tracking=1#top` }) },
+      record
+    );
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).resolves.toMatchObject({ submissionState: "sent" });
+    expect(record.presses).toBe(1);
+  });
+
+  // Independent review: a composer emptied because the message went out another way was reported
+  // not-sent. A new user message before the press is unknown, and nothing is pressed or cleared.
+  it("refuses the press as unknown, not as not sent, when a user message appeared meanwhile", async () => {
+    const record = { presses: 0, cleared: 0 };
+    const adapter = pressing(
+      { captureSubmissionMarker: markers({}, { userCount: 1, composerValue: "" }) },
+      record
+    );
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({
+      code: "SUBMIT_STATE_UNKNOWN",
+      message: expect.stringContaining("sent another way"),
+      details: { submissionState: "unknown" }
+    });
+    expect(record).toEqual({ presses: 0, cleared: 0 });
+  });
+
+  // Independent re-review: the composer emptied because the message went out another way, with the
+  // user bubble rendered only later, was still reported not-sent.
+  it("refuses the press as unknown when the page emptied the composer, even before any new user message", async () => {
+    const record = { presses: 0, cleared: 0 };
+    const adapter = pressing({ captureSubmissionMarker: markers({}, { composerValue: "" }) }, record, "");
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", details: { submissionState: "unknown" } });
+    expect(record).toEqual({ presses: 0, cleared: 0 });
+  });
+
+  it("reports a not-sent failure as unknown when the conversation gained a user message after typing began", async () => {
+    let userCount = 0;
+    const adapter = fixtureAdapter({
+      captureConversationMarker: async () => ({ userCount, assistantCount: 0 }),
+      // An editor that sent the lines typed so far, after which the typed text no longer matched.
+      fillComposer: async () => {
+        userCount = 1;
+        throw new BrowserTransportError("UI_CHANGED", "did not retain the message", undefined, {
+          submissionState: "not-sent"
+        });
+      }
+    });
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "first\nsecond" })
+    ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", details: { submissionState: "unknown" } });
+  });
+
+  it.each([
+    [
+      "the agent identity",
+      { assertAgentIdentity: undefined },
+      "AGENT_CONTEXT_CHANGED",
+      "could not be verified"
+    ],
+    ["the composer text", { composerValue: "changed" }, "UI_CHANGED", "composer changed"],
+    ["the page address", { url: `${app}/elsewhere` }, "AGENT_CONTEXT_CHANGED", "page address changed"]
+  ] as const)(
+    "refuses the press, not sent and with the draft cleared, when %s changed",
+    async (_name, change, code, message) => {
+      const record = { presses: 0, cleared: 0 };
+      let identities = 0;
+      const adapter = pressing(
+        "assertAgentIdentity" in change
+          ? {
+              assertAgentIdentity: async () =>
+                ++identities <= 2 ? valid : { valid: false, code: "AGENT_IDENTITY_MISMATCH" }
+            }
+          : { captureSubmissionMarker: markers({}, change) },
+        record
+      );
+      await expect(
+        driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+      ).rejects.toMatchObject({
+        code,
+        message: expect.stringContaining(message),
+        details: { submissionState: "not-sent" }
+      });
+      expect(record).toEqual({ presses: 0, cleared: 1 });
+    }
+  );
+
+  it("refuses the press as not sent when the page left the allowed boundary meanwhile", async () => {
+    const record = { presses: 0, cleared: 0 };
+    let moved = false;
+    const adapter = pressing(
+      {
+        submitComposer: async (_page, _signal, guard) => {
+          moved = true;
+          await guard!.verifyBeforePress();
+          record.presses++;
+        }
+      },
+      record
+    );
+    await expect(
+      driver().invoke(
+        plainPage(() => (moved ? "https://outside.example.test/chat" : app)),
+        conversation(),
+        agent,
+        adapter,
+        { message: "hello" }
+      )
+    ).rejects.toMatchObject({ code: "POLICY_BLOCKED", details: { submissionState: "not-sent" } });
+    expect(record.presses).toBe(0);
+  });
+
+  it("reports an unacknowledged press as unknown, with the metadata-only reason", async () => {
+    const adapter = fixtureAdapter({
+      waitForUserMessageAck: async () => ({
+        state: "unknown",
+        reason: "acknowledgement timeout after the send control was activated"
+      })
+    });
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({
+      code: "SUBMIT_STATE_UNKNOWN",
+      message: expect.stringContaining("acknowledgement timeout after the send control was activated"),
+      details: { submissionState: "unknown" }
+    });
+  });
+
+  const broken = () => new Error("Target page, context or browser has been closed");
+  it.each([
+    ["while filling", { fillComposer: async () => Promise.reject(broken()) }, "not-sent"],
+    [
+      "while the send control is being pressed",
+      { submitComposer: async () => Promise.reject(broken()) },
+      "unknown"
+    ],
+    [
+      "while waiting for the acknowledgement",
+      { waitForUserMessageAck: async () => Promise.reject(broken()) },
+      "unknown"
+    ],
+    ["after the acknowledgement", { waitForResponseStart: async () => Promise.reject(broken()) }, "sent"]
+  ] as const)(
+    "gives a page that failed %s the submission state it reached",
+    async (_name, failure, state) => {
+      const adapter = fixtureAdapter(failure);
+      await expect(
+        driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+      ).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+        message: "Target page, context or browser has been closed",
+        details: { submissionState: state }
+      });
+    }
+  );
+
+  it("keeps a failure's code and adds the state it lacked: an unreadable response was sent", async () => {
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => {
+        throw new BrowserTransportError("RESPONSE_EXTRACTION_FAILED", "not isolated");
+      }
+    });
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({ code: "RESPONSE_EXTRACTION_FAILED", details: { submissionState: "sent" } });
+  });
+
+  it("never leaves a failure that may have submitted the message retryable", async () => {
+    const adapter = fixtureAdapter({
+      waitForUserMessageAck: async () => {
+        throw new DomainError("BROWSER_CRASHED", "The browser closed.", true);
+      }
+    });
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+    ).rejects.toMatchObject({
+      code: "BROWSER_CRASHED",
+      retryable: false,
+      options: { submissionState: "unknown" }
+    });
+  });
+
+  it("does not let a failing progress sink fail the request", async () => {
+    await expect(
+      driver().invoke(plainPage(), conversation(), agent, fixtureAdapter({}), {
+        message: "hello",
+        onProgress: () => {
+          throw new Error("sink closed");
+        }
+      })
+    ).resolves.toMatchObject({ submissionState: "sent" });
+  });
+});
+
 describe("conversation progress reporting", () => {
   it("emits ordered metadata-only phases, including a streaming heartbeat", async () => {
+    // The response grows by one character at each check.
+    let length = 6;
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
-      evaluate: async () => 7 as never,
+      evaluate: async () => ++length as never,
       on: () => undefined,
       off: () => undefined
     };
@@ -716,6 +1012,7 @@ describe("conversation progress reporting", () => {
     );
 
     const phases = events.map((event) => event.phase);
+    // Nothing to save, so no saving stage (v0.2.8 review 2026-10-10: progress says what is waited for).
     expect(phases.filter((phase) => phase !== "streaming")).toEqual([
       "asserting-identity",
       "filling",
@@ -723,15 +1020,78 @@ describe("conversation progress reporting", () => {
       "submitted",
       "waiting-response",
       "extracting",
-      "saving-attachments",
       "done"
     ]);
     const streaming = events.filter((event) => event.phase === "streaming");
     expect(streaming.length).toBeGreaterThan(0);
-    expect(streaming[0]).toMatchObject({ responseChars: 7 });
+    expect(streaming[0]).toMatchObject({ responseChars: 8 });
     expect(events.every((event) => typeof event.elapsedMs === "number")).toBe(true);
     // Progress is metadata only: no prompt or response text may appear in any message.
     expect(events.some((event) => (event.message ?? "").includes("hello"))).toBe(false);
+  });
+
+  // v0.2.8 review 2026-10-10: `streaming` says the reply is growing, so it is sent only when the
+  // length grew since the previous check. A reply that holds still, or shrinks, sends nothing, and
+  // the first check is only the baseline.
+  it("sends streaming only when the response grew since the previous check, once per interval", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      // The length each check finds, in order; the first check is the baseline, not a growth from 0.
+      const lengths = [40, 40, 25, 60, 60, 61];
+      const checkedAt: number[] = [];
+      const page: PageLike = {
+        url: () => "https://m365.example.test/chat",
+        evaluate: async () => {
+          checkedAt.push(Date.now());
+          return lengths[Math.min(checkedAt.length, lengths.length) - 1] as never;
+        },
+        on: () => undefined,
+        off: () => undefined
+      };
+      let finishReply!: () => void;
+      const adapter = fixtureAdapter({
+        waitForResponseComplete: () =>
+          new Promise((resolve) => {
+            finishReply = () => resolve({ complete: true });
+          })
+      });
+      const events: ProgressEvent[] = [];
+      const begun = Date.now();
+      const request = new ConversationDriver(
+        new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+        undefined,
+        { streamingProgressIntervalMs: 10, attachmentSettleMs: 0 }
+      ).invoke(page, conversation(), agent, adapter, {
+        message: "hello",
+        onProgress: (event) => events.push(event)
+      });
+
+      // The request is now waiting for the reply: only the baseline has been taken.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checkedAt).toEqual([begun]);
+      await vi.advanceTimersByTimeAsync(9);
+      expect(checkedAt).toHaveLength(1);
+      // One check per interval: 40 (same), 25 (shorter), 60 (grew), 60 (same), 61 (grew).
+      await vi.advanceTimersByTimeAsync(1);
+      for (let tick = 0; tick < 4; tick++) await vi.advanceTimersByTimeAsync(10);
+      expect(checkedAt).toEqual([0, 10, 20, 30, 40, 50].map((offset) => begun + offset));
+      expect(
+        events
+          .filter((event) => event.phase === "streaming")
+          .map((event) => [event.elapsedMs, event.responseChars])
+      ).toEqual([
+        [30, 60],
+        [50, 61]
+      ]);
+
+      // Once the reply is complete nothing is checked any more.
+      finishReply();
+      await request;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(checkedAt).toHaveLength(6);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -895,6 +1255,54 @@ describe("conversation timing and completion metadata", () => {
     }
   });
 
+  // v0.2.8 review 2026-10-10: the wait for files that arrive after the answer re-scans every
+  // attachmentPollIntervalMs (the transport passes browser.pollIntervalMs) until the set has held
+  // still for attachmentSettleMs, and gives up at max(attachmentMaxWaitMs, attachmentSettleMs + one
+  // poll) while the set keeps changing.
+  describe("the wait for files that arrive after the answer", () => {
+    const file = (index: number): AttachmentCandidate => ({
+      index,
+      name: "report.pdf",
+      url: `https://m365.example.test/files/${index}`
+    });
+
+    it("honours a settle time longer than attachmentMaxWaitMs: it ends once the set held still that long, not at the cap", async () => {
+      const run = await lateFilesWait(
+        { attachmentSettleMs: 80, attachmentPollIntervalMs: 20, attachmentMaxWaitMs: 30 },
+        () => [file(0)]
+      );
+
+      // A scan per poll interval. The set never changed, so the wait ended 80 ms after the first look:
+      // past the 30 ms cap, and before settle + one poll (100 ms) would have ended it.
+      expect(run.delays).toEqual([20, 20, 20, 20]);
+      expect(run.waited).toBe(80);
+      expect(run.extractions).toBe(5);
+      expect(run.saved).toEqual([file(0)]);
+    });
+
+    it.each([
+      // Below settle + one poll: the cap is settle + one poll, not attachmentMaxWaitMs.
+      { attachmentMaxWaitMs: 30, endsAt: 100, delays: [20, 20, 20, 20, 20] },
+      // Above it: the cap is attachmentMaxWaitMs, and the last wait is cut short to end exactly there.
+      { attachmentMaxWaitMs: 130, endsAt: 130, delays: [20, 20, 20, 20, 20, 20, 10] }
+    ])(
+      "ends a set that keeps changing at $endsAt ms with attachmentMaxWaitMs $attachmentMaxWaitMs (settle 80, poll 20)",
+      async ({ attachmentMaxWaitMs, endsAt, delays }) => {
+        const run = await lateFilesWait(
+          { attachmentSettleMs: 80, attachmentPollIntervalMs: 20, attachmentMaxWaitMs },
+          // A file nobody has seen before at every scan: the set never holds still.
+          (scan) => [file(scan)]
+        );
+
+        expect(run.delays).toEqual(delays);
+        expect(run.waited).toBe(endsAt);
+        expect(run.extractions).toBe(delays.length + 1);
+        // Every file seen on the way is still saved.
+        expect(run.saved).toEqual(Array.from({ length: delays.length + 1 }, (_, scan) => file(scan)));
+      }
+    );
+  });
+
   it("cancels observation before saving files", async () => {
     const controller = new AbortController();
     const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
@@ -978,6 +1386,477 @@ describe("conversation timing and completion metadata", () => {
   });
 });
 
+describe("waiting stages and text-only questions (v0.2.8 review 2026-10-10)", () => {
+  const page: PageLike = {
+    url: () => "https://m365.example.test/chat",
+    evaluate: async () => 7 as never,
+    on: () => undefined,
+    off: () => undefined
+  };
+  const driver = (save = vi.fn(async () => [])) =>
+    new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save } as never,
+      { attachmentSettleMs: 60, attachmentPollIntervalMs: 10, attachmentMaxWaitMs: 500 }
+    );
+
+  it("does not report a reply that holds still as streaming", async () => {
+    const adapter = fixtureAdapter({
+      waitForResponseComplete: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return { complete: true };
+      }
+    });
+    const events: ProgressEvent[] = [];
+    await new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      undefined,
+      { streamingProgressIntervalMs: 5, attachmentSettleMs: 0 }
+    ).invoke(page, conversation(), agent, adapter, {
+      message: "hello",
+      onProgress: (event) => events.push(event)
+    });
+    expect(events.some((event) => event.phase === "streaming")).toBe(false);
+  });
+
+  it("says what it waits for: confirming the answer, then late files, then saving them", async () => {
+    const adapter = fixtureAdapter({
+      waitForResponseComplete: async (_page, _marker, _timeout, _signal, onSettling) => {
+        onSettling?.();
+        onSettling?.();
+        return { complete: true };
+      },
+      extractLatestResponse: async () => ({
+        text: "answer",
+        citations: [],
+        actionRequired: false,
+        truncated: false,
+        attachmentCandidates: [{ index: 0, name: "report.pdf", url: "https://m365.example.test/f/1" }]
+      })
+    });
+    const events: ProgressEvent[] = [];
+    await driver().invoke(page, conversation(), agent, adapter, {
+      message: "hello",
+      onProgress: (event) => events.push(event)
+    });
+    expect(events.map((event) => event.phase).filter((phase) => phase !== "streaming")).toEqual([
+      "asserting-identity",
+      "filling",
+      "submitting",
+      "submitted",
+      "waiting-response",
+      "confirming-response",
+      "extracting",
+      "checking-attachments",
+      "saving-attachments",
+      "done"
+    ]);
+  });
+
+  it("does not wait for late files when the question asks for text only, but still saves files shown with the answer", async () => {
+    let extractions = 0;
+    const candidate = { index: 0, name: "report.pdf", url: "https://m365.example.test/f/1" };
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => {
+        extractions++;
+        return {
+          text: "answer",
+          citations: [],
+          actionRequired: false,
+          truncated: false,
+          attachmentCandidates: [candidate]
+        };
+      }
+    });
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
+    const events: ProgressEvent[] = [];
+    await driver(save).invoke(page, conversation(), agent, adapter, {
+      message: "hello",
+      expectFiles: false,
+      onProgress: (event) => events.push(event)
+    });
+    expect(extractions).toBe(1);
+    expect(events.some((event) => event.phase === "checking-attachments")).toBe(false);
+    expect(save.mock.calls[0]?.[1]).toEqual([candidate]);
+  });
+
+  it("keeps waiting for late files by default", async () => {
+    let extractions = 0;
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => {
+        extractions++;
+        return { text: "answer", citations: [], actionRequired: false, truncated: false };
+      }
+    });
+    await driver().invoke(page, conversation(), agent, adapter, { message: "hello" });
+    expect(extractions).toBeGreaterThan(1);
+  });
+
+  it("never puts internal attachment candidates into the partial response of a cancelled collection", async () => {
+    const controller = new AbortController();
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => {
+        controller.abort();
+        return {
+          text: "answer",
+          citations: [{ index: 1, url: "https://example.test/c" }],
+          actionRequired: false,
+          truncated: false,
+          attachmentCandidates: [{ index: 0, name: "secret.pdf", url: "https://m365.example.test/f/1" }]
+        };
+      }
+    });
+    const error = await driver()
+      .invoke(page, conversation(), agent, adapter, { message: "hello", signal: controller.signal })
+      .catch((caught) => caught as BrowserTransportError);
+    expect(error).toMatchObject({ code: "RESPONSE_TIMEOUT", details: { submissionState: "sent" } });
+    expect(error.details?.partialResponse).toEqual({
+      text: "answer",
+      citations: [{ index: 1, url: "https://example.test/c" }]
+    });
+  });
+
+  it("keeps the transport's record of the message current: the count before typing and how far it got", async () => {
+    const ok = enteredMessage("hello");
+    await driver().invoke(
+      page,
+      conversation(),
+      agent,
+      fixtureAdapter({ captureConversationMarker: async () => ({ userCount: 3, assistantCount: 3 }) }),
+      { message: "hello", entered: ok }
+    );
+    expect(ok).toMatchObject({ userCountBefore: 3, state: "sent", digest: enteredMessageDigest("hello") });
+
+    const unknown = enteredMessage("hello");
+    await expect(
+      driver().invoke(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({
+          waitForUserMessageAck: async () => ({ state: "unknown", reason: "acknowledgement timeout" })
+        }),
+        { message: "hello", entered: unknown }
+      )
+    ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+    expect(unknown.state).toBe("unknown");
+
+    const notSent = enteredMessage("hello");
+    await expect(
+      driver().invoke(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({
+          fillComposer: async () => {
+            throw new BrowserTransportError("UI_CHANGED", "changed", undefined, {
+              submissionState: "not-sent"
+            });
+          }
+        }),
+        { message: "hello", entered: notSent }
+      )
+    ).rejects.toMatchObject({ code: "UI_CHANGED" });
+    expect(notSent.state).toBe("not-sent");
+  });
+
+  it("digests a message the way the acknowledgement compares the user's bubble", () => {
+    expect(enteredMessageDigest("a\u00a0b\r\nc")).toBe(enteredMessageDigest("a b\nc"));
+    expect(enteredMessageDigest("a b")).not.toBe(enteredMessageDigest("a  b"));
+  });
+});
+
+describe("reading a conversation without sending anything (v0.2.8 review 2026-10-10)", () => {
+  const app = "https://m365.example.test/chat";
+  const page: PageLike = { url: () => app, on: () => undefined, off: () => undefined };
+  const driver = (options: { ackTimeoutMs?: number; responseStartTimeoutMs?: number } = {}) =>
+    new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save: vi.fn(async () => []) } as never,
+      {
+        ackTimeoutMs: options.ackTimeoutMs ?? 200,
+        responseStartTimeoutMs: options.responseStartTimeoutMs ?? 200,
+        attachmentSettleMs: 0
+      }
+    );
+  const entry = (state: EnteredMessage["state"], userCountBefore?: number): EnteredMessage => ({
+    ...enteredMessage("the question"),
+    state,
+    ...(userCountBefore === undefined ? {} : { userCountBefore })
+  });
+  /** One exchange per capture, the last one repeating. */
+  const exchanges = (...steps: Array<Partial<ConversationExchange>>) => {
+    let call = 0;
+    const capture = vi.fn(async () => ({
+      userCount: 0,
+      assistantCount: 0,
+      replyStarted: false,
+      ...steps[Math.min(call++, steps.length - 1)]
+    }));
+    return capture;
+  };
+  const sendsNothing = {
+    fillComposer: async () => {
+      throw new Error("read must not type");
+    },
+    submitComposer: async () => {
+      throw new Error("read must not press send");
+    }
+  };
+
+  it("reports nothing to read when no message was entered in the conversation", async () => {
+    const capture = exchanges({});
+    await expect(
+      driver().read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        {}
+      )
+    ).resolves.toEqual({ message: "none", reply: "none" });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("reports a message that was certainly not sent as not shown, at once", async () => {
+    const capture = exchanges({ userCount: 1, latestUserText: "the question", replyStarted: true });
+    const started = Date.now();
+    await expect(
+      driver({ ackTimeoutMs: 5_000 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("not-sent", 1) }
+      )
+    ).resolves.toEqual({ message: "not-shown", reply: "none" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("gives an uncertain message the acknowledgement time again, then collects its reply", async () => {
+    const capture = exchanges(
+      { userCount: 0 },
+      { userCount: 0 },
+      { userCount: 1, latestUserText: "the question", replyStarted: true, assistantCount: 1 }
+    );
+    const events: ProgressEvent[] = [];
+    await expect(
+      driver({ ackTimeoutMs: 2_000 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        {
+          entered: entry("unknown", 0),
+          onProgress: (event) => events.push(event)
+        }
+      )
+    ).resolves.toEqual({
+      message: "shown",
+      reply: "complete",
+      response: { text: "answer", citations: [], actionRequired: false, truncated: false, attachments: [] }
+    });
+    expect(events.map((event) => event.phase)).toEqual([
+      "asserting-identity",
+      "checking-message",
+      "extracting",
+      "done"
+    ]);
+  });
+
+  it("reports a message that never appears as not shown once the acknowledgement time has passed", async () => {
+    // The page kept the message in its composer and shows no user message added since typing began.
+    const capture = exchanges({
+      userCount: 2,
+      latestUserText: "an earlier question",
+      composerText: "the question",
+      replyStarted: true
+    });
+    const started = Date.now();
+    await expect(
+      driver({ ackTimeoutMs: 300 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("unknown", 2) }
+      )
+    ).resolves.toEqual({ message: "not-shown", reply: "none" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+  });
+
+  it("reports a message that never appears as unconfirmed, not as not shown, when the page emptied the composer", async () => {
+    // Nothing shows that the message left, but nothing shows that it stayed either: the composer is
+    // empty, so it may have been taken; only "not shown" lets the caller send it again.
+    const capture = exchanges({
+      userCount: 2,
+      latestUserText: "an earlier question",
+      composerText: "",
+      replyStarted: true
+    });
+    const started = Date.now();
+    await expect(
+      driver({ ackTimeoutMs: 300 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("unknown", 2) }
+      )
+    ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+  });
+
+  it("does not take an identical earlier message for the one entered last", async () => {
+    // The same question was asked and answered before; the last attempt added no user message, and
+    // the page kept the message in its composer.
+    const capture = exchanges({
+      userCount: 1,
+      latestUserText: "the question",
+      composerText: "the question",
+      replyStarted: true
+    });
+    await expect(
+      driver({ ackTimeoutMs: 50 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("unknown", 1) }
+      )
+    ).resolves.toEqual({ message: "not-shown", reply: "none" });
+  });
+
+  it("reports an identical earlier message with an emptied composer as unconfirmed, not as not shown", async () => {
+    // The same earlier question is the latest user message and no user message was added, but the
+    // page emptied the composer: the message may have gone out some other way, so it is not "not
+    // shown" (and the earlier message is not "shown" for it).
+    const capture = exchanges({
+      userCount: 1,
+      latestUserText: "the question",
+      composerText: "",
+      replyStarted: true
+    });
+    await expect(
+      driver({ ackTimeoutMs: 50 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("unknown", 1) }
+      )
+    ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
+  });
+
+  it("says the message differs when another user message appeared, and still reads its reply", async () => {
+    const capture = exchanges({
+      userCount: 1,
+      latestUserText: "the ques",
+      replyStarted: true,
+      assistantCount: 1
+    });
+    await expect(
+      driver().read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        {
+          entered: entry("unknown", 0)
+        }
+      )
+    ).resolves.toMatchObject({ message: "differs", reply: "complete" });
+  });
+
+  it("waits for a reply to start and reports none when it does not", async () => {
+    const capture = exchanges({ userCount: 1, latestUserText: "the question", replyStarted: false });
+    const started = Date.now();
+    await expect(
+      driver({ responseStartTimeoutMs: 250 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("sent", 0) }
+      )
+    ).resolves.toEqual({ message: "shown", reply: "none" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(230);
+  });
+
+  it("returns what an unfinished reply showed, without failing", async () => {
+    const capture = exchanges({ userCount: 1, latestUserText: "the question", replyStarted: true });
+    await expect(
+      driver().read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({
+          ...sendsNothing,
+          captureExchange: capture,
+          waitForResponseComplete: async () => ({ complete: false, timedOut: true, reason: "timeout" }),
+          extractLatestResponse: async () => ({
+            text: "half an answer",
+            citations: [],
+            actionRequired: false,
+            truncated: false
+          })
+        }),
+        { entered: entry("sent", 0) }
+      )
+    ).resolves.toEqual({
+      message: "shown",
+      reply: "incomplete",
+      partialResponse: { text: "half an answer", citations: [] }
+    });
+  });
+
+  it("refuses to read a page that shows another agent, without claiming anything was sent", async () => {
+    const error = await driver()
+      .read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({
+          ...sendsNothing,
+          captureExchange: exchanges({}),
+          assertAgentIdentity: async () => ({
+            valid: false,
+            code: "AGENT_IDENTITY_MISMATCH",
+            identity: { displayName: "Other", digest: "other", evidence: ["visible-name"] }
+          })
+        }),
+        { entered: entry("unknown", 0) }
+      )
+      .catch((caught) => caught as BrowserTransportError);
+    expect(error).toMatchObject({ code: "AGENT_CONTEXT_CHANGED" });
+    expect(error.details?.submissionState).toBeUndefined();
+  });
+
+  it("stops at a cancellation while waiting for the message", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const capture = exchanges({ userCount: 0 });
+    const started = Date.now();
+    await expect(
+      driver({ ackTimeoutMs: 5_000 }).read(
+        page,
+        conversation(),
+        agent,
+        fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
+        { entered: entry("unknown", 0), signal: controller.signal }
+      )
+    ).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT", message: "Reading the conversation was cancelled." });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(capture.mock.calls.length).toBeLessThan(5);
+  });
+
+  it("cannot read a page whose adapter cannot capture the exchange", async () => {
+    await expect(
+      driver().read(page, conversation(), agent, fixtureAdapter({}), { entered: entry("unknown", 0) })
+    ).rejects.toMatchObject({ code: "UNSUPPORTED_UI" });
+  });
+});
+
 function conversation() {
   return {
     handle: "conv_test",
@@ -986,6 +1865,50 @@ function conversation() {
     pageKey: "page",
     state: "ready"
   };
+}
+
+/** One request through the driver on a virtual clock (`Date.now()` moves only when the driver
+ * waits), for the wait after the answer: `candidatesAt(scan)` is what scan number `scan` finds
+ * (scan 0 is the extraction of the answer itself). Reports how long the wait lasted, each wait it
+ * asked the page for, how often the answer was extracted, and the candidates handed to the saver. */
+async function lateFilesWait(
+  options: ConversationDriverOptions,
+  candidatesAt: (scan: number) => AttachmentCandidate[]
+) {
+  let now = 1_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const delays: number[] = [];
+    let extractions = 0;
+    const page: PageLike = {
+      url: () => "https://m365.example.test/chat",
+      on: () => undefined,
+      off: () => undefined,
+      waitForTimeout: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    };
+    const adapter = fixtureAdapter({
+      extractLatestResponse: async () => ({
+        text: "answer",
+        citations: [],
+        actionRequired: false,
+        truncated: false,
+        attachmentCandidates: candidatesAt(extractions++)
+      })
+    });
+    const save = vi.fn(async (_page: unknown, _candidates: unknown[]) => []);
+    const begun = now;
+    await new ConversationDriver(
+      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+      { save } as never,
+      options
+    ).invoke(page, conversation(), agent, adapter, { message: "hello" });
+    return { waited: now - begun, delays, extractions, saved: save.mock.calls[0]?.[1] };
+  } finally {
+    clock.mockRestore();
+  }
 }
 
 function registeredAgent(): BrowserAgentDefinition {

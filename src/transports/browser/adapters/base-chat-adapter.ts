@@ -12,7 +12,12 @@ import {
 } from "../composer-text.js";
 import { identityDigest, assertIdentity, directAgentIdFromUrl } from "../identity.js";
 import { ResponseExtractor } from "../response-extractor.js";
-import { activateSendControl, cancelledBeforeSubmission } from "../send-activation.js";
+import {
+  activateSendControl,
+  cancelledBeforeSubmission,
+  capturePressContext,
+  type SendPressContextScope
+} from "../send-activation.js";
 import {
   ASSISTANT_MESSAGE_SELECTORS,
   COMPOSER_SELECTORS,
@@ -25,6 +30,8 @@ import {
   M365_ASSISTANT_ARTICLE_SELECTOR,
   M365_ASSISTANT_AUTHOR_SELECTOR,
   M365_ASSISTANT_CONTENT_SELECTOR,
+  NON_CONTEXT_REGION_SELECTOR,
+  PAGE_CONTEXT_ATTRIBUTES,
   RESPONSE_SELECTORS,
   SEND_SELECTORS,
   USER_MESSAGE_SELECTORS,
@@ -36,6 +43,7 @@ import {
   BrowserTransportError,
   type BrowserAgentVerification,
   type CompletionResult,
+  type ConversationExchange,
   type ConversationMarker,
   type ExtractedResponse,
   type LocatorLike,
@@ -45,14 +53,34 @@ import {
   type SubmissionMarker,
   type UiFingerprint
 } from "../types.js";
-import type { AdapterMatch, ChatUiAdapter, DetectedAgentIdentity, IdentityAssertion } from "../ui-adapter.js";
+import type {
+  AdapterMatch,
+  ChatUiAdapter,
+  DetectedAgentIdentity,
+  IdentityAssertion,
+  SubmitGuard
+} from "../ui-adapter.js";
+
+/** Where the send gate reads the page context that a press is compared against. */
+const PRESS_CONTEXT_SCOPE: SendPressContextScope = {
+  composerSelector: COMPOSER_SELECTORS.join(", "),
+  contextAttributes: PAGE_CONTEXT_ATTRIBUTES,
+  mainSelector: MAIN_REGION_SELECTOR,
+  ignoredSelector: NON_CONTEXT_REGION_SELECTOR
+};
 
 export interface BaseAdapterOptions {
   id: string;
   hostnames: string[];
   surface: "m365-copilot" | "teams-web";
   diagnosticOnly?: boolean;
+  /** How long a response's text must hold still before it counts as complete (CompletionDetector). */
   stabilityWindowMs?: number;
+  /** How long the composer must keep the entered message before it is verified for sending.
+   * Separate from the response's stability window: catching an editor that rewrites the message
+   * takes a few frames, while the press itself is guarded at the moment it happens (the send gate),
+   * so this wait only decides how early a rewrite is noticed. Default 500 ms. */
+  composerStabilityMs?: number;
   pollIntervalMs?: number;
   /** Extra quiet time required before an unchanged response counts as complete when no streaming
    * signal was ever observed (see CompletionDetector). */
@@ -91,7 +119,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     this.surface = options.surface;
     this.canSubmit = !options.diagnosticOnly;
     this.extractor = new ResponseExtractor({ attachmentHosts: options.attachmentHosts });
-    this.composerStabilityWindowMs = options.stabilityWindowMs ?? 2_500;
+    this.composerStabilityWindowMs = options.composerStabilityMs ?? 500;
     this.typingDelayMs = options.typingDelayMs;
     this.sendClickableTimeoutMs = options.sendClickableTimeoutMs;
     this.completion = new CompletionDetector({
@@ -464,7 +492,8 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       id: value.id,
       userCount: value.userCount,
       assistantCount: value.assistantCount,
-      digest: hash(JSON.stringify(value))
+      digest: hash(JSON.stringify(value)),
+      ...(value.unreadable ? { unreadable: true as const } : {})
     };
   }
   async startNewConversation(page: PageLike): Promise<void> {
@@ -500,11 +529,26 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   async captureSubmissionMarker(page: PageLike, verifiedIdentityDigest?: string): Promise<SubmissionMarker> {
     const marker = await this.captureConversationMarker(page);
     const identity = verifiedIdentityDigest ? undefined : await this.detectAgentIdentity(page);
+    const url = page.url();
+    let composer: LocatorLike | undefined;
+    try {
+      composer = await this.findComposer(page);
+    } catch {
+      composer = undefined;
+    }
+    let composerValue = "";
+    try {
+      composerValue = composer ? await readComposerPlainText(composer) : "";
+    } catch {
+      /* an unreadable composer holds no verified text */
+    }
+    const pressContext = composer ? await capturePressContext(composer, PRESS_CONTEXT_SCOPE) : undefined;
     return {
       ...marker,
-      url: page.url(),
+      url,
       identityDigest: verifiedIdentityDigest || identity?.digest || "",
-      composerValue: await this.composerValue(page),
+      composerValue,
+      ...(pressContext === undefined ? {} : { pressContext }),
       capturedAt: Date.now()
     };
   }
@@ -517,6 +561,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       const contentEditable = (await composer.getAttribute?.("contenteditable")) === "true";
       if (contentEditable && composer.pressSequentially && composer.press) {
         // Keep Lexical's keyboard/beforeinput path; fill() can desynchronise its internal state.
+        const userMessagesBefore = (await this.captureConversationMarker(page)).userCount;
         const delays =
           this.typingDelayMs === undefined || this.typingDelayMs === 0
             ? [0, 20]
@@ -533,24 +578,36 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
           );
           // Await every keyboard operation. Cancellation never races a still-running typer.
           // Small code-point chunks bound the time before the next signal check without
-          // splitting a surrogate pair. Calls without cancellation retain bulk typing.
+          // splitting a surrogate pair. Calls without cancellation retain bulk typing. A line break
+          // is typed as Shift+Enter: Playwright types "\n" as a bare Enter, which a chat composer
+          // takes as "send" -- it would submit the lines typed so far.
           const typingDeadline = Date.now() + typingTimeoutMs;
           const characters = Array.from(requested);
           const chunkSize = signal
             ? Math.max(1, Math.min(16, Math.floor(100 / (delays[attempt]! + 10))))
             : characters.length || 1;
-          for (let offset = 0; offset < characters.length; offset += chunkSize) {
+          for (const piece of typingPieces(characters, chunkSize)) {
             assertInputActive(signal);
             if (Date.now() >= typingDeadline) throw new Error("typing-budget-exhausted");
-            await composer.pressSequentially(characters.slice(offset, offset + chunkSize).join(""), {
-              delay: delays[attempt],
-              timeout: signal ? Math.min(1_000, Math.max(1, typingDeadline - Date.now())) : typingTimeoutMs
-            });
+            const timeout = signal
+              ? Math.min(1_000, Math.max(1, typingDeadline - Date.now()))
+              : typingTimeoutMs;
+            if (piece !== "\n") await composer.pressSequentially(piece, { delay: delays[attempt], timeout });
+            else {
+              await composer.press("Shift+Enter", { timeout });
+              // A composer that sends on Shift+Enter as well empties itself: stop at the first send.
+              if (!(await readComposerPlainText(composer).catch(() => "\n")))
+                throw messageAppearedWhileTyping();
+            }
           }
           assertInputActive(signal);
           observed = await this.composerTextChange(page, composer, requested, signal);
           if (observed === undefined) return;
           await this.clearRichTextComposer(page, composer, signal);
+          // Typing must not have sent anything. If the conversation gained a user message
+          // meanwhile, it may have been part of this one: never type it again.
+          if ((await this.captureConversationMarker(page)).userCount > userMessagesBefore)
+            throw messageAppearedWhileTyping();
           // An editor that turns a no-break space into an ordinary space does so every time;
           // typing the message again more slowly cannot change that.
           if (describeComposerMismatch(observed, requested) === "no-break-space") break;
@@ -572,6 +629,8 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       if (observed !== undefined) throw composerChangedError(observed, requested, "The composer");
     } catch (error) {
       await this.clearComposer(page);
+      // A message that may already be out is reported as such, cancelled or not.
+      if (error instanceof BrowserTransportError && error.details?.submissionState === "unknown") throw error;
       assertInputActive(signal);
       if (error instanceof BrowserTransportError) throw error;
       // Playwright's call log can include the whole prompt. Never expose it.
@@ -593,7 +652,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       /* best effort: do not submit */
     }
   }
-  async submitComposer(page: PageLike, signal?: AbortSignal): Promise<void> {
+  async submitComposer(page: PageLike, signal?: AbortSignal, guard?: SubmitGuard): Promise<void> {
     if (!this.canSubmit) throw new Error("GENERIC_ADAPTER_CANNOT_SUBMIT");
     assertInputActive(signal);
     const deadline = Date.now() + 2_000;
@@ -631,10 +690,18 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     }
     assertInputActive(signal);
     // Never a bare click: its own actionability wait cannot be cancelled and would press the
-    // control whenever it became clickable, even long after the request was cancelled.
+    // control whenever it became clickable, even long after the request was cancelled -- or after
+    // the composer or the page had changed.
     await activateSendControl(page, send, signal, {
       clickableTimeoutMs: this.sendClickableTimeoutMs,
-      diagnostics: () => this.sendControlDiagnostics(page)
+      diagnostics: () => this.sendControlDiagnostics(page),
+      ...(guard && {
+        press: {
+          composer: () => this.findComposer(page),
+          verify: () => guard.verifyBeforePress(),
+          check: { ...PRESS_CONTEXT_SCOPE, message: guard.message, context: guard.marker.pressContext }
+        }
+      })
     });
   }
   async waitForUserMessageAck(
@@ -666,18 +733,11 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
         return { state: "unknown", reason: "more than one new user message observed" };
       await delay(100, page);
     }
-    // The send control was already activated by the time this wait started, so a timeout is not
-    // evidence that nothing was sent: Microsoft 365 may simply not have rendered the user message
-    // yet. Only a positive not-sent signal -- the composer still holding the exact text that was
-    // submitted -- may report "not-sent"; everything else is "unknown" and is never retried.
-    const now = await this.captureConversationMarker(page);
-    if (now.userCount > marker.userCount)
-      return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
-    if (marker.composerValue) {
-      const composerNow = await this.composerValue(page);
-      if (foldComposerWhitespace(composerNow) === foldComposerWhitespace(marker.composerValue))
-        return { state: "not-sent", reason: "the composer still holds the submitted text unchanged" };
-    }
+    // The send control was already pressed when this wait started, so its end is no evidence that
+    // nothing was sent: Microsoft 365 may accept the message and render it, and clear the
+    // composer, only later. A composer that still shows the text proves nothing either. Whether a
+    // press can have submitted is settled before and during the press (activateSendControl); from
+    // here on the outcome is "sent" or "unknown", and neither is ever retried.
     return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
   }
   async waitForResponseStart(
@@ -711,16 +771,57 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     page: PageLike,
     marker: ResponseMarker,
     timeoutMs: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSettling?: () => void
   ): Promise<CompletionResult> {
-    return this.completion.wait(page, marker, timeoutMs, signal);
+    return this.completion.wait(page, marker, timeoutMs, signal, onSettling);
   }
+  async captureExchange(page: PageLike): Promise<ConversationExchange> {
+    const marker = await this.captureConversationMarker(page);
+    let replyStarted = false;
+    try {
+      if (page.evaluate)
+        replyStarted = await page.evaluate<boolean>(
+          (sel: { user: string; assistant: string }) => {
+            const user = Array.from(document.querySelectorAll(sel.user)).at(-1);
+            const assistant = Array.from(document.querySelectorAll(sel.assistant)).at(-1);
+            // The reply to the latest user message is an assistant message after it in the document.
+            if (!assistant) return false;
+            if (!user) return true;
+            return (
+              !user.contains(assistant) &&
+              (user.compareDocumentPosition(assistant) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+            );
+          },
+          { user: USER_MESSAGE_SELECTORS, assistant: ASSISTANT_MESSAGE_SELECTORS }
+        );
+    } catch {
+      /* unreadable: no reply recognised */
+    }
+    // Read the way the acknowledgement reads the user's bubble (readDomPlainText) and the way the
+    // submission reads the composer.
+    const latestUserText = marker.userCount > 0 ? await this.latestUserMessage(page) : undefined;
+    let composerText: string | undefined;
+    try {
+      composerText = await readComposerPlainText(await this.findComposer(page));
+    } catch {
+      /* no single readable composer: nothing is known about what it holds */
+    }
+    return {
+      ...marker,
+      ...(latestUserText === undefined ? {} : { latestUserText }),
+      ...(composerText === undefined ? {} : { composerText }),
+      replyStarted,
+      readable: !marker.unreadable && (marker.userCount === 0 || latestUserText !== undefined)
+    };
+  }
+
   async extractLatestResponse(page: PageLike, marker: ResponseMarker): Promise<ExtractedResponse> {
     return this.extractor.extract(page, marker, this.surface);
   }
   protected async markerData(
     page: PageLike
-  ): Promise<{ id?: string; userCount: number; assistantCount: number }> {
+  ): Promise<{ id?: string; userCount: number; assistantCount: number; unreadable?: true }> {
     try {
       if (page.evaluate) {
         const marker = await page.evaluate<{
@@ -754,15 +855,12 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       /* fallback */
     }
     const body = (await page.locator?.("body")?.textContent?.()) ?? "";
-    return { id: conversationIdFromUrl(page.url()), userCount: 0, assistantCount: body ? 1 : 0 };
-  }
-  private async composerValue(page: PageLike): Promise<string> {
-    try {
-      const composer = await this.findComposer(page);
-      return await readComposerPlainText(composer);
-    } catch {
-      return "";
-    }
+    return {
+      id: conversationIdFromUrl(page.url()),
+      userCount: 0,
+      assistantCount: body ? 1 : 0,
+      unreadable: true
+    };
   }
   private async latestUserMessage(page: PageLike): Promise<string | undefined> {
     try {
@@ -919,6 +1017,37 @@ function hash(value: string): string {
 }
 function assertInputActive(signal?: AbortSignal): void {
   if (signal?.aborted) throw cancelledBeforeSubmission();
+}
+/** The characters to type as keyboard input: runs of at most `size` code points without a line
+ * break, and each line break as a piece of its own. */
+function typingPieces(characters: string[], size: number): string[] {
+  const pieces: string[] = [];
+  let run: string[] = [];
+  for (const character of characters) {
+    if (character === "\n") {
+      if (run.length) pieces.push(run.join(""));
+      pieces.push("\n");
+      run = [];
+      continue;
+    }
+    run.push(character);
+    if (run.length >= size) {
+      pieces.push(run.join(""));
+      run = [];
+    }
+  }
+  if (run.length) pieces.push(run.join(""));
+  return pieces;
+}
+/** Typing made the page send: the composer emptied after a line break, or a user message appeared
+ * while the prompt was typed. A key the editor takes as "send" may have sent part of the prompt. */
+function messageAppearedWhileTyping(): BrowserTransportError {
+  return new BrowserTransportError(
+    "SUBMIT_STATE_UNKNOWN",
+    "The page may have sent part of the prompt while it was being typed (the composer emptied, or a new user message appeared). It was not typed or sent again.",
+    undefined,
+    { submissionState: "unknown" }
+  );
 }
 /** The not-sent failure for a composer that did not keep the requested message. Names the kind of
  * change so the caller can decide whether an adjusted message is acceptable; never the text. */

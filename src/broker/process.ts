@@ -53,6 +53,7 @@ async function main(): Promise<void> {
     attachmentSettleMs: config.browser.attachmentSettleMs,
     attachmentPhaseTimeoutMs: config.browser.attachmentPhaseTimeoutMs,
     stabilityWindowMs: config.browser.stabilityWindowMs,
+    composerStabilityMs: config.browser.composerStabilityMs,
     pollIntervalMs: config.browser.pollIntervalMs,
     acceptDownloads: config.browser.acceptDownloads,
     userAgent: config.browser.userAgent,

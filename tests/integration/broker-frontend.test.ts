@@ -18,6 +18,10 @@ import { deriveBindingFingerprint, type BrowserAgentDefinition } from "../../src
 import { configDigest, WorkspaceConfigSchema, workspaceKey } from "../../src/domain/workspace.js";
 import { ApprovalService } from "../../src/services/approval-service.js";
 import { IpcClient } from "../../src/ipc/client.js";
+import { encodeFrame, FrameDecoder } from "../../src/ipc/framing.js";
+import type { BrokerDescriptor } from "../../src/ipc/protocol.js";
+import net from "node:net";
+import type { ConversationReading } from "../../src/domain/response.js";
 import { IpcBrokerClient } from "../../src/frontend/ipc-client.js";
 import type { InteractiveAgentTransport, TransportConversation } from "../../src/transports/transport.js";
 import { TransportRouter } from "../../src/transports/transport-router.js";
@@ -70,7 +74,10 @@ class FakeTransport implements InteractiveAgentTransport {
   lastLoginTimeout?: number;
   lastInspectedUrl?: string;
   invokeHook?: (call: number) => Promise<void>;
+  invokeFailure?: Error;
   closeHook?: (call: number) => Promise<void>;
+  reading: ConversationReading = { message: "none", reply: "none" };
+  readConversation = async () => this.reading;
   private crashHandler?: (event: { reason: "crash" | "reset" }) => void;
   healthCheck = async () => ({
     healthy: true,
@@ -87,6 +94,7 @@ class FakeTransport implements InteractiveAgentTransport {
   async invoke(conversation: TransportConversation) {
     this.invokes++;
     await this.invokeHook?.(this.invokes);
+    if (this.invokeFailure) throw this.invokeFailure;
     return {
       agent: "requirements",
       conversationHandle: String(conversation.opaque),
@@ -297,6 +305,75 @@ describe("frontend → authenticated IPC → broker", () => {
     const listed = await fixture.frontend.session(fixture.workspaceRoot, { action: "list" }, "req-sessions");
     expect(listed).toMatchObject({ ok: true, action: "list", conversations: [] });
     expect(fixture.transport.closes).toBe(1);
+    fixture.client.close();
+  });
+
+  // Independent review of the 2026-10-10 fixes: a failed ask that may have sent its message leaves
+  // its conversation to be read -- but only for a client that can read one (protocol minor 5).
+  it("leaves a failed one-shot ask's conversation for a client to read, and reads it end to end", async () => {
+    const fixture = await setup(true);
+    servers.push(fixture.server);
+    fixture.transport.invokeFailure = mayHaveBeenSent();
+    const failed = (await fixture.frontend.ask(
+      fixture.workspaceRoot,
+      { agent: "requirements", message: "hello" },
+      "req-unknown"
+    )) as Record<string, unknown>;
+    expect(failed).toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", submissionState: "unknown" });
+    const handle = failed.conversationHandle as string;
+    expect(handle).toMatch(/^conv_/);
+    expect(failed.remediation).toContain("action=read");
+    expect(fixture.transport.closes).toBe(0);
+
+    fixture.transport.reading = {
+      message: "shown",
+      messageRequestId: "req-unknown",
+      reply: "complete",
+      response: {
+        text: "the late answer",
+        citations: [],
+        attachments: [],
+        truncated: false,
+        actionRequired: false
+      }
+    };
+    const read = await fixture.frontend.session(
+      fixture.workspaceRoot,
+      { action: "read", conversationHandle: handle },
+      "req-read"
+    );
+    expect(read).toMatchObject({
+      ok: true,
+      action: "read",
+      message: "shown",
+      messageRequestId: "req-unknown",
+      reply: "complete",
+      text: "the late answer",
+      conversationClosed: true
+    });
+    expect(fixture.transport.closes).toBe(1);
+    fixture.client.close();
+  });
+
+  it("does not leave a conversation to read for a client of protocol minor 4", async () => {
+    const fixture = await setup(true);
+    servers.push(fixture.server);
+    fixture.transport.invokeFailure = mayHaveBeenSent();
+    const response = await requestAsMinor(fixture.descriptor, 4, "conversation.invoke", {
+      root: fixture.workspaceRoot,
+      agent: "requirements",
+      message: "hello"
+    });
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "SUBMIT_STATE_UNKNOWN", submissionState: "unknown" }
+    });
+    const error = response.error as Record<string, unknown>;
+    expect(error.conversationHandle).toBeUndefined();
+    // The stock remediation may still say what to do "if this error includes a conversationHandle".
+    expect(String(error.remediation ?? "")).not.toMatch(/conversationHandle=conv_/);
+    // Retired as before: its page closed, nothing left open for a read the client cannot make.
+    await expect.poll(() => fixture.transport.closes).toBe(1);
     fixture.client.close();
   });
 
@@ -781,3 +858,52 @@ describe("broker health: incidents and authentication state", () => {
     fixture.client.close();
   });
 });
+
+const mayHaveBeenSent = () =>
+  new DomainError("SUBMIT_STATE_UNKNOWN", "The message may have been submitted.", false, {
+    submissionState: "unknown"
+  });
+
+/** One request from a client that speaks protocol minor `minor`, frame by frame: what it receives. */
+async function requestAsMinor(
+  descriptor: BrokerDescriptor,
+  minor: number,
+  method: string,
+  params: unknown
+): Promise<Record<string, unknown>> {
+  const socket = net.createConnection(descriptor.pipeName);
+  try {
+    const decoder = new FrameDecoder();
+    const frames: Array<Record<string, unknown>> = [];
+    socket.on("data", (chunk: Buffer) =>
+      frames.push(...(decoder.push(chunk) as Array<Record<string, unknown>>))
+    );
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      encodeFrame({
+        type: "hello",
+        authSecret: descriptor.authSecret,
+        protocolMajor: descriptor.protocolMajor,
+        protocolMinor: minor,
+        packageVersion: "old-frontend",
+        capabilities: []
+      })
+    );
+    await expect.poll(() => frames.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    expect(frames[0]).toMatchObject({ ok: true, hello: { protocolMinor: minor } });
+    socket.write(encodeFrame({ id: "req-old-client", method, params }));
+    let response: Record<string, unknown> | undefined;
+    await expect
+      .poll(
+        () => (response = frames.find((frame) => frame.id === "req-old-client" && frame.event === undefined)),
+        { timeout: 5_000 }
+      )
+      .toBeDefined();
+    return response!;
+  } finally {
+    socket.destroy();
+  }
+}

@@ -13,6 +13,8 @@ export type SubmissionPhase =
   | "EXTRACTING"
   | "READY"
   | "FAILED";
+/** Where a submission is, and whether its message was sent: "not-sent" until the send control may
+ * be pressed, "unknown" from then on until an acknowledgement confirms it as "sent". */
 export class SubmissionTracker {
   phase: SubmissionPhase = "VALIDATING";
   state: SubmissionState = "not-sent";
@@ -20,6 +22,7 @@ export class SubmissionTracker {
   transition(next: SubmissionPhase): void {
     if (this.phase === "READY" || this.phase === "FAILED") throw new Error("SUBMISSION_TERMINAL");
     this.phase = next;
+    if (next === "SUBMITTING") this.state = "unknown";
   }
   record(marker: SubmissionMarker): void {
     this.marker = marker;

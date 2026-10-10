@@ -482,6 +482,40 @@ describe("BrowserTransport conversation creation", () => {
     await transport.dispose();
   });
 
+  // A retryable code is retryable only while the message cannot have been submitted: after the
+  // press, retrying could send it twice (v0.2.8 review).
+  it.each([
+    ["before the press", "fillComposer", true, "not-sent"],
+    ["after the press", "waitForUserMessageAck", false, "unknown"]
+  ] as const)(
+    "offers a retryable failure %s for retry only if nothing was sent",
+    async (_when, step, retryable, state) => {
+      const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+      const adapter = fixtureAdapter(events, true, true);
+      const verified = await adapter.captureSubmissionMarker({ url: () => "https://m365.example.test/chat" });
+      adapter.captureSubmissionMarker = async () => ({ ...verified, composerValue: "hi" });
+      adapter[step] = async () => {
+        throw new BrowserTransportError("CONCURRENT_REQUEST", "The profile is busy.");
+      };
+      const transport = await makeTransport(adapter);
+      const conversation = await transport.createConversation(agent, {
+        workspaceKey: "workspace",
+        conversationHandle: "conv_retry"
+      });
+
+      const error = await transport
+        .invoke(conversation, { message: "hi" })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        code: "CONCURRENT_REQUEST",
+        retryable,
+        options: { submissionState: state }
+      });
+      await transport.dispose();
+    }
+  );
+
   it("keeps an already-empty direct-agent landing instead of clicking the global new-chat control", async () => {
     const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
     const transport = await makeTransport(
@@ -842,6 +876,140 @@ describe("BrowserTransport reporting", () => {
     expect(live).toBe(0);
     await transport.dispose();
   });
+});
+
+describe("BrowserTransport reading a conversation (v0.2.8 review 2026-10-10)", () => {
+  const ask = "Which approval route applies?";
+  /** An adapter whose page answers like Microsoft 365 but whose acknowledgement times out, as when
+   * the page shows the user's message only later. */
+  function slowPage(events: { started: number; verified: number; filled: number; submitted: number }) {
+    const adapter = fixtureAdapter(events, true, true);
+    const verified = { userCount: 0, assistantCount: 0, url: "https://m365.example.test/chat" };
+    adapter.captureSubmissionMarker = async () => ({
+      ...verified,
+      identityDigest: "identity",
+      composerValue: ask,
+      capturedAt: 0
+    });
+    adapter.waitForUserMessageAck = async () => ({ state: "unknown", reason: "acknowledgement timeout" });
+    let shown = false;
+    adapter.captureExchange = async () =>
+      shown
+        ? { userCount: 1, assistantCount: 1, latestUserText: ask, replyStarted: true }
+        : { userCount: 0, assistantCount: 0, replyStarted: false };
+    return { adapter, show: () => (shown = true) };
+  }
+
+  it("reads the outcome of an unacknowledged ask without typing or pressing anything", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const { adapter, show } = slowPage(events);
+    const transport = await makeTransport(adapter);
+    const conversation = await transport.createConversation(agent, {
+      workspaceKey: "workspace",
+      conversationHandle: "conv_read"
+    });
+    await expect(transport.invoke(conversation, { message: ask })).rejects.toMatchObject({
+      code: "SUBMIT_STATE_UNKNOWN",
+      retryable: false,
+      options: { submissionState: "unknown" }
+    });
+    expect(events).toMatchObject({ filled: 1, submitted: 1 });
+    show();
+    await expect(transport.readConversation(conversation, {})).resolves.toEqual({
+      message: "shown",
+      reply: "complete",
+      response: { text: "answer", citations: [], actionRequired: false, truncated: false, attachments: [] }
+    });
+    // Reading never types or presses.
+    expect(events).toMatchObject({ filled: 1, submitted: 1 });
+    await transport.dispose();
+  }, 20_000);
+
+  // Independent review of the 2026-10-10 fixes: a read judges the last message typed into the
+  // conversation, and says which ask that was. An ask that ends before typing anything (here,
+  // cancelled before it began) must not replace the record of an earlier, unacknowledged one.
+  it("judges the last message typed, naming its ask, and keeps it over an ask that typed nothing", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const { adapter, show } = slowPage(events);
+    const transport = await makeTransport(adapter);
+    const conversation = await transport.createConversation(agent, {
+      workspaceKey: "workspace",
+      conversationHandle: "conv_order"
+    });
+    await expect(
+      transport.invoke(conversation, { message: ask, requestId: "req_first" })
+    ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(
+      transport.invoke(conversation, {
+        message: "A different question",
+        requestId: "req_second",
+        signal: cancelled.signal
+      })
+    ).rejects.toMatchObject({ options: { submissionState: "not-sent" } });
+    expect(events).toMatchObject({ filled: 1, submitted: 1 });
+    show();
+    await expect(transport.readConversation(conversation, {})).resolves.toMatchObject({
+      message: "shown",
+      messageRequestId: "req_first",
+      reply: "complete"
+    });
+    await transport.dispose();
+  }, 20_000);
+
+  it("has nothing to judge in a conversation no message was entered in", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const { adapter } = slowPage(events);
+    const transport = await makeTransport(adapter);
+    const conversation = await transport.createConversation(agent, {
+      workspaceKey: "workspace",
+      conversationHandle: "conv_fresh"
+    });
+    await expect(transport.readConversation(conversation, {})).resolves.toEqual({
+      message: "none",
+      reply: "none"
+    });
+    await transport.dispose();
+  });
+
+  it("refuses a conversation it no longer has", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const { adapter } = slowPage(events);
+    const transport = await makeTransport(adapter);
+    const conversation = await transport.createConversation(agent, {
+      workspaceKey: "workspace",
+      conversationHandle: "conv_closed"
+    });
+    await transport.closeConversation(conversation);
+    await expect(transport.readConversation(conversation, {})).rejects.toMatchObject({
+      code: "CONVERSATION_NOT_FOUND"
+    });
+    await transport.dispose();
+  });
+
+  it("skips the wait for late files only when the ask says it expects none", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const adapter = fixtureAdapter(events, true, true);
+    const verified = await adapter.captureSubmissionMarker({ url: () => "https://m365.example.test/chat" });
+    adapter.captureSubmissionMarker = async () => ({ ...verified, composerValue: "hi" });
+    let extractions = 0;
+    adapter.extractLatestResponse = async () => {
+      extractions++;
+      return { text: "answer", citations: [], actionRequired: false, truncated: false };
+    };
+    const transport = await makeTransport(adapter);
+    const conversation = await transport.createConversation(agent, {
+      workspaceKey: "workspace",
+      conversationHandle: "conv_text_only"
+    });
+    await transport.invoke(conversation, { message: "hi", expectFiles: false });
+    expect(extractions).toBe(1);
+    extractions = 0;
+    await transport.invoke(conversation, { message: "hi" });
+    expect(extractions).toBeGreaterThan(1);
+    await transport.dispose();
+  }, 20_000);
 });
 
 async function makeTransport(

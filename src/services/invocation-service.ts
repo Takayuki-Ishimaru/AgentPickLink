@@ -1,11 +1,11 @@
 import type { Conversation } from "../domain/conversation.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressEvent, ProgressSink } from "../domain/progress.js";
-import type { AgentResponse } from "../domain/response.js";
+import type { AgentResponse, ConversationReading } from "../domain/response.js";
 import type { AuditLogger } from "../observability/audit.js";
 import { writeFailureDiagnostic } from "../observability/diagnostics.js";
 import type { IncidentBrowser, IncidentLog } from "../observability/incidents.js";
-import { diagnosticsOf, isIncidentCode } from "../observability/incidents.js";
+import { attachDiagnostics, diagnosticsOf, isIncidentCode } from "../observability/incidents.js";
 import type { ConversationService } from "./conversation-service.js";
 import type { PolicyService } from "./policy-service.js";
 import type { InvocationLimiter } from "./rate-limiter.js";
@@ -192,7 +192,11 @@ export class InvocationService {
     onProgress?: ProgressSink,
     /** Aborted when the caller cancels (`broker.cancel`); the transport winds down at its next
      * safe point, and the outcome is not recorded as an incident. */
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    /** `expectFiles: false`: a text-only question, so the transport does not wait for files that
+     * can appear after the answer. `readable: false`: the client cannot read a conversation
+     * (protocol minor below 5), so a failed ask is not left open to be read. */
+    options: { expectFiles?: boolean; readable?: boolean } = {}
   ) {
     const started = this.now();
     const { workspace, agent } = await this.deps.policy.authorize(root, alias);
@@ -229,13 +233,17 @@ export class InvocationService {
               agentAlias: alias,
               bindingFingerprint: current.agent.verification.bindingFingerprint
             });
+            // A caller that continues a conversation a failed one-shot ask kept open makes it its own
+            // session from here, as its question goes in: it no longer closes after a read.
+            if (handle) activeConversation.closeAfterRead = undefined;
             const response = await this.deps.router
               .select(current.agent)
               .invoke(this.transportHandle(activeConversation), {
                 message,
                 requestId,
                 onProgress,
-                signal
+                signal,
+                ...(options.expectFiles === false ? { expectFiles: false } : {})
               });
             const attachments = response.attachments ?? [];
             await this.deps.audit
@@ -301,15 +309,28 @@ export class InvocationService {
       return { ...result, conversationClosed: true };
     } catch (error) {
       const domain = recordedFailure ?? this.recordIncident(error, phase, signal);
+      // A message that was or may have been sent leaves its conversation open to be read
+      // (m365_agent_session action=read) instead of being sent again: the caller learns whether it
+      // arrived and collects the reply there. Not after the caller's own cancellation, which nobody
+      // waits on any more.
+      const readable =
+        conversation !== undefined &&
+        options.readable !== false &&
+        signal?.aborted !== true &&
+        this.readableAfter(domain, conversation)
+          ? conversation
+          : undefined;
       // A fresh ask is ephemeral. If sending or the limiter fails before a handle can be returned
       // to the caller, retire the conversation and release its page; successful asks close their
-      // page in the invocation lock above. Existing handles remain available for explicit
-      // inspection or close by the caller. The browser transport also re-checks identity before
-      // every future submission, so an AGENT_CONTEXT_CHANGED page cannot be reused to send blindly.
-      if (!handle && conversation) {
+      // page in the invocation lock above. One kept open to be read closes once a read collects its
+      // reply, or when it expires. Existing handles remain available for read or close by the
+      // caller. The browser transport also re-checks identity before every future submission or
+      // read, so an AGENT_CONTEXT_CHANGED page cannot be reused to send blindly.
+      if (!handle && conversation && !readable) {
         this.deps.conversations.fail(conversation.handle);
         await this.cleanupExpiredPages();
       }
+      if (!handle && readable) readable.closeAfterRead = true;
       // Creation is part of an ask too: failures before a transport handle exists must be
       // recorded. Observability failures must never replace the original operational error.
       await this.deps.audit
@@ -336,6 +357,154 @@ export class InvocationService {
         errorCode: domain.code,
         ...(fingerprint ? { adapterId: fingerprint.adapterId, uiFingerprint: { ...fingerprint } } : {})
       }).catch(() => undefined);
+      throw readable ? readableFailure(domain, readable.handle) : domain;
+    }
+  }
+
+  /** Whether a failed ask's conversation is worth reading instead of sending the message again: its
+   * message was or may have been sent (SUBMIT_STATE_UNKNOWN), or was sent and its reply did not
+   * finish in time (RESPONSE_TIMEOUT), and the conversation is still open and usable. */
+  private readableAfter(domain: DomainError, conversation: Conversation): boolean {
+    const state = domain.options.submissionState;
+    if (state !== "unknown" && state !== "sent") return false;
+    if (domain.code !== "SUBMIT_STATE_UNKNOWN" && domain.code !== "RESPONSE_TIMEOUT") return false;
+    return (
+      this.deps.conversations.has(conversation.handle) &&
+      conversation.state === "ready" &&
+      conversation.transport !== undefined
+    );
+  }
+
+  /**
+   * `conversation.read` (m365_agent_session action=read): reads a conversation of this workspace
+   * without sending anything -- whether the last message entered in it is shown there, and the
+   * reply to the latest user message, waiting for it to finish. Same boundaries as an ask: the
+   * conversation must belong to the workspace, its agent must still be approved with the binding the
+   * conversation was opened with, and the read runs in the conversation's own lock and the
+   * workspace's limiter. A conversation a failed one-shot ask kept open closes once a read returns
+   * its complete reply.
+   */
+  async read(
+    root: string,
+    handle: string,
+    requestId: string,
+    onProgress?: ProgressSink,
+    signal?: AbortSignal
+  ) {
+    const started = this.now();
+    const workspace = await this.deps.policy.loadWorkspace(root);
+    const known = this.deps.conversations.get(handle);
+    if (known.workspaceKey !== workspace.workspaceKey)
+      throw new DomainError(
+        "CONVERSATION_OWNERSHIP_MISMATCH",
+        "This conversation belongs to another workspace."
+      );
+    const alias = known.agentAlias;
+    try {
+      const { result, closing } = await this.deps.limiter.run(workspace.workspaceKey, () =>
+        this.deps.conversations.runExclusive(handle, async () => {
+          const authorized = await this.deps.policy.authorize(root, alias);
+          const current = this.deps.conversations.assertOwner(handle, {
+            workspaceKey: authorized.workspace.workspaceKey,
+            agentAlias: alias,
+            bindingFingerprint: authorized.agent.verification.bindingFingerprint
+          });
+          const transport = this.transportFor(current);
+          if (!transport.readConversation)
+            throw new DomainError(
+              "AGENT_ENTRYPOINT_UNSUPPORTED",
+              "This agent's transport cannot read a conversation."
+            );
+          const reading = await transport.readConversation(this.transportHandle(current), {
+            requestId,
+            onProgress,
+            signal
+          });
+          const response = reading.response;
+          const attachments = response?.attachments ?? [];
+          await this.deps.audit
+            ?.write({
+              event: "agent.read.complete",
+              requestId,
+              workspace: workspace.workspaceKey,
+              agent: alias,
+              conversation: handle,
+              durationMs: this.now() - started,
+              requestChars: 0,
+              responseChars: response ? Array.from(response.text).length : 0,
+              citationCount: response?.citations.length ?? 0,
+              attachmentCount: attachments.filter((item) => item.status === "saved").length,
+              attachmentBytes: attachments.reduce(
+                (total, item) => total + (item.status === "saved" ? (item.sizeBytes ?? 0) : 0),
+                0
+              ),
+              attachmentFailuresByStage: attachmentFailuresByStage(attachments),
+              status: "success"
+            })
+            .catch(() => undefined);
+          // The one question a kept-open one-shot conversation was for has its answer now: release
+          // its page inside the lock, as a successful one-shot ask does.
+          let closing: "closed" | "failed" | undefined;
+          // Not when the caller stopped waiting: the reply would reach nobody, so the conversation
+          // stays to be read again until it expires.
+          if (current.closeAfterRead && reading.reply === "complete" && signal?.aborted !== true) {
+            try {
+              await transport.closeConversation(this.transportHandle(current));
+              this.deps.conversations.close(handle, workspace.workspaceKey);
+              closing = "closed";
+            } catch {
+              this.deps.conversations.fail(handle);
+              closing = "failed";
+            }
+          }
+          const result: ReadResult = {
+            conversation: {
+              handle: current.handle,
+              agentAlias: current.agentAlias,
+              createdAt: current.createdAt,
+              lastUsedAt: current.lastUsedAt
+            },
+            message: reading.message,
+            ...(reading.messageRequestId === undefined ? {} : { messageRequestId: reading.messageRequestId }),
+            reply: reading.reply,
+            ...(response
+              ? {
+                  text: response.text,
+                  citations: response.citations,
+                  attachments,
+                  truncated: response.truncated,
+                  actionRequired: response.actionRequired,
+                  sourceType: "m365-agent" as const
+                }
+              : {}),
+            ...(reading.partialResponse ? { partialResponse: reading.partialResponse } : {}),
+            ...(current.closeAfterRead ? { conversationClosed: closing === "closed" } : {})
+          };
+          return { result, closing };
+        })
+      );
+      if (closing === "closed") this.deps.conversations.forget(handle);
+      else if (closing === "failed") await this.cleanupExpiredPages();
+      return result;
+    } catch (error) {
+      const domain = this.recordIncident(error, "read", signal);
+      await this.deps.audit
+        ?.write({
+          event: "agent.read.failed",
+          requestId,
+          workspace: workspace.workspaceKey,
+          agent: alias,
+          conversation: handle,
+          durationMs: this.now() - started,
+          requestChars: 0,
+          responseChars: 0,
+          citationCount: 0,
+          attachmentCount: 0,
+          attachmentBytes: 0,
+          status: "failure",
+          errorCode: domain.code
+        })
+        .catch(() => undefined);
       throw domain;
     }
   }
@@ -491,6 +660,32 @@ export class InvocationService {
       throw new DomainError("INTERNAL_ERROR", "The conversation has no transport handle.");
     return conversation.transport;
   }
+}
+
+/** `conversation.read`'s result: what reading found, with a complete reply in the shape of an ask
+ * result, and the conversation's public fields only (never its transport handle). */
+export type ReadResult = Omit<ConversationReading, "response"> &
+  Partial<NonNullable<ConversationReading["response"]>> & {
+    conversation: Pick<Conversation, "handle" | "agentAlias" | "createdAt" | "lastUsedAt">;
+    sourceType?: "m365-agent";
+    conversationClosed?: boolean;
+  };
+
+/** The failure of an ask whose conversation stays open to be read: the same error, carrying the
+ * handle and saying how to read it instead of sending the message again. */
+function readableFailure(domain: DomainError, handle: string): DomainError {
+  const read = `call m365_agent_session with action=read and conversationHandle=${handle}`;
+  const remediation =
+    domain.code === "RESPONSE_TIMEOUT"
+      ? `The prompt was not resubmitted. To collect the reply once it finishes, ${read}; it sends nothing.`
+      : `The message was not sent again. To learn whether it arrived and to collect the reply, ${read}; it sends nothing. Send the message again only if read reports message=not-shown.`;
+  const readable = new DomainError(domain.code, domain.message, domain.retryable, {
+    ...domain.options,
+    remediation,
+    conversationHandle: handle
+  });
+  attachDiagnostics(readable, diagnosticsOf(domain) ?? {});
+  return readable;
 }
 
 /** Counts not-saved attachments by acquisition stage (falling back to errorCode when no stage was

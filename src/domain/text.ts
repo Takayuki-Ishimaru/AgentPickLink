@@ -49,3 +49,19 @@ export function messageCharacterCount(value: string): number {
   for (const _character of value) count++;
   return count;
 }
+
+/** JSON Schema `pattern` for a message: at least one character that is not whitespace. A message of
+ * spaces, tabs and line breaks alone says nothing to the agent and is refused, while whitespace
+ * inside a message is sent as given (never trimmed or reformatted; line endings are sent as LF).
+ * Anchored, so that it means the same whether a validator searches the string, as JSON Schema
+ * does, or matches it whole, as some clients that constrain their output do. */
+export const MESSAGE_CONTENT_PATTERN = "^[\\s\\S]*\\S[\\s\\S]*$";
+
+/** Whether a message passes MESSAGE_CONTENT_PATTERN (here as the equivalent `\S` search) and the
+ * length bound: the one check the MCP arguments, the broker's IPC parameters and the published
+ * schema all apply. Whitespace is what `\s` matches in an ECMAScript pattern, so Unicode spaces
+ * such as U+3000 and U+00A0 count too. */
+export function isSendableMessage(value: string): boolean {
+  const characters = messageCharacterCount(value);
+  return characters >= 1 && characters <= MESSAGE_MAX_CHARACTERS && /\S/.test(value);
+}

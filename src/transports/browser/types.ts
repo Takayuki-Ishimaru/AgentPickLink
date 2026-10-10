@@ -77,7 +77,13 @@ export interface BrowserDownloadLike {
   cancel?(): Promise<void>;
 }
 export interface LocatorLike {
-  evaluate?<T>(fn: (element: Element) => T): Promise<T>;
+  /** Playwright semantics: runs `fn` in the page's main world with the matched element (and `arg`),
+   * waiting at most `options.timeout` for the element. */
+  evaluate?<T, A = undefined>(
+    fn: (element: Element, arg: A) => T,
+    arg?: A,
+    options?: { timeout?: number }
+  ): Promise<T>;
   count?(): Promise<number>;
   first?(): LocatorLike;
   nth?(index: number): LocatorLike;
@@ -127,11 +133,18 @@ export interface ConversationMarker {
   userCount: number;
   assistantCount: number;
   digest?: string;
+  /** The page could not be read (its scripts did not run), so the counts are a fallback, not what
+   * the conversation shows. */
+  unreadable?: true;
 }
 export interface SubmissionMarker extends ConversationMarker {
   url: string;
   identityDigest: string;
   composerValue: string;
+  /** The page context the send control's press is compared against (send-activation.ts's
+   * capturePressContext): address, composer labels, agent and conversation attributes, never message
+   * or response text. Absent when the page could not report it. */
+  pressContext?: string;
   capturedAt: number;
 }
 export interface ResponseMarker {
@@ -139,9 +152,36 @@ export interface ResponseMarker {
   responseId?: string;
   digest?: string;
 }
-export type SubmissionState = "not-sent" | "sent" | "unknown";
-export interface SubmissionAck {
+/** The latest exchange a conversation shows, for reading it without sending anything: the counts,
+ * the latest user message's text and the composer's text as the page shows them (kept in memory
+ * only, to recognise the message that was entered), and whether an assistant message follows that
+ * user message. `readable` is false when no judgement may rest on this look: the counts are a
+ * fallback, or there is a user message whose text could not be read (absent means readable). */
+export interface ConversationExchange extends ConversationMarker {
+  latestUserText?: string;
+  composerText?: string;
+  replyStarted: boolean;
+  readable?: boolean;
+}
+/** The last message entered in a conversation, remembered by the transport so that a later read can
+ * tell whether it is shown there: a digest of its text (never the text), the request that entered
+ * it, how many user messages the conversation held when typing began, how far its submission got,
+ * and when its request ended. The driver fills in the rest as the submission goes on; `typed` is set
+ * once typing begins, and only then does the record replace the conversation's previous one. */
+export interface EnteredMessage {
+  digest: string;
+  requestId?: string;
+  typed?: true;
+  userCountBefore?: number;
   state: SubmissionState;
+  settledAt?: number;
+}
+export type SubmissionState = "not-sent" | "sent" | "unknown";
+/** The acknowledgement wait starts after the send control was pressed, so it can only confirm the
+ * message or leave its fate unknown: not-sent is decided before the press (activateSendControl). */
+export interface SubmissionAck {
+  state: Exclude<SubmissionState, "not-sent">;
+  /** Metadata only: why the message was not confirmed. Never page text. */
   reason?: string;
 }
 export interface CompletionResult {
@@ -216,6 +256,21 @@ export interface BrowserInvokeRequest {
   signal?: AbortSignal;
   /** Metadata-only progress sink (see src/domain/progress.ts). Never carries message text. */
   onProgress?: ProgressSink;
+  /** False for a text-only question: no wait for files that can appear after the answer. */
+  expectFiles?: boolean;
+  /** The transport's record of this message, which the driver keeps current (see EnteredMessage). */
+  entered?: EnteredMessage;
+}
+/** What ConversationDriver.read consumes: the same budget and context as an invocation, and the
+ * transport's record of the last message entered in the conversation, if any. */
+export interface BrowserReadRequest {
+  requestId?: string;
+  workspaceKey?: string;
+  workspaceRoot?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onProgress?: ProgressSink;
+  entered?: EnteredMessage;
 }
 
 export class BrowserTransportError extends Error {

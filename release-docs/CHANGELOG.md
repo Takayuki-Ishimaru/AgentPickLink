@@ -1,5 +1,68 @@
 # リリースノート
 
+## v0.2.9 Beta
+
+### 主な変更
+
+- **送信直前に質問と宛先を確認します。** 送信ボタンを待つ間に、入力内容・エージェント・会話・ページのアドレスが変わった場合は、送信せず `UI_CHANGED` または `AGENT_CONTEXT_CHANGED` と未送信（`not-sent`）を返します。質問が別の操作で送信された可能性がある場合は、追加で送信せず `SUBMIT_STATE_UNKNOWN` を返します。
+- **複数行の質問が入力途中で送信される不具合を修正しました。** Enter で送信する入力欄でも、改行は Shift+Enter で入力します。
+- **送信結果が不明な質問を「未送信」と報告しないようにしました。** ボタンを押した後に質問の表示を確認できない場合は `SUBMIT_STATE_UNKNOWN` を返します。質問の失敗には `submissionState`（`not-sent` / `unknown` / `sent`）を付け、送信された可能性がある失敗を再試行可能とは扱いません。質問の処理中にローカル接続が切れた場合も、送信状態を `unknown` として返し、自動再送しません。
+- **質問を送り直さずに会話を確認できます。** `SUBMIT_STATE_UNKNOWN` または `RESPONSE_TIMEOUT` に `error.conversationHandle` がある場合は、`m365_agent_session` の `action: "read"` とそのハンドルで、質問の表示状態と回答を取得できます。入力欄や送信ボタンは操作せず、回答にファイルがある場合は通常と同じ設定で保存します。
+- **入力の確認待ちと回答待ちを分けました。** 入力欄の安定待ちは新しい設定 `browser.composerStabilityMs`（既定 500 ミリ秒）を使用します。回答の安定待ちは従来の設定を使用します。テキストだけの質問では `m365_agent_ask` に `expectFiles: false` を指定し、回答後に遅れて現れるファイルの待機を省けます。すでに表示されたファイルは引き続き保存します。
+- **回答の完了判定と進捗表示を改善しました。** 生成中の表示が消えた時点から回答の安定を確認し直します。クライアントが進捗通知に対応している場合は、回答完了の確認と、遅れて現れるファイルの確認を表示します。
+- **空白だけの質問と不要な引数を拒否します。** 空白・改行・タブだけの質問、および `m365_agent_session` の操作に関係のない引数は `INVALID_ARGUMENT` になります。質問内の空白は保持し、改行コードは LF にそろえます。
+- **エージェント一覧の件数表示を改善しました。** 検索で絞り込んだ場合、全体の件数・表示中の件数・選択中の件数を分けて表示します。
+
+会話の確認結果が `shown` なら質問が表示され、`differs` なら別の文面が表示されています。`not-shown` は未送信を確認できた状態です。`unconfirmed` は送信の有無を確認できず、`none` は確認対象の質問がありません。再送を検討できるのは `not-shown` の場合です。`unconfirmed` の場合は送り直さず、後で再度読むか Microsoft 365 の会話を確認してください。
+
+回答は `reply: "complete"` / `"incomplete"` / `"none"` で区別します。失敗後の確認のために残した単発の会話は、読む操作で完了した回答を回収すると閉じます。残した会話も有効期限・会話数上限・ローカルプロセスの再起動の影響を受けるため、ハンドルを受け取ったら早めに確認してください。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.9.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。会話の確認を使うには、新しい MCP 接続とローカルプロセスの両方が必要です。古いローカルプロセスへの読む操作は `BROKER_VERSION_MISMATCH` になります。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。
+
+新しい設定を手動で追加する必要はありません。`browser.composerStabilityMs` が未設定なら既定値を使用します。`expectFiles` を省略した場合は従来どおりファイルの出現を待ちます。詳しくは [設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.9.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.9-win-x64.zip` / `AgentPickLink-0.2.9-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.9-darwin-arm64.tgz` / `AgentPickLink-0.2.9-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.9-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.9-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.9 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。利用する環境で質問・回答・会話の確認・ファイル取得を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+PDF の案内は生成を依頼する AI クライアントへの助言です。生成物のフォント・レイアウト・ページ数の正しさを保証するものではなく、実ファイルの確認が必要です。
+
+### English
+
+- **Verify the question and recipient immediately before sending.** If the entered text, agent, conversation, or page address changes while waiting for the send button, the request returns `UI_CHANGED` or `AGENT_CONTEXT_CHANGED` with `not-sent`. If another operation may already have sent the question, no additional press is made and `SUBMIT_STATE_UNKNOWN` is returned.
+- **Fixed premature submission of multiline questions.** Line breaks use Shift+Enter, including in editors where Enter sends the message.
+- **Report uncertain submission accurately.** After a press, failure to confirm the question in the conversation returns `SUBMIT_STATE_UNKNOWN`. Failed questions include `submissionState` (`not-sent` / `unknown` / `sent`). Failures that may have sent the question are not marked retryable. A local connection lost during a question also reports `unknown`; questions are never resent automatically.
+- **Read an existing conversation without resending.** When `SUBMIT_STATE_UNKNOWN` or `RESPONSE_TIMEOUT` carries `error.conversationHandle`, use `m365_agent_session` with `action: "read"` and that handle to inspect the question and collect its reply. The composer and send button are untouched; reply files are saved under the usual download settings.
+- **Separate input verification from response waiting.** `browser.composerStabilityMs` defaults to 500 ms for input stability. Response stability retains its existing setting. Set `expectFiles: false` on a text-only `m365_agent_ask` to skip waiting for files that appear after the reply; files already displayed are still saved.
+- **Improve completion checks and progress.** Response stability is checked again after generation indicators disappear. Clients supporting progress notifications can show confirmation of response completion and checks for files arriving after the reply.
+- **Reject whitespace-only questions and irrelevant session fields.** Spaces, line breaks, or tabs alone, and fields unrelated to a session action, return `INVALID_ARGUMENT`. Whitespace within a question is preserved; line endings use LF.
+- **Clarify agent counts.** Filtered lists display total, visible, and selected counts separately.
+
+Reading reports `message: shown` when the question is displayed, `differs` for different text, `not-shown` when non-submission is confirmed, `unconfirmed` when submission cannot be determined, and `none` when no question is available to check. Only consider resending after `not-shown`; after `unconfirmed`, read again later or inspect the Microsoft 365 conversation. Replies are `complete`, `incomplete`, or `none`. A one-shot conversation retained after a failed ask closes when reading collects its complete reply. Retained handles remain subject to expiry, conversation limits, and local process restarts; read them promptly.
+
+Install `agent-pick-link-0.2.9.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. Reading requires both a new MCP connection and a new local process; older local processes return `BROKER_VERSION_MISMATCH`. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused. No manual configuration addition is required: an absent `browser.composerStabilityMs` uses its default, and omitting `expectFiles` retains the existing file wait. See [Configuration](CONFIGURATION.md) and [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.9. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Verify questions, answers, conversation reads, and file retrieval in your environment. See [Supported environments and validation scope](RELEASE-CHECKLIST.md) and the [English README](README.en.md). PDF guidance does not guarantee fonts, layout, or page counts; inspect the actual files.
+
 ## v0.2.8 Beta
 
 ### 主な変更

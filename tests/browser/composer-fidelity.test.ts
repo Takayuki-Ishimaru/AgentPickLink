@@ -2,7 +2,12 @@ import { existsSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { M365CopilotChatAdapter } from "../../src/transports/browser/adapters/index.js";
-import { composerTextMatches, readComposerPlainText } from "../../src/transports/browser/composer-text.js";
+import {
+  composerTextMatches,
+  readComposerPlainText,
+  readDomPlainText
+} from "../../src/transports/browser/composer-text.js";
+import { USER_MESSAGE_SELECTORS } from "../../src/transports/browser/selectors/common.js";
 import { ConversationDriver } from "../../src/transports/browser/conversation-driver.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
@@ -21,8 +26,8 @@ const executable = [
 describe.skipIf(!executable)("composer fidelity in a real browser", () => {
   let browser: Browser;
   let page: Page;
-  const create = (typingDelayMs = 0, stabilityWindowMs = 5) =>
-    new M365CopilotChatAdapter({ hostnames: ["m365.example.test"], typingDelayMs, stabilityWindowMs });
+  const create = (typingDelayMs = 0, composerStabilityMs = 5) =>
+    new M365CopilotChatAdapter({ hostnames: ["m365.example.test"], typingDelayMs, composerStabilityMs });
   beforeAll(async () => {
     browser = await chromium.launch({ executablePath: executable, headless: true });
     page = await browser.newPage();
@@ -68,6 +73,31 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
     await expect(adapter.waitForUserMessageAck(page as unknown as PageLike, marker, 500)).resolves.toEqual({
       state: "sent"
     });
+  });
+  // Line breaks are typed as Shift+Enter (v0.2.8 review). An editor that keeps them as text
+  // (pre-wrap) stores a break typed at the end with one more line feed for the caret, the text
+  // counterpart of the terminal BR: it is not part of the message (independent re-review).
+  it.each(["a\n", "a\n\n", "\n", "\n\n", "\nfirst\n\nlast\n", "第一行\n第二行\n", "x\n\n\ny", "a\nb"])(
+    "reads a pre-wrap editor's line breaks as typed, trailing ones included: %j",
+    async (text) => {
+      await page
+        .locator("[contenteditable]")
+        .evaluate((element) => ((element as HTMLElement).style.whiteSpace = "pre-wrap"));
+      const adapter = create();
+      await adapter.fillComposer(page as unknown as PageLike, text);
+      const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
+      expect(marker.composerValue).toBe(text);
+    }
+  );
+  it("keeps the final line feed of a message, which is no editor", async () => {
+    await page.evaluate(() => {
+      const user = document.createElement("div");
+      user.setAttribute("data-message-author-role", "user");
+      user.style.whiteSpace = "pre-wrap";
+      user.textContent = "a\n";
+      document.querySelector("[role=log]")!.append(user);
+    });
+    expect(await page.evaluate(readDomPlainText, USER_MESSAGE_SELECTORS)).toBe("a\n");
   });
 
   it.each([

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AliasSchema } from "../domain/agent.js";
 import { DomainError } from "../domain/errors.js";
-import { MESSAGE_MAX_CHARACTERS, messageCharacterCount } from "../domain/text.js";
+import { isSendableMessage } from "../domain/text.js";
 const RequestIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 export const IpcEnvelopeSchema = z
   .object({
@@ -37,15 +37,17 @@ export const BrokerMethodSchemas = {
   "conversation.create": WorkspaceSchema.extend({ agent: AliasSchema }).strict(),
   "conversation.invoke": WorkspaceSchema.extend({
     agent: AliasSchema,
-    message: z.string().refine((value) => {
-      const characters = messageCharacterCount(value);
-      return characters >= 1 && characters <= MESSAGE_MAX_CHARACTERS;
-    }),
-    conversationHandle: ConversationHandleSchema.optional()
+    // The same rule as the MCP argument check: 1-12000 code points, not whitespace alone.
+    message: z.string().refine(isSendableMessage),
+    conversationHandle: ConversationHandleSchema.optional(),
+    /** Minor 5: false skips the wait for files that can appear after the answer. */
+    expectFiles: z.boolean().optional()
   }).strict(),
   "conversation.list": WorkspaceSchema,
   "conversation.close": WorkspaceSchema.extend({ conversationHandle: ConversationHandleSchema }).strict(),
-  "conversation.closeAllForWorkspace": WorkspaceSchema
+  "conversation.closeAllForWorkspace": WorkspaceSchema,
+  /** Minor 5: reads a conversation of this workspace without sending anything. */
+  "conversation.read": WorkspaceSchema.extend({ conversationHandle: ConversationHandleSchema }).strict()
 } as const;
 export type BrokerMethod = keyof typeof BrokerMethodSchemas;
 export function parseMethod(

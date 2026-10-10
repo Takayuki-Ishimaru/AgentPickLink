@@ -2,7 +2,7 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { encodeFrame, FrameDecoder } from "./framing.js";
 import type { BrokerDescriptor, BrokerHello, IpcProgressFrame, IpcResponse } from "./protocol.js";
-import { BROKER_CANCEL_MINOR, BROKER_CAPABILITIES, BROKER_PROTOCOL } from "./protocol.js";
+import { BROKER_CANCEL_MINOR, BROKER_CAPABILITIES, BROKER_PROTOCOL, BROKER_READ_MINOR } from "./protocol.js";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
@@ -15,6 +15,8 @@ export class IpcClient {
       reject(error: Error): void;
       cleanup(): void;
       onProgress?: ProgressSink;
+      /** The request can submit a message to Microsoft 365 (see interruptedSubmission). */
+      submits: boolean;
     }
   >();
   private hello?: BrokerHello;
@@ -161,6 +163,31 @@ export class IpcClient {
         false,
         { submissionState: "not-sent" }
       );
+    // What a broker older than protocol minor 5 cannot take: it refuses an unknown method or field.
+    // Waiting for files is only an optimisation to give up; reading a conversation is not.
+    const minor = this.hello?.protocolMinor ?? 0;
+    if (minor < BROKER_READ_MINOR) {
+      if (method === "conversation.read")
+        throw new DomainError(
+          "BROKER_VERSION_MISMATCH",
+          "The running broker is older than this client and cannot read a conversation.",
+          false,
+          {
+            // Honest about the cost: a restart enables reading, but ends this broker's conversations.
+            remediation:
+              "Restart the broker (reload VS Code, or run: m365-agent broker restart) to enable reading conversations. A restart closes the conversations this broker has open, so check this one in Microsoft 365 instead if you still need it."
+          }
+        );
+      if (
+        method === "conversation.invoke" &&
+        params &&
+        typeof params === "object" &&
+        "expectFiles" in params
+      ) {
+        const { expectFiles: _ignored, ...older } = params as Record<string, unknown>;
+        params = older;
+      }
+    }
     if (this.waiting.has(requestId))
       throw new DomainError("BROKER_PROTOCOL_ERROR", "A broker request with this ID is already pending.");
     return new Promise<unknown>((resolve, reject) => {
@@ -176,10 +203,7 @@ export class IpcClient {
             "SUBMIT_STATE_UNKNOWN",
             "The caller stopped waiting after the broker request was sent.",
             false,
-            {
-              submissionState: "unknown",
-              remediation: "Inspect the existing conversation before deciding whether to send again."
-            }
+            { submissionState: "unknown" }
           )
         );
       };
@@ -193,7 +217,10 @@ export class IpcClient {
           reject(error);
         },
         cleanup,
-        onProgress: options?.onProgress
+        onProgress: options?.onProgress,
+        submits:
+          method === "conversation.invoke" ||
+          (method === "agent.validate" && (params as { sendTestMessage?: unknown })?.sendTestMessage === true)
       });
       signal?.addEventListener("abort", onAbort, { once: true });
       this.socket!.write(encodeFrame({ id: requestId, method, params }), (error) => {
@@ -232,7 +259,7 @@ export class IpcClient {
   ): void {
     for (const waiter of this.waiting.values()) {
       waiter.cleanup();
-      waiter.reject(error);
+      waiter.reject(waiter.submits ? interruptedSubmission() : error);
     }
     this.waiting.clear();
   }
@@ -264,8 +291,27 @@ export class IpcClient {
           // item 1: forwarded so the CLI/extension can append the redacted call log to their own
           // log file -- see domain/errors.ts's ApplicationError and ipc/protocol.ts's IpcResponse.
           callLog: message.error.callLog,
-          timedOut: message.error.timedOut
+          timedOut: message.error.timedOut,
+          ...(message.error.conversationHandle
+            ? { conversationHandle: message.error.conversationHandle }
+            : {})
         })
       );
   }
+}
+
+/** The connection closed while the broker held a request that can submit a message. The broker
+ * may already have pressed send, so the failure is neither retryable nor not-sent: retrying it
+ * blindly could submit the message twice. */
+function interruptedSubmission(): DomainError {
+  return new DomainError(
+    "BROKER_UNAVAILABLE",
+    "The broker connection closed while the request was in progress, so the message may already have been submitted.",
+    false,
+    {
+      submissionState: "unknown",
+      remediation:
+        "The message was not resent. Check the conversation in Microsoft 365 before sending it again."
+    }
+  );
 }

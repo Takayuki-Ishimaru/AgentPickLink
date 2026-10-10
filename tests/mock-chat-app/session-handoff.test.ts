@@ -617,6 +617,7 @@ async function makeTransport(
     navigationTimeoutMs: 20_000,
     responseTimeoutMs: 20_000,
     stabilityWindowMs: 100,
+    composerStabilityMs: 100,
     pollIntervalMs: 25,
     discovery: FAST_DISCOVERY,
     ...overrides

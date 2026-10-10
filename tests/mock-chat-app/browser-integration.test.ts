@@ -37,6 +37,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
   const adapter = new M365CopilotChatAdapter({
     hostnames: ["127.0.0.1"],
     stabilityWindowMs: 20,
+    composerStabilityMs: 20,
     pollIntervalMs: 5,
     // The fixture's "streaming" mode finishes in ~60 ms, before the completion detector's first
     // poll, so these flow tests never observe a streaming signal. The quiet-stream grace is
@@ -407,6 +408,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     const streamingAdapter = new M365CopilotChatAdapter({
       hostnames: ["127.0.0.1"],
       stabilityWindowMs: 50,
+      composerStabilityMs: 50,
       pollIntervalMs: 25
     });
     await page.goto(`${app.origin}/chat?mode=stop-control-stream`);
@@ -434,6 +436,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     const quietAdapter = new M365CopilotChatAdapter({
       hostnames: ["127.0.0.1"],
       stabilityWindowMs: 50,
+      composerStabilityMs: 50,
       pollIntervalMs: 25
     });
     await page.goto(`${app.origin}/chat?mode=citations`);
@@ -467,6 +470,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
         new M365CopilotChatAdapter({
           hostnames: ["127.0.0.1"],
           stabilityWindowMs: 20,
+          composerStabilityMs: 20,
           pollIntervalMs: 5,
           quietStreamingGraceMs: 50
         }),
@@ -478,6 +482,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
         new AgentBuilderChatAdapter({
           hostnames: ["127.0.0.1"],
           stabilityWindowMs: 20,
+          composerStabilityMs: 20,
           pollIntervalMs: 5,
           quietStreamingGraceMs: 50
         }),
@@ -489,6 +494,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
         new CopilotStudioM365Adapter({
           hostnames: ["127.0.0.1"],
           stabilityWindowMs: 20,
+          composerStabilityMs: 20,
           pollIntervalMs: 5,
           quietStreamingGraceMs: 50
         }),
@@ -500,6 +506,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
         new TeamsWebAdapter({
           hostnames: ["127.0.0.1"],
           stabilityWindowMs: 20,
+          composerStabilityMs: 20,
           pollIntervalMs: 5,
           quietStreamingGraceMs: 50
         }),
@@ -560,12 +567,13 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     });
 
     // Once the send control was activated, an unacknowledged message is "unknown", never
-    // "not-sent": only a positive signal (the composer still holding the prompt) may say not-sent.
+    // "not-sent" -- not even when the composer still holds the prompt (send-noop), since a UI may
+    // accept the message and clear its composer only later (v0.2.8 review).
     for (const [mode, expected] of [
       ["ack-absent", "unknown"],
       ["ack-ambiguous", "unknown"],
       ["duplicate-send", "unknown"],
-      ["send-noop", "not-sent"]
+      ["send-noop", "unknown"]
     ] as const) {
       await page.goto(`${app.origin}/chat?mode=${mode}`);
       const browserPage = page as unknown as PageLike;

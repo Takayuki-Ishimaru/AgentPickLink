@@ -34,7 +34,7 @@ describe.skipIf(!executable)("send control activation and cancellation", () => {
   const adapter = (sendClickableTimeoutMs?: number) =>
     new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
-      stabilityWindowMs: 5,
+      composerStabilityMs: 5,
       sendClickableTimeoutMs
     });
   beforeAll(async () => {
@@ -292,14 +292,14 @@ window.busy = (busyMs, periodMs) => {
         events: ["pointerdown", "mousedown", "pointerup", "mouseup", "click"],
         expiryMs: 30_000
       });
-    expect(await gate("open", "install")).toBe(true);
+    expect(await gate("open", "install")).toEqual({ armed: true });
     await page.locator("#send").click();
     await page.locator("#send").evaluate((element) => (element as HTMLButtonElement).click());
     // pointerdown, mousedown, pointerup, mouseup and click of the trusted click; not the script's.
     expect(await gate("open", "finish")).toEqual({ passed: 5, blocked: 0 });
     expect(await clicks()).toHaveLength(2);
 
-    expect(await gate("closed", "install")).toBe(true);
+    expect(await gate("closed", "install")).toEqual({ armed: true });
     expect(await gate("closed", "close")).toBe(true);
     await page.locator("#send").click();
     // A cancelled pointerdown also suppresses the compatibility mousedown/mouseup (Pointer Events),
