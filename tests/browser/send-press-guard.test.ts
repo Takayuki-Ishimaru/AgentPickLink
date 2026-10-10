@@ -425,22 +425,32 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
     it("presses nothing when the gate cannot be armed in time, and leaves no gate behind", async () => {
       await open("rich");
       const composer = await adapter().findComposer(target());
+      // Stall inside the arming evaluation itself. A separate page timer can finish before the
+      // broker receives the composer, leaving no delay inside the timeout being tested.
+      const stalledComposer: LocatorLike = {
+        evaluate: (fn, arg, options) =>
+          composer.evaluate!(
+            Object.assign(fn.bind(undefined), {
+              toString: () =>
+                [
+                  "function (element, args) {",
+                  "const end = performance.now() + 800;",
+                  "while (performance.now() < end);",
+                  `return (${fn.toString()})(element, args);`,
+                  "}"
+                ].join("\n")
+            }),
+            arg,
+            options
+          )
+      };
       const send = page.getByRole("button", { name: "Send" }) as unknown as LocatorLike;
       await expect(
         activateSendControl(target(), send, new AbortController().signal, {
           diagnostics: async () => ({}),
           gateArmTimeoutMs: 200,
           press: {
-            // The renderer stalls just as the gate is being armed.
-            composer: async () => {
-              await page.evaluate(() =>
-                setTimeout(() => {
-                  const end = performance.now() + 800;
-                  while (performance.now() < end);
-                }, 0)
-              );
-              return composer;
-            },
+            composer: async () => stalledComposer,
             verify: async () => undefined,
             check: {
               composerSelector: COMPOSER_SELECTORS.join(", "),
