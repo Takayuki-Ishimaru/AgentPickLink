@@ -4,6 +4,7 @@ import {
   BrowserTransportError,
   type AuthState,
   type BrowserAgentDefinition,
+  type BrowserFrameLike,
   type PageLike
 } from "./types.js";
 import type { ChatUiAdapter } from "./ui-adapter.js";
@@ -183,7 +184,7 @@ export class AgentNavigator {
       if (state === "app-or-auth") this.assertAppOrAuthUrl(url);
       else this.policy.assertRedirect(url, state);
     };
-    const onFrame = (frame: any) => {
+    const onFrame = (frame: BrowserFrameLike) => {
       if (!frame || typeof frame.url !== "function") return;
       const main = page.mainFrame?.();
       if (main && frame !== main) return;
@@ -204,7 +205,8 @@ export class AgentNavigator {
               "A popup navigated outside the approved authentication boundary."
             )
       );
-      void popup.close?.();
+      // A disappearing popup can reject close(); the policy refusal above remains the result.
+      void popup.close?.().catch(() => undefined);
     };
     const onPopup = (popup: PageLike) => {
       if (state !== "app-or-auth") {
@@ -217,7 +219,7 @@ export class AgentNavigator {
         );
         return;
       }
-      const onPopupFrame = (frame: any) => {
+      const onPopupFrame = (frame: BrowserFrameLike) => {
         if (!frame || typeof frame.url !== "function") return;
         const main = popup.mainFrame?.();
         if (main && frame !== main) return;
@@ -247,7 +249,7 @@ export class AgentNavigator {
       page.off?.("popup", onPopup);
       for (const [popup, cleanup] of popupCleanups) {
         cleanup();
-        void popup.close?.();
+        void popup.close?.().catch(() => undefined);
       }
       popupCleanups.clear();
     };

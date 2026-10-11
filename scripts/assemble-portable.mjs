@@ -322,7 +322,7 @@ async function writeShaSums(outDir, archivePaths) {
   const entries = new Map();
   try {
     for (const line of (await readFile(sumsPath, "utf8")).split(/\r?\n/)) {
-      const match = /^([0-9a-f]{64})  (\S.*)$/.exec(line.trim());
+      const match = /^([0-9a-f]{64}) {2}(\S.*)$/.exec(line.trim());
       if (match) entries.set(match[2], match[1]);
     }
   } catch (error) {

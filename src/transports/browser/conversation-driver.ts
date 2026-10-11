@@ -10,7 +10,6 @@ import {
   normalizeComposerText,
   readComposerPlainText
 } from "./composer-text.js";
-import { RESPONSE_SELECTORS } from "./selectors/common.js";
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { changedBeforePress } from "./send-activation.js";
 import { SubmissionTracker } from "./submission-tracker.js";
@@ -36,7 +35,7 @@ export interface ConversationDriverOptions {
   /** Spacing of `streaming` progress events while a response grows. */
   streamingProgressIntervalMs?: number;
   /** How long to wait for the submitted prompt to appear as a user message. A read waits as long
-   * again for a message whose submission was uncertain before it calls the message not shown. */
+   * again for an uncertain submission, but an expired wait never proves non-submission. */
   ackTimeoutMs?: number;
   /** How long to wait for the agent's first response node after acknowledgement, or for the reply
    * to a message a read found in the conversation. */
@@ -316,8 +315,8 @@ export class ConversationDriver {
    * budget, then collected like an invocation's reply. The context checks of a submission apply:
    * the page must still show the agent the conversation was opened with. A message whose submission
    * was uncertain gets the acknowledgement time once more, counted from the end of its request, to
-   * appear, so that a slow page is not mistaken for a message that never left; a read long after
-   * that does not wait again. Anything short of the message itself being shown is decided only by
+   * appear; an expired wait leaves submission unconfirmed, even if the draft remains. A read long
+   * after that does not wait again. Anything short of the message itself being shown is decided only by
    * looks that agree (see enteredMessageState for what each answer needs).
    */
   async read(
@@ -399,8 +398,6 @@ export class ConversationDriver {
           agreed = next === judgement || shown(next);
           judgement = next;
         }
-        // Not shown is a licence to send again: looks that never agreed do not give it.
-        if (!agreed && judgement === "not-shown") judgement = "unconfirmed";
       }
       if (judgement === "unreadable")
         throw new BrowserTransportError(
@@ -467,19 +464,28 @@ export class ConversationDriver {
   private async collectReply(context: ReplyContext, responseMarker: ResponseMarker): Promise<CollectedReply> {
     const { page, adapter, request, report } = context;
     const signal = request.signal;
-    const stopStreamingProgress = this.reportStreaming(page, report, !!request.onProgress);
-    let completion;
-    try {
-      completion = await adapter.waitForResponseComplete(
-        page,
-        responseMarker,
-        Math.max(1, context.deadline() - Date.now()),
-        signal,
-        () => report("confirming-response", "Confirming the answer is complete")
-      );
-    } finally {
-      stopStreamingProgress();
-    }
+    // Completion and progress use the same ordered observations. A separate, slower DOM sampler
+    // can mistake already settled text for new growth and roll confirmation back to streaming.
+    let lastStreamingAt = Date.now();
+    let confirming = false;
+    const completion = await adapter.waitForResponseComplete(
+      page,
+      responseMarker,
+      Math.max(1, context.deadline() - Date.now()),
+      signal,
+      () => {
+        confirming = true;
+        report("confirming-response", "Confirming the answer is complete");
+      },
+      (responseChars) => {
+        const now = Date.now();
+        if (confirming || now - lastStreamingAt >= this.streamingProgressIntervalMs) {
+          report("streaming", undefined, responseChars);
+          lastStreamingAt = now;
+        }
+        confirming = false;
+      }
+    );
     if (!completion.complete) {
       let partialResponse: PartialResponse | undefined;
       try {
@@ -694,38 +700,6 @@ export class ConversationDriver {
       }
     };
   }
-
-  /** Emits a `streaming` event (elapsed time + response length) whenever the response grew since
-   * the previous check, every streamingProgressIntervalMs. The length when the wait starts is only
-   * the baseline: a reply that is already complete, or that holds still, is left to the
-   * `confirming-response` phase instead of being reported as streaming. Only the character count is
-   * reported; the response text itself never leaves the page. */
-  private reportStreaming(page: PageLike, report: Reporter, enabled: boolean): () => void {
-    if (!enabled) return () => undefined;
-    let stopped = false;
-    let inFlight = false;
-    let previous: number | undefined;
-    const tick = async (baseline: boolean) => {
-      if (stopped || inFlight) return;
-      inFlight = true;
-      try {
-        const responseChars = await responseLength(page);
-        if (stopped || responseChars === undefined) return;
-        if (!baseline && previous !== undefined && responseChars > previous)
-          report("streaming", undefined, responseChars);
-        previous = responseChars;
-      } finally {
-        inFlight = false;
-      }
-    };
-    void tick(true);
-    const timer = setInterval(() => void tick(false), this.streamingProgressIntervalMs);
-    timer.unref?.();
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }
 }
 
 type Reporter = (phase: ProgressPhase, message?: string, responseChars?: number) => void;
@@ -784,11 +758,11 @@ export function enteredMessage(message: string, requestId?: string): EnteredMess
  * `message`), or `unreadable` when the look cannot be judged.
  *
  * Only certainty may say "not shown", since that tells the caller it can send the message again:
- * the send control was never pressed, or -- for a message that may have been sent -- the page kept
- * it in the composer and shows no user message added since typing began. A message the page
- * acknowledged is never "not shown". The latest user message being this message counts as shown
- * when the conversation gained a user message since typing began; without that, it may be an
- * earlier message with the same text, so only an acknowledged message is taken as shown then. */
+ * submission was stopped before the send control could be pressed. Neither a retained composer
+ * nor an expired acknowledgement wait proves that a possible submission did not happen. The
+ * latest user message counts as shown only when the conversation gained a user message since
+ * typing began. Even a previous acknowledgement cannot identify a currently visible bubble as
+ * this attempt when the page may be showing an earlier identical question. */
 function enteredMessageState(
   exchange: ConversationExchange,
   entered: EnteredMessage
@@ -799,14 +773,9 @@ function enteredMessageState(
     entered.userCountBefore === undefined ? undefined : exchange.userCount > entered.userCountBefore;
   const latest =
     exchange.latestUserText !== undefined && enteredMessageDigest(exchange.latestUserText) === entered.digest;
-  if (latest && (added !== false || entered.state === "sent")) return "shown";
+  if (latest && added === true) return "shown";
   if (added === true) return "differs";
-  if (entered.state === "sent") return "unconfirmed";
-  // May have been sent, and the conversation shows no user message added since typing began (the
-  // latest may be an earlier one with the same text), or there is no count to tell.
-  const kept =
-    exchange.composerText !== undefined && enteredMessageDigest(exchange.composerText) === entered.digest;
-  return kept && added === false ? "not-shown" : "unconfirmed";
+  return "unconfirmed";
 }
 
 async function delay(ms: number, page: PageLike): Promise<void> {
@@ -911,20 +880,6 @@ function notSentBeforePress(error: unknown): BrowserTransportError {
     undefined,
     { submissionState: "not-sent" }
   );
-}
-
-async function responseLength(page: PageLike): Promise<number | undefined> {
-  try {
-    if (!page.evaluate) return undefined;
-    const length = await page.evaluate<number>((selector: string) => {
-      const nodes = [...document.querySelectorAll(selector)] as HTMLElement[];
-      const node = nodes[nodes.length - 1];
-      return (node?.innerText ?? "").trim().length;
-    }, RESPONSE_SELECTORS.join(", "));
-    return typeof length === "number" ? length : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** URLs identify separate same-name files. UI-only controls use their structural location too. */

@@ -44,6 +44,7 @@ const PAGE = `<main data-agent-id="agent-alpha" data-agent-name="Review Agent" d
     return node;
   };
   window.answer = (message) => {
+    composer.value = '';
     const user = article('user', '');
     user.textContent = message;
     log.append(user);
@@ -53,7 +54,7 @@ const PAGE = `<main data-agent-id="agent-alpha" data-agent-name="Review Agent" d
     const message = composer.value;
     window.sent.push(message);
     if (window.ignore) return;
-    composer.value = '';
+    if (!window.keepDraft) composer.value = '';
     if (window.drop) return;
     setTimeout(() => window.answer(message), window.ackDelay);
   });
@@ -125,13 +126,20 @@ describe.skipIf(!executable)(
         { ackTimeoutMs: 400, responseStartTimeoutMs: 1_000, attachmentSettleMs: 0 }
       );
     async function open(
-      options: { ackDelay?: number; drop?: boolean; ignore?: boolean; m365?: boolean } = {}
+      options: {
+        ackDelay?: number;
+        drop?: boolean;
+        ignore?: boolean;
+        m365?: boolean;
+        keepDraft?: boolean;
+      } = {}
     ) {
       await page.goto("https://m365.example.test/chat/agent/agent-alpha");
       await page.evaluate((settings) => Object.assign(window, settings), {
         ackDelay: options.ackDelay ?? 0,
         drop: options.drop ?? false,
         ignore: options.ignore ?? false,
+        keepDraft: options.keepDraft ?? false,
         m365: options.m365 ?? false
       });
       return page as unknown as PageLike;
@@ -161,9 +169,8 @@ describe.skipIf(!executable)(
       expect(await sent()).toEqual([QUESTION]);
     }, 20_000);
 
-    // Not shown means the message can be sent again, so it needs the page's own evidence: the
-    // composer still holds the message, and no user message appeared.
-    it("reports a message the page did not take as not shown, after waiting the acknowledgement time again", async () => {
+    // A retained draft and absent user bubble do not prove that a press was not accepted.
+    it("leaves submission unconfirmed even when the composer still holds the message, after waiting the acknowledgement time again", async () => {
       const target = await open({ ignore: true });
       const entered = enteredMessage(QUESTION, "req_ask");
       await expect(
@@ -176,7 +183,7 @@ describe.skipIf(!executable)(
       const askEnded = entered.settledAt!;
       await expect(
         driver().read(target, conversation, agent, adapter(), { entered, timeoutMs: 10_000 })
-      ).resolves.toEqual({ message: "not-shown", messageRequestId: "req_ask", reply: "none" });
+      ).resolves.toEqual({ message: "unconfirmed", messageRequestId: "req_ask", reply: "none" });
       // Not before the second acknowledgement window, counted from the end of the ask, has passed.
       expect(Date.now() - askEnded).toBeGreaterThanOrEqual(380);
       expect(await sent()).toEqual([QUESTION]);
@@ -214,9 +221,36 @@ describe.skipIf(!executable)(
       const started = Date.now();
       await expect(
         driver().read(target, conversation, agent, adapter(), { entered, timeoutMs: 10_000 })
-      ).resolves.toEqual({ message: "not-shown", reply: "none" });
+      ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
       // One more look to confirm it, not another acknowledgement window (400 ms here).
       expect(Date.now() - started).toBeLessThan(380);
+    }, 20_000);
+
+    it("reads a later reply without resending after both ACK windows expired with the draft retained", async () => {
+      const target = await open({ ackDelay: 1_500, keepDraft: true });
+      const entered = enteredMessage(QUESTION, "req_late");
+      await expect(
+        driver().invoke(target, conversation, agent, adapter(), {
+          message: QUESTION,
+          timeoutMs: 10_000,
+          entered
+        })
+      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+      await expect(
+        driver().read(target, conversation, agent, adapter(), { entered, timeoutMs: 10_000 })
+      ).resolves.toMatchObject({ message: "unconfirmed", reply: "none" });
+      expect(await page.locator("#composer").inputValue()).toBe(QUESTION);
+      await page.waitForFunction(
+        () => document.querySelectorAll('[data-message-author-role="user"]').length === 1
+      );
+      await expect(
+        driver().read(target, conversation, agent, adapter(), { entered, timeoutMs: 10_000 })
+      ).resolves.toMatchObject({
+        message: "shown",
+        reply: "complete",
+        response: { text: expect.stringContaining("route B") }
+      });
+      expect(await sent()).toEqual([QUESTION]);
     }, 20_000);
 
     it("finds the reply that follows the latest user message in Microsoft 365's article markup", async () => {

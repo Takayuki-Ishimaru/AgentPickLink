@@ -678,7 +678,7 @@ function readableFailure(domain: DomainError, handle: string): DomainError {
   const remediation =
     domain.code === "RESPONSE_TIMEOUT"
       ? `The prompt was not resubmitted. To collect the reply once it finishes, ${read}; it sends nothing.`
-      : `The message was not sent again. To learn whether it arrived and to collect the reply, ${read}; it sends nothing. Send the message again only if read reports message=not-shown.`;
+      : `The message was not sent again. To learn whether it arrived and to collect the reply, ${read}; it sends nothing. A retained draft or an expired acknowledgement wait does not prove non-submission. If read reports message=unconfirmed, do not resend: read again later or ask the user to check Microsoft 365. Send the message again only if read reports message=not-shown (submission stopped before the send control could be pressed).`;
   const readable = new DomainError(domain.code, domain.message, domain.retryable, {
     ...domain.options,
     remediation,

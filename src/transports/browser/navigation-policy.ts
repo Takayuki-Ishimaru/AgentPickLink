@@ -163,7 +163,5 @@ function isPrivateOrLocalHost(host: string): boolean {
   return false;
 }
 function policyError(code: string, message: string): Error {
-  const e = new Error(message);
-  (e as any).code = code;
-  return e;
+  return Object.assign(new Error(message), { code });
 }

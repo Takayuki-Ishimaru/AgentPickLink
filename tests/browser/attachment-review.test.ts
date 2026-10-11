@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AttachmentSaver, sanitizeFilename } from "../../src/transports/browser/attachment-saver.js";
 import type { AttachmentCandidate, PageLike } from "../../src/transports/browser/types.js";
 
@@ -14,7 +14,7 @@ const candidates = (length: number): AttachmentCandidate[] =>
     name: `file-${i + 1}.txt`,
     url: `https://${host}/files/${i + 1}`
   }));
-function fixture(delay = 0) {
+function fixture(delay = 0, onRequest?: (count: number) => void) {
   const requested: string[] = [];
   const page: PageLike = {
     url: () => "https://m365.example.test/chat",
@@ -22,6 +22,7 @@ function fixture(delay = 0) {
       request: {
         get: async (url) => {
           requested.push(url);
+          onRequest?.(requested.length);
           if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
           return {
             ok: () => true,
@@ -182,26 +183,44 @@ describe("attachment review regressions", () => {
 
   it("applies one total deadline across files, preserves completed files and isolates concurrent saves", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-phase-multi-"));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
-      const slow = fixture(60),
-        fast = fixture();
+      let firstStarted!: () => void, secondStarted!: () => void;
+      const firstRequest = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      const secondRequest = new Promise<void>((resolve) => {
+        secondStarted = resolve;
+      });
+      const slow = fixture(60, (count) => {
+        if (count === 1) firstStarted();
+        if (count === 2) secondStarted();
+      });
+      const fast = fixture();
       const saver = new AttachmentSaver({
         enabled: true,
         directory,
         allowedHosts: [host],
         overallTimeoutMs: 100
       });
-      const [timed, completed] = await Promise.all([
-        saver.save(slow.page, candidates(3), context("slow")),
-        saver.save(fast.page, candidates(3), context("fast"))
-      ]);
+      const slowSave = saver.save(slow.page, candidates(3), context("slow"));
+      const fastSave = saver.save(fast.page, candidates(3), context("fast"));
+      await firstRequest;
+      const completed = await fastSave;
+      // Wait for real filesystem work at a fixed clock so machine load cannot consume the
+      // 40 ms gap between the first HTTP response and the total acquisition deadline.
+      await vi.advanceTimersByTimeAsync(60);
+      await secondRequest;
+      await vi.advanceTimersByTimeAsync(40);
+      const timed = await slowSave;
       expect(timed[0].status).toBe("saved");
       expect(timed.slice(1).every((item) => item.stage === "attachment-phase-timeout")).toBe(true);
       expect(slow.requested).toHaveLength(2);
       expect(completed.every((item) => item.status === "saved")).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await vi.advanceTimersByTimeAsync(80);
       expect(await readdir(path.join(directory, "workspace", "slow"))).toEqual(["file-1.txt"]);
     } finally {
+      vi.useRealTimers();
       await rm(directory, { recursive: true, force: true });
     }
   });

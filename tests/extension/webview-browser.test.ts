@@ -256,6 +256,35 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     expect(await page.locator("#agent-list-status").innerText()).toBe("13件中 3件を表示・1件選択中");
   });
 
+  it("syncs host selections on the same candidate list while preserving search and hidden selections", async () => {
+    await post(largeFixture());
+    await page.getByRole("searchbox").fill("経理");
+    await post(largeFixture({ selectedKeys: ["agent-4"] }));
+    expect(await page.locator('[id="select-agent-0"]').isChecked()).toBe(false);
+    expect(await page.locator("#agent-list-status").innerText()).toBe("100件中 20件を表示・1件選択中");
+    await page.locator("#save-button").click();
+    expect((await sentSaves()).at(-1)?.agents.map((agent) => agent.key)).toEqual(["agent-4"]);
+    await page.getByRole("searchbox").fill("");
+    expect(await page.locator('[id="select-agent-4"]').isChecked()).toBe(true);
+    expect(await page.locator('[id="select-agent-1"]').isChecked()).toBe(false);
+  });
+
+  it("preserves unsaved selection edits on the same list, then syncs after a completed save", async () => {
+    await page.locator('[id="select-agent-1"]').check();
+    await post({ ...state, selectedKeys: ["agent-4"] });
+    expect(await page.locator('[id="select-agent-0"]').isChecked()).toBe(true);
+    expect(await page.locator('[id="select-agent-1"]').isChecked()).toBe(true);
+    expect(await page.locator('[id="select-agent-4"]').isChecked()).toBe(false);
+    await post({ ...state, phase: "saving", selectedKeys: ["agent-4"] });
+    await post({ ...state, phase: "done", selectedKeys: ["agent-4"] });
+    expect(await page.locator('[id="select-agent-4"]').isChecked()).toBe(true);
+    await page.locator('[id="select-agent-2"]').check();
+    await post({ ...state, phase: "done", selectedKeys: ["agent-3"] });
+    expect(await page.locator('[id="select-agent-2"]').isChecked()).toBe(true);
+    expect(await page.locator('[id="select-agent-4"]').isChecked()).toBe(true);
+    expect(await page.locator('[id="select-agent-3"]').isChecked()).toBe(false);
+  });
+
   it("updates completion, count and save availability for 0 → 1 → 2 → 0 without replacing the list", async () => {
     await page.locator('[id="select-agent-0"]').uncheck();
     await page.locator(".completion-section summary").click();

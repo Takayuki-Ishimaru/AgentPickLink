@@ -250,41 +250,56 @@ export async function installRuntime(opts: InstallRuntimeOptions): Promise<strin
   const nodeName = opts.platform === "win32" ? "node.exe" : "node";
   const target = path.join(binDir, nodeName);
   const temporary = path.join(binDir, `.${nodeName}.tmp-${randomBytes(6).toString("hex")}`);
+  let previous: string | undefined;
+  try {
+    await fs.copyFile(opts.nodeBinary, temporary);
+    const stat = await fs.stat(opts.nodeBinary);
+    await fs.chmod(temporary, stat.mode | 0o111);
 
-  await fs.copyFile(opts.nodeBinary, temporary);
-  const stat = await fs.stat(opts.nodeBinary);
-  await fs.chmod(temporary, stat.mode | 0o111);
-
-  if (opts.platform === "win32") {
-    const oldPath = path.join(binDir, "node.exe.old");
-    await fs.rm(oldPath, { force: true }).catch(() => undefined);
-    if (await pathExists(target)) {
-      try {
-        await fs.rename(target, oldPath);
-      } catch {
-        // Either the delete above or this rename-aside failed -- most likely a running broker
-        // still holds the previous node.exe.old or node.exe open. Fall back to a uniquely named
-        // aside rather than leaving the live binary in place, which would make the rename below
-        // fail with a confusing "destination exists" error instead of installing the new runtime.
-        const fallbackOld = path.join(binDir, `node.exe.old-${randomBytes(6).toString("hex")}`);
-        await fs.rename(target, fallbackOld);
+    if (opts.platform === "win32") {
+      const oldPath = path.join(binDir, "node.exe.old");
+      await fs.rm(oldPath, { force: true }).catch(() => undefined);
+      if (await pathExists(target)) {
+        try {
+          await fs.rename(target, oldPath);
+          previous = oldPath;
+        } catch {
+          // Either the delete above or this rename-aside failed -- most likely a running broker
+          // still holds the previous node.exe.old or node.exe open. Fall back to a uniquely named
+          // aside rather than leaving the live binary in place, which would make the rename below
+          // fail with a confusing "destination exists" error instead of installing the new runtime.
+          const fallbackOld = path.join(binDir, `node.exe.old-${randomBytes(6).toString("hex")}`);
+          await fs.rename(target, fallbackOld);
+          previous = fallbackOld;
+        }
       }
     }
-  }
-  try {
-    await rename(temporary, target);
-  } catch (error) {
-    throw new Error(
-      `Could not install the AgentPickLink runtime at ${target}: ` +
-        (error instanceof Error ? error.message : String(error)),
-      { cause: error }
-    );
-  }
+    try {
+      await rename(temporary, target);
+    } catch (error) {
+      let recovery = "";
+      if (previous) {
+        try {
+          await fs.rename(previous, target);
+        } catch {
+          recovery = ` The previous runtime could not be restored; it remains at ${previous}.`;
+        }
+      }
+      throw new Error(
+        `Could not install the AgentPickLink runtime at ${target}: ` +
+          (error instanceof Error ? error.message : String(error)) +
+          recovery,
+        { cause: error }
+      );
+    }
 
-  if (opts.platform === "darwin") {
-    await exec("xattr", ["-d", "com.apple.quarantine", target]).catch(() => undefined);
+    if (opts.platform === "darwin") {
+      await exec("xattr", ["-d", "com.apple.quarantine", target]).catch(() => undefined);
+    }
+    return target;
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
   }
-  return target;
 }
 
 /* --------------------------------------------------------------------------------- launchers */

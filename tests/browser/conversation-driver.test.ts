@@ -8,6 +8,7 @@ import {
   enteredMessageDigest,
   type ConversationDriverOptions
 } from "../../src/transports/browser/conversation-driver.js";
+import { CompletionDetector } from "../../src/transports/browser/completion-detector.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
 import type { ChatUiAdapter, SubmitGuard } from "../../src/transports/browser/ui-adapter.js";
 import {
@@ -975,123 +976,110 @@ describe("the check before the press and the submission state of failures", () =
 });
 
 describe("conversation progress reporting", () => {
-  it("emits ordered metadata-only phases, including a streaming heartbeat", async () => {
-    // The response grows by one character at each check.
-    let length = 6;
+  async function observe(steps: Array<{ text: string; streaming?: boolean }>, intervalMs = 10) {
+    let now = 1_000_000;
+    let index = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const evaluate = vi.fn(
+      async () => ({ streaming: false, ...steps[Math.min(index, steps.length - 1)] }) as never
+    );
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
-      evaluate: async () => ++length as never,
+      evaluate,
+      waitForTimeout: async (ms) => {
+        index++;
+        now += ms;
+      },
       on: () => undefined,
       off: () => undefined
     };
-    const adapter = fixtureAdapter({
-      waitForResponseComplete: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        return { complete: true };
-      }
+    const detector = new CompletionDetector({
+      stabilityWindowMs: 60,
+      pollIntervalMs: 10,
+      quietStreamingGraceMs: 0
     });
-    const driver = new ConversationDriver(
-      new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
-      undefined,
-      { streamingProgressIntervalMs: 5, attachmentSettleMs: 0 }
-    );
+    const adapter = fixtureAdapter({
+      waitForResponseComplete: (page, marker, timeout, signal, settling, growing) =>
+        detector.wait(page, marker, timeout, signal, settling, growing)
+    });
     const events: ProgressEvent[] = [];
+    try {
+      await new ConversationDriver(
+        new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+        undefined,
+        { streamingProgressIntervalMs: intervalMs, attachmentSettleMs: 0 }
+      ).invoke(page, conversation(), agent, adapter, {
+        message: "hello",
+        onProgress: (event) => events.push(event)
+      });
+      return { events, evaluate };
+    } finally {
+      clock.mockRestore();
+    }
+  }
 
-    await driver.invoke(
-      page,
-      {
-        handle: "conv_test",
-        agentAlias: "requirements",
-        bindingFingerprint: fingerprint,
-        pageKey: "page",
-        state: "ready"
-      },
-      agent,
-      adapter,
-      { message: "hello", onProgress: (event) => events.push(event) }
-    );
-
-    const phases = events.map((event) => event.phase);
-    // Nothing to save, so no saving stage (v0.2.8 review 2026-10-10: progress says what is waited for).
-    expect(phases.filter((phase) => phase !== "streaming")).toEqual([
+  it("emits ordered metadata-only phases from the completion observations", async () => {
+    const { events } = await observe([
+      { text: "123456", streaming: true },
+      { text: "12345678", streaming: true },
+      { text: "12345678" }
+    ]);
+    expect(events.map((event) => event.phase)).toEqual([
       "asserting-identity",
       "filling",
       "submitting",
       "submitted",
       "waiting-response",
+      "streaming",
+      "confirming-response",
       "extracting",
       "done"
     ]);
-    const streaming = events.filter((event) => event.phase === "streaming");
-    expect(streaming.length).toBeGreaterThan(0);
-    expect(streaming[0]).toMatchObject({ responseChars: 8 });
+    expect(events.find((event) => event.phase === "streaming")).toMatchObject({ responseChars: 8 });
     expect(events.every((event) => typeof event.elapsedMs === "number")).toBe(true);
-    // Progress is metadata only: no prompt or response text may appear in any message.
     expect(events.some((event) => (event.message ?? "").includes("hello"))).toBe(false);
   });
 
-  // v0.2.8 review 2026-10-10: `streaming` says the reply is growing, so it is sent only when the
-  // length grew since the previous check. A reply that holds still, or shrinks, sends nothing, and
-  // the first check is only the baseline.
-  it("sends streaming only when the response grew since the previous check, once per interval", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
-    try {
-      // The length each check finds, in order; the first check is the baseline, not a growth from 0.
-      const lengths = [40, 40, 25, 60, 60, 61];
-      const checkedAt: number[] = [];
-      const page: PageLike = {
-        url: () => "https://m365.example.test/chat",
-        evaluate: async () => {
-          checkedAt.push(Date.now());
-          return lengths[Math.min(checkedAt.length, lengths.length) - 1] as never;
-        },
-        on: () => undefined,
-        off: () => undefined
-      };
-      let finishReply!: () => void;
-      const adapter = fixtureAdapter({
-        waitForResponseComplete: () =>
-          new Promise((resolve) => {
-            finishReply = () => resolve({ complete: true });
-          })
-      });
-      const events: ProgressEvent[] = [];
-      const begun = Date.now();
-      const request = new ConversationDriver(
-        new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
-        undefined,
-        { streamingProgressIntervalMs: 10, attachmentSettleMs: 0 }
-      ).invoke(page, conversation(), agent, adapter, {
-        message: "hello",
-        onProgress: (event) => events.push(event)
-      });
+  it("throttles current growth and never reports a baseline or stable text as streaming", async () => {
+    const { events } = await observe(
+      [40, 41, 42, 60, 61, 62].map((length) => ({ text: "x".repeat(length) })),
+      30
+    );
+    expect(
+      events
+        .filter((event) => event.phase === "streaming")
+        .map((event) => [event.elapsedMs, event.responseChars])
+    ).toEqual([[30, 60]]);
+  });
 
-      // The request is now waiting for the reply: only the baseline has been taken.
-      await vi.advanceTimersByTimeAsync(0);
-      expect(checkedAt).toEqual([begun]);
-      await vi.advanceTimersByTimeAsync(9);
-      expect(checkedAt).toHaveLength(1);
-      // One check per interval: 40 (same), 25 (shorter), 60 (grew), 60 (same), 61 (grew).
-      await vi.advanceTimersByTimeAsync(1);
-      for (let tick = 0; tick < 4; tick++) await vi.advanceTimersByTimeAsync(10);
-      expect(checkedAt).toEqual([0, 10, 20, 30, 40, 50].map((offset) => begun + offset));
-      expect(
-        events
-          .filter((event) => event.phase === "streaming")
-          .map((event) => [event.elapsedMs, event.responseChars])
-      ).toEqual([
-        [30, 60],
-        [50, 61]
-      ]);
+  it("does not roll confirmation back when a slower sample would see old growth", async () => {
+    const { events, evaluate } = await observe([{ text: "short" }, { text: "the final answer" }], 50);
+    expect(
+      events
+        .filter((event) => ["streaming", "confirming-response"].includes(event.phase))
+        .map((event) => event.phase)
+    ).toEqual(["confirming-response"]);
+    const calls = evaluate.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(evaluate).toHaveBeenCalledTimes(calls);
+  });
 
-      // Once the reply is complete nothing is checked any more.
-      finishReply();
-      await request;
-      await vi.advanceTimersByTimeAsync(100);
-      expect(checkedAt).toHaveLength(6);
-    } finally {
-      vi.useRealTimers();
-    }
+  it.each([false, true])("reports real resumed generation after confirmation (signal=%s)", async (signal) => {
+    const { events } = await observe(
+      [
+        { text: "first" },
+        { text: "first" },
+        signal ? { text: "first", streaming: true } : { text: "first and more" },
+        { text: signal ? "first" : "first and more" }
+      ],
+      100
+    );
+    // A real restart is reported immediately, even inside the throttle interval.
+    expect(
+      events
+        .filter((event) => ["streaming", "confirming-response"].includes(event.phase))
+        .map((event) => event.phase)
+    ).toEqual(["confirming-response", "streaming", "confirming-response"]);
   });
 });
 
@@ -1664,7 +1652,7 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
     ]);
   });
 
-  it("reports a message that never appears as not shown once the acknowledgement time has passed", async () => {
+  it("keeps a message that never appears unconfirmed once the acknowledgement time has passed", async () => {
     // The page kept the message in its composer and shows no user message added since typing began.
     const capture = exchanges({
       userCount: 2,
@@ -1681,7 +1669,7 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
         fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
         { entered: entry("unknown", 2) }
       )
-    ).resolves.toEqual({ message: "not-shown", reply: "none" });
+    ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
     expect(Date.now() - started).toBeGreaterThanOrEqual(280);
   });
 
@@ -1724,7 +1712,7 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
         fixtureAdapter({ ...sendsNothing, captureExchange: capture }),
         { entered: entry("unknown", 1) }
       )
-    ).resolves.toEqual({ message: "not-shown", reply: "none" });
+    ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
   });
 
   it("reports an identical earlier message with an emptied composer as unconfirmed, not as not shown", async () => {

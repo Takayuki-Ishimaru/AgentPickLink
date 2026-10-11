@@ -1,5 +1,54 @@
 # リリースノート
 
+## v0.2.10 Beta
+
+- **送信結果が不明な質問の再送案内を修正しました。** 送信操作後に入力欄へ質問が残っていても、質問の表示待ちが終わっただけでは未送信と判断しません。`action: "read"` の結果は `unconfirmed` を維持し、`not-shown` は送信操作前に中止できた場合に限ります。過去に送った同じ文面の質問や履歴の再描画でも、今回の質問と特定できない場合は `unconfirmed` とします。送り直さず、後で再度読むか Microsoft 365 の会話を確認してください。
+- **エージェント一覧の選択状態の反映を修正しました。** 候補一覧が同じでも、まだ選択を編集していなければ保存済みの選択を反映します。未保存の選択と、検索で隠れた選択は保持します。
+- **回答の進捗表示を修正しました。** 回答が伸びていないのに「完了確認中」から「生成中」へ戻る表示を防ぎます。実際に回答が伸びるか生成が再開した場合は、生成中へ戻ります。
+- **キャンセル後のローカル接続の応答処理を修正しました。** 遅れて届いた応答を後続の要求の応答として扱わないようにしました。同じ接続で処理中の要求 ID を重複して送ると、接続を閉じてその接続の処理を中止します。接続が切れても質問を自動再送しません。
+- **ランタイム更新失敗時の復元処理を改善しました。** Windows で既存の Node.js を退避した後に新しい版を配置できなかった場合は、旧版の復元を試みます。復元にも失敗した場合は退避先をエラーに表示します。更新失敗時の一時ファイルも削除します。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.10.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。新しい設定項目の追加は不要です。ローカルプロセスの再起動前に発行された会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の会話で確認してください。
+
+送信状態が不明な場合は、入力欄に質問が残っていることを再送の根拠にしないでください。会話の確認に使う状態値や、待機時間の既定値は変更していません。詳しくは [設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.10.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.10-win-x64.zip` / `AgentPickLink-0.2.10-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.10-darwin-arm64.tgz` / `AgentPickLink-0.2.10-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.10-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.10-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.10 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。利用する環境で質問・回答・会話の確認・ファイル取得を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed resend guidance for uncertain submissions.** A question remaining in the composer after a send attempt, even after the acknowledgement wait expires, does not establish that it was unsent. `action: "read"` keeps such a result `unconfirmed`; `not-shown` requires submission to have stopped before the send control could be pressed. Earlier identical questions and redrawn history also remain `unconfirmed` when the current question cannot be identified. Read again later or inspect Microsoft 365 instead of resending.
+- **Fixed agent selection synchronization.** Saved selections are applied even when the candidate list is unchanged, provided no local selection edits are pending. Unsaved selections and selections hidden by search are preserved.
+- **Fixed response progress.** Completion confirmation no longer returns to streaming when the answer has not grown. Actual answer growth or resumed generation still returns to streaming.
+- **Fixed local response handling after cancellation.** Late replies cannot be mistaken for replies to subsequent requests. Reusing an active request ID on the same connection closes it and cancels its work. Questions are not resent automatically after disconnection.
+- **Improved recovery after runtime update failure.** If Windows cannot place a new Node.js runtime after moving the old one aside, restoration of the old runtime is attempted. If restoration also fails, the error identifies its retained location. Temporary update files are removed on failure.
+
+Install `agent-pick-link-0.2.10.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused. No new configuration setting is required. Conversation handles issued before a local process restart cannot be reused; inspect existing questions in Microsoft 365.
+
+Reading uses the same state values and default waits. A retained draft is not grounds for resending an uncertain submission. See [Configuration](CONFIGURATION.md) and [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.10. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Verify questions, answers, conversation reads, and file retrieval in your environment. See [Supported environments and validation scope](RELEASE-CHECKLIST.md) and the [English README](README.en.md).
+
 ## v0.2.9 Beta
 
 ### 主な変更

@@ -361,6 +361,64 @@ describe("installRuntime", () => {
           }
         })
       ).rejects.toThrow(/Could not install the AgentPickLink runtime.*EBUSY/);
+      expect(await fs.readdir(path.join(home, "bin"))).toEqual([]);
+    });
+  });
+
+  it.each([false, true])(
+    "restores the previous Windows runtime after a failed replacement (fallback aside: %s)",
+    async (fallback) => {
+      await withTempDir(async (home) => {
+        const bin = path.join(home, "bin");
+        await fs.mkdir(bin);
+        const target = path.join(bin, "node.exe");
+        await fs.writeFile(target, "binary-v1");
+        if (fallback) {
+          await fs.mkdir(path.join(bin, "node.exe.old"));
+          await fs.writeFile(path.join(bin, "node.exe.old", "locked.txt"), "untouched");
+        }
+        const nodeBinary = path.join(home, "fake-node-v2");
+        await fs.writeFile(nodeBinary, "binary-v2");
+        await expect(
+          installRuntime({
+            nodeBinary,
+            home,
+            platform: "win32",
+            rename: async () => {
+              throw new Error("EBUSY: resource busy or locked");
+            }
+          })
+        ).rejects.toThrow(/Could not install the AgentPickLink runtime.*EBUSY/);
+        expect(await fs.readFile(target, "utf8")).toBe("binary-v1");
+        expect((await fs.readdir(bin)).sort()).toEqual(
+          fallback ? ["node.exe", "node.exe.old"] : ["node.exe"]
+        );
+        if (fallback)
+          expect(await fs.readFile(path.join(bin, "node.exe.old", "locked.txt"), "utf8")).toBe("untouched");
+      });
+    }
+  );
+
+  it("retains the POSIX runtime and removes the temporary binary after a failed replacement", async () => {
+    await withTempDir(async (home) => {
+      const bin = path.join(home, "bin");
+      await fs.mkdir(bin);
+      const target = path.join(bin, "node");
+      await fs.writeFile(target, "binary-v1");
+      const nodeBinary = path.join(home, "fake-node-v2");
+      await fs.writeFile(nodeBinary, "binary-v2");
+      await expect(
+        installRuntime({
+          nodeBinary,
+          home,
+          platform: "linux",
+          rename: async () => {
+            throw new Error("EACCES: permission denied");
+          }
+        })
+      ).rejects.toThrow(/Could not install the AgentPickLink runtime.*EACCES/);
+      expect(await fs.readFile(target, "utf8")).toBe("binary-v1");
+      expect(await fs.readdir(bin)).toEqual(["node"]);
     });
   });
 });

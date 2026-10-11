@@ -190,12 +190,17 @@ export class IpcClient {
     }
     if (this.waiting.has(requestId))
       throw new DomainError("BROKER_PROTOCOL_ERROR", "A broker request with this ID is already pending.");
+    // Encoding may throw before anything is sent. Do not retain a waiter or an abort listener
+    // for a request that never reached the socket.
+    const frame = encodeFrame({ id: requestId, method, params });
     return new Promise<unknown>((resolve, reject) => {
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       const onAbort = () => {
         const waiter = this.waiting.get(requestId);
         if (!waiter) return;
-        this.waiting.delete(requestId);
+        // Keep the ID reserved until the broker answers (or the connection closes). Otherwise a
+        // new call with this ID can receive the cancelled call's late response as its own.
+        waiter.onProgress = undefined;
         waiter.cleanup();
         this.cancelOnBroker(requestId);
         reject(
@@ -223,7 +228,7 @@ export class IpcClient {
           (method === "agent.validate" && (params as { sendTestMessage?: unknown })?.sendTestMessage === true)
       });
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.socket!.write(encodeFrame({ id: requestId, method, params }), (error) => {
+      this.socket!.write(frame, (error) => {
         if (error) {
           const waiter = this.waiting.get(requestId);
           this.waiting.delete(requestId);

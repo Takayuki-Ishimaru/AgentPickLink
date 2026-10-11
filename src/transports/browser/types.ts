@@ -21,6 +21,16 @@ export type Surface = "m365-copilot" | "teams-web";
 
 export type BrowserAgentVerification = BrowserAgentDefinition["verification"];
 
+export interface BrowserFrameLike {
+  url(): string;
+  parentFrame?(): BrowserFrameLike | null;
+}
+export interface BrowserPageEvents {
+  framenavigated: [frame: BrowserFrameLike];
+  popup: [popup: PageLike];
+  close: [];
+}
+
 export interface PageLike {
   url(): string;
   goto?(url: string, options?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
@@ -33,11 +43,17 @@ export interface PageLike {
     event: "download",
     options?: { timeout?: number; predicate?: (download: BrowserDownloadLike) => boolean }
   ): Promise<BrowserDownloadLike>;
-  on?(event: string, listener: (...args: any[]) => void): void;
-  off?(event: string, listener: (...args: any[]) => void): void;
+  on?<Event extends keyof BrowserPageEvents>(
+    event: Event,
+    listener: (...args: BrowserPageEvents[Event]) => void
+  ): void;
+  off?<Event extends keyof BrowserPageEvents>(
+    event: Event,
+    listener: (...args: BrowserPageEvents[Event]) => void
+  ): void;
   isClosed?(): boolean;
   close?(): Promise<void>;
-  mainFrame?(): unknown;
+  mainFrame?(): BrowserFrameLike;
   context?(): BrowserRequestContextLike;
   /** Playwright frames are evaluation-capable document scopes. M365 renders Office previews in
    * a child frame, so attachment discovery must inspect these scopes without assuming same-origin
@@ -106,7 +122,7 @@ export interface BrowserContextLike {
   pages(): PageLike[];
   newPage?(): Promise<PageLike>;
   close(): Promise<void>;
-  on?(event: string, cb: (...args: any[]) => void): void;
+  on?(event: "close", cb: () => void): void;
   /** Optional native-background handoff. Resolves only after login pages are retired and the
    * same browser is ready for automation with the configured visibility/download policy. */
   completeInteractiveLogin?(): Promise<void>;

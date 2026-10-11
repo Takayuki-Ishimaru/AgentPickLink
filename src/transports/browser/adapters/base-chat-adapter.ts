@@ -196,11 +196,18 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     page: PageLike,
     expectedDisplayName?: string
   ): Promise<DetectedAgentIdentity | null> {
-    let raw: any;
+    let raw:
+      | {
+          displayName?: unknown;
+          stableAgentId?: unknown;
+          surface?: unknown;
+          evidence?: unknown;
+        }
+      | undefined;
     const routeAgentId = directAgentIdFromUrl(page.url());
     try {
       raw = page.evaluate
-        ? await page.evaluate(
+        ? await page.evaluate<typeof raw>(
             (sel: {
               root: string;
               main: string;
@@ -440,13 +447,15 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     const stableAgentId = typeof raw.stableAgentId === "string" ? raw.stableAgentId.trim() : undefined;
     const digest = identityDigest({ adapterId: this.id, surface: this.surface, displayName, stableAgentId });
     const evidence = Array.isArray(raw.evidence)
-      ? raw.evidence.filter((item: unknown) => item !== "visible-name" || !!displayName)
+      ? raw.evidence.filter(
+          (item): item is string => typeof item === "string" && (item !== "visible-name" || !!displayName)
+        )
       : [];
     if (displayName && !evidence.includes("visible-name")) evidence.push("visible-name");
     return {
       displayName,
       stableAgentId,
-      surface: raw.surface || this.surface,
+      surface: typeof raw.surface === "string" && raw.surface ? raw.surface : this.surface,
       digest,
       evidence
     };
@@ -772,9 +781,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     marker: ResponseMarker,
     timeoutMs: number,
     signal?: AbortSignal,
-    onSettling?: () => void
+    onSettling?: () => void,
+    onGrowing?: (responseChars: number) => void
   ): Promise<CompletionResult> {
-    return this.completion.wait(page, marker, timeoutMs, signal, onSettling);
+    return this.completion.wait(page, marker, timeoutMs, signal, onSettling, onGrowing);
   }
   async captureExchange(page: PageLike): Promise<ConversationExchange> {
     const marker = await this.captureConversationMarker(page);

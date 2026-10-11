@@ -88,7 +88,7 @@ export class IpcServer {
     // Requests of this connection still running, so only this client can cancel them.
     const inFlight = new Map<string, AbortController>();
     const decoder = new FrameDecoder();
-    socket.on("data", async (chunk: Buffer) => {
+    socket.on("data", (chunk: Buffer) => {
       try {
         for (const value of decoder.push(chunk)) {
           if (!authenticated) {
@@ -120,17 +120,19 @@ export class IpcServer {
             );
             continue;
           }
+          const rawId =
+            value !== null && typeof value === "object" && typeof (value as { id?: unknown }).id === "string"
+              ? (value as { id: string }).id
+              : undefined;
+          // Even a malformed duplicate must not answer the original request with its ID or
+          // replace its cancellation controller. Closing cancels all this connection's work.
+          if (rawId !== undefined && inFlight.has(rawId))
+            throw new DomainError("BROKER_PROTOCOL_ERROR", "An IPC request ID is already in flight.");
           let envelope: z.infer<typeof IpcEnvelopeSchema>;
           try {
             envelope = IpcEnvelopeSchema.parse(value);
           } catch {
             const domain = new DomainError("BROKER_PROTOCOL_ERROR", "Malformed IPC request.");
-            const rawId =
-              value !== null &&
-              typeof value === "object" &&
-              typeof (value as { id?: unknown }).id === "string"
-                ? (value as { id: string }).id
-                : undefined;
             socket.write(
               encodeFrame(
                 rawId !== undefined

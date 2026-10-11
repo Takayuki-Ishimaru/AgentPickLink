@@ -22,6 +22,15 @@ export interface ResponseExtractorOptions {
   citationUrl?: (url: string) => string | undefined;
   attachmentHosts?: string[];
 }
+interface ResponsePayload {
+  html?: string;
+  text?: string;
+  citations?: AgentCitation[];
+  downloadControls?: unknown[];
+  fileCards?: unknown[];
+  groupedCitationAttributes?: string[];
+  actionRequired?: boolean;
+}
 export class ResponseExtractor {
   private readonly maxCodePoints: number;
   private readonly citationUrl?: (url: string) => string | undefined;
@@ -32,10 +41,10 @@ export class ResponseExtractor {
     this.attachmentHosts = new HostAllowlist(options.attachmentHosts ?? []);
   }
   async extract(page: PageLike, marker: ResponseMarker, _surface?: Surface): Promise<ExtractedResponse> {
-    let payload: any;
+    let payload: ResponsePayload | undefined;
     try {
       if (page.evaluate)
-        payload = await page.evaluate(
+        payload = await page.evaluate<ResponsePayload>(
           (args: { marker: ResponseMarker; selector: string }) => {
             const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
             const node = nodes[nodes.length - 1];

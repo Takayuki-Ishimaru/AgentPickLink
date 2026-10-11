@@ -72,13 +72,15 @@ export interface ChatUiAdapter {
   ): Promise<ResponseMarker>;
   /** `onSettling` is called once per quiet period -- when the same response text has been seen on
    * two polls in a row with nothing generating, never on the poll where the text changed -- so the
-   * caller can say it is confirming the answer. */
+   * caller can say it is confirming the answer. `onGrowing` reports growth (or resumed generation)
+   * from the same ordered polls; the first poll is only a baseline. */
   waitForResponseComplete(
     page: PageLike,
     marker: ResponseMarker,
     timeoutMs: number,
     signal?: AbortSignal,
-    onSettling?: () => void
+    onSettling?: () => void,
+    onGrowing?: (responseChars: number) => void
   ): Promise<CompletionResult>;
   extractLatestResponse(page: PageLike, marker: ResponseMarker): Promise<ExtractedResponse>;
   /** The conversation's latest exchange, for reading it without sending anything. Optional so a

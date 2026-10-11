@@ -140,10 +140,10 @@ const read = (
   );
 
 describe("reading: what counts as not shown", () => {
-  it("is not shown when the page kept the message in its composer and shows no new user message", async () => {
+  it("remains unconfirmed when the page kept the message in its composer and shows no new user message", async () => {
     const capture = looks({ userCount: 2, latestUserText: "an earlier question", composerText: QUESTION });
     await expect(read(capture, entry("unknown", 2))).resolves.toEqual({
-      message: "not-shown",
+      message: "unconfirmed",
       reply: "none"
     });
     // Two looks in a row agreed before answering.
@@ -174,7 +174,7 @@ describe("reading: what counts as not shown", () => {
     });
   });
 
-  it("does not take an identical earlier message for this one, and judges by the composer", async () => {
+  it("does not take an identical earlier message for this one, regardless of the composer", async () => {
     // The same question was asked before; this attempt added no user message.
     const kept = looks({
       userCount: 1,
@@ -182,7 +182,7 @@ describe("reading: what counts as not shown", () => {
       replyStarted: true,
       composerText: QUESTION
     });
-    await expect(read(kept, entry("unknown", 1))).resolves.toEqual({ message: "not-shown", reply: "none" });
+    await expect(read(kept, entry("unknown", 1))).resolves.toEqual({ message: "unconfirmed", reply: "none" });
     const taken = looks({ userCount: 1, latestUserText: QUESTION, replyStarted: true, composerText: "" });
     await expect(read(taken, entry("unknown", 1))).resolves.toEqual({
       message: "unconfirmed",
@@ -190,15 +190,43 @@ describe("reading: what counts as not shown", () => {
     });
   });
 
+  it.each(["unknown", "sent"] as const)(
+    "does not identify an old identical message without a readable baseline (%s)",
+    async (state) => {
+      const capture = looks({ latestUserText: QUESTION, replyStarted: true, composerText: QUESTION });
+      await expect(read(capture, entry(state, undefined))).resolves.toEqual({
+        message: "unconfirmed",
+        reply: "none"
+      });
+    }
+  );
+
+  it.each([0, 1])(
+    "keeps an acknowledged message unconfirmed while a re-render shows an old identical bubble (count=%s)",
+    async (userCount) => {
+      const capture = looks({ userCount, latestUserText: QUESTION, replyStarted: true });
+      const entered = entry("sent", 1);
+      await expect(read(capture, entered)).resolves.toEqual({ message: "unconfirmed", reply: "none" });
+      // Once the new bubble is visible, the same record recovers its actual reply without sending.
+      const restored = looks({
+        userCount: 2,
+        assistantCount: 2,
+        latestUserText: QUESTION,
+        replyStarted: true
+      });
+      await expect(read(restored, entered)).resolves.toMatchObject({ message: "shown", reply: "complete" });
+    }
+  );
+
   it("never reports an acknowledged message as not shown, whatever the page shows now", async () => {
     // The page shows fewer user messages than before typing (a list being re-rendered) ...
     const fewer = looks({ userCount: 1, latestUserText: "an earlier question", composerText: QUESTION });
     await expect(read(fewer, entry("sent", 3))).resolves.toEqual({ message: "unconfirmed", reply: "none" });
-    // ... or the message as the latest without the count having grown: it is this message.
+    // ... or an identical latest bubble without the count having grown: it may be an older one.
     const latest = looks({ userCount: 3, latestUserText: QUESTION, replyStarted: true, assistantCount: 3 });
     await expect(read(latest, entry("sent", 3))).resolves.toMatchObject({
-      message: "shown",
-      reply: "complete"
+      message: "unconfirmed",
+      reply: "none"
     });
   });
 
@@ -266,7 +294,7 @@ describe("reading: which ask, and cancellation", () => {
     });
     const unknown = looks({ userCount: 0, composerText: QUESTION });
     await expect(read(unknown, entry("unknown", 0, { requestId: "req_first" }))).resolves.toEqual({
-      message: "not-shown",
+      message: "unconfirmed",
       messageRequestId: "req_first",
       reply: "none"
     });
@@ -298,6 +326,36 @@ describe("reading: which ask, and cancellation", () => {
       code: "RESPONSE_TIMEOUT"
     });
     expect(capture).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a 65-second delayed submission unconfirmed after the extra default ACK window, then reads it", async () => {
+    vi.useFakeTimers();
+    try {
+      const pressedAt = Date.now();
+      const capture = vi.fn(async (): Promise<ConversationExchange> =>
+        Date.now() >= pressedAt + 65_000
+          ? { userCount: 1, assistantCount: 1, latestUserText: QUESTION, replyStarted: true, readable: true }
+          : { userCount: 0, assistantCount: 0, replyStarted: false, readable: true, composerText: QUESTION }
+      );
+      // The ask already spent the first default 30-second acknowledgement window.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const entered = { ...entry("unknown", 0), settledAt: Date.now(), requestId: "req_delayed" };
+      const pending = read(capture, entered, { ackTimeoutMs: 30_000 });
+      await vi.advanceTimersByTimeAsync(30_200);
+      await expect(pending).resolves.toEqual({
+        message: "unconfirmed",
+        messageRequestId: "req_delayed",
+        reply: "none"
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(read(capture, entered, { ackTimeoutMs: 30_000 })).resolves.toMatchObject({
+        message: "shown",
+        messageRequestId: "req_delayed",
+        reply: "complete"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives a message that may have been sent the acknowledgement time again before judging it", async () => {

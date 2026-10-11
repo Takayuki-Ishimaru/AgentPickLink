@@ -84,23 +84,56 @@ describe("AgentNavigator popup policy", () => {
     expect(popup.closed()).toBe(true);
     stop();
   });
+
+  it.each(["blocked", "cleanup"])(
+    "handles a rejected popup close during %s without losing the policy verdict",
+    async (when) => {
+      const policy = new NavigationPolicy({
+        appHosts: ["tenant.example.com"],
+        authHosts: ["login.example.com"]
+      });
+      const navigator = new AgentNavigator(policy);
+      const parent = eventPage("https://tenant.example.com/chat");
+      const popup = eventPage("about:blank");
+      let attempts = 0;
+      popup.page.close = async () => {
+        attempts++;
+        throw new Error("Browser already disconnected");
+      };
+      const stop = navigator.watch(parent.page, "app-or-auth");
+      parent.emit("popup", popup.page);
+      if (when === "blocked") {
+        popup.navigate("https://evil.example.net/phish");
+        expect(() => navigator.assertNavigationSafe(parent.page, "app-or-auth")).toThrowError(
+          expect.objectContaining({ code: "AUTH_REQUIRED" })
+        );
+      } else {
+        popup.navigate("https://login.example.com/authorize");
+        expect(() => navigator.assertNavigationSafe(parent.page, "app-or-auth")).not.toThrow();
+      }
+      stop();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(attempts).toBeGreaterThan(0);
+      // Vitest also fails this test run if either close leaks an unhandled rejection.
+    }
+  );
 });
 
 function eventPage(initialUrl: string) {
   let currentUrl = initialUrl;
   let isClosed = false;
-  const listeners = new Map<string, Set<(...args: any[]) => void>>();
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   const mainFrame = { url: () => currentUrl, parentFrame: () => null };
   const page: PageLike = {
     url: () => currentUrl,
     mainFrame: () => mainFrame,
     on: (event, listener) => {
       const set = listeners.get(event) ?? new Set();
-      set.add(listener);
+      set.add(listener as (...args: unknown[]) => void);
       listeners.set(event, set);
     },
     off: (event, listener) => {
-      listeners.get(event)?.delete(listener);
+      listeners.get(event)?.delete(listener as (...args: unknown[]) => void);
     },
     close: async () => {
       isClosed = true;

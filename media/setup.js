@@ -1431,10 +1431,11 @@
     var wasDone = state.phase === "done";
     state = next;
     if (next.phase === "idle" && !next.status) local.selectionDirty = false;
+    // Host selection can change without changing the candidate list. Keep drafts local until saved.
+    if (!local.selectionDirty) local.selected = new Set(next.selectedKeys || []);
     if (signature !== local.signature) {
       local.signature = signature;
-      if (!local.selectionDirty) local.selected = new Set(next.selectedKeys || []);
-      else
+      if (local.selectionDirty)
         local.selected = new Set(
           Array.from(local.selected).filter(function (key) {
             return next.candidates.some(function (candidate) {

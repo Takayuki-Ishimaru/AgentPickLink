@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "output/**", "scripts/**", "eslint.config.js"] },
+  { ignores: ["dist/**", "node_modules/**", "output/**", "eslint.config.js", ".tokenlighten/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } } },
@@ -10,8 +10,36 @@ export default tseslint.config(
     files: ["src/**/*.ts", "tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-explicit-any": "error",
       "no-console": "error"
+    }
+  },
+  {
+    files: ["src/**/*.ts"],
+    languageOptions: {
+      parserOptions: { project: ["./tsconfig.json", "./tsconfig.extension.json"] }
+    },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/await-thenable": "error"
+    }
+  },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        Buffer: "readonly",
+        URL: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        AbortController: "readonly",
+        structuredClone: "readonly",
+        fetch: "readonly",
+        performance: "readonly"
+      }
     }
   },
   {

@@ -178,6 +178,137 @@ describe("IPC request cancellation (protocol minor 4)", () => {
     }
   });
 
+  it.each(["oversized", "circular"])(
+    "does not reserve a request ID when its %s parameters cannot be encoded",
+    async (kind) => {
+      const pipe = await makePipe("apl-ipc-encode-");
+      const secret = "m".repeat(43);
+      let calls = 0;
+      const server = new IpcServer(
+        pipe,
+        secret,
+        { packageVersion: "test", capabilities: [], instanceId: "broker_encode" },
+        async () => ({ calls: ++calls })
+      );
+      await server.listen();
+      const client = new IpcClient(makeDescriptor(pipe, secret));
+      try {
+        await client.connect();
+        const params: Record<string, unknown> = {};
+        if (kind === "oversized") params.data = "x".repeat(1_100_000);
+        else params.self = params;
+        await expect(client.call("broker.health", params, "req-encode")).rejects.toThrow();
+        await expect(client.call("broker.health", {}, "req-encode")).resolves.toEqual({ calls: 1 });
+      } finally {
+        client.close();
+        await server.close();
+      }
+    }
+  );
+
+  it("keeps a cancelled ID reserved until its late response arrives", async () => {
+    const pipe = await makePipe("apl-ipc-cancel-reuse-");
+    const secret = "n".repeat(43);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    let firstSignal: AbortSignal | undefined;
+    const server = new IpcServer(
+      pipe,
+      secret,
+      { packageVersion: "test", capabilities: [], instanceId: "broker_cancel_reuse" },
+      async (_method, _params, _id, _notify, signal) => {
+        const call = ++calls;
+        if (call === 1) {
+          firstSignal = signal;
+          await gate;
+        }
+        return { call };
+      }
+    );
+    await server.listen();
+    const client = new IpcClient(makeDescriptor(pipe, secret));
+    try {
+      await client.connect();
+      const controller = new AbortController();
+      const first = client.call("broker.health", {}, "req-reused", controller.signal);
+      await expect.poll(() => firstSignal !== undefined).toBe(true);
+      controller.abort();
+      await expect(first).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+      await expect.poll(() => firstSignal!.aborted).toBe(true);
+      await expect(client.call("broker.health", {}, "req-reused")).rejects.toMatchObject({
+        code: "BROKER_PROTOCOL_ERROR"
+      });
+      expect(calls).toBe(1);
+      release();
+      // This reply follows the first reply on the same socket, so it is a delivery barrier.
+      await expect(client.call("broker.health", {}, "req-barrier")).resolves.toEqual({ call: 2 });
+      await expect(client.call("broker.health", {}, "req-reused")).resolves.toEqual({ call: 3 });
+    } finally {
+      release();
+      client.close();
+      await server.close();
+    }
+  });
+
+  it.each([
+    { method: "broker.health", params: {} },
+    { method: "broker.cancel", params: { requestId: "req-duplicate" } },
+    { method: "unknown", params: {} },
+    { params: {} }
+  ])("closes a connection that reuses an active ID ($method)", async (duplicate) => {
+    const pipe = await makePipe("apl-ipc-duplicate-");
+    const secret = "p".repeat(43);
+    const signals: AbortSignal[] = [];
+    const server = new IpcServer(
+      pipe,
+      secret,
+      { packageVersion: "test", capabilities: [], instanceId: "broker_duplicate" },
+      async (_method, _params, _id, _notify, signal) => {
+        signals.push(signal);
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true })
+        );
+        return { stopped: true };
+      }
+    );
+    await server.listen();
+    const socket = net.createConnection(pipe);
+    const decoder = new FrameDecoder();
+    const frames: unknown[] = [];
+    socket.on("data", (chunk: Buffer) => frames.push(...decoder.push(chunk)));
+    socket.on("error", () => undefined);
+    try {
+      await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+      socket.write(
+        encodeFrame({
+          type: "hello",
+          authSecret: secret,
+          protocolMajor: BROKER_PROTOCOL.major,
+          protocolMinor: BROKER_PROTOCOL.minor,
+          packageVersion: "test",
+          capabilities: []
+        })
+      );
+      await expect.poll(() => frames.length).toBe(1);
+      // A single chunk exercises ID reservation before the handler's first await completes.
+      socket.write(
+        Buffer.concat([
+          encodeFrame({ id: "req-duplicate", method: "conversation.invoke", params: invokeParams }),
+          encodeFrame({ id: "req-duplicate", ...duplicate })
+        ])
+      );
+      await expect.poll(() => socket.destroyed, { timeout: 1_000 }).toBe(true);
+      await expect.poll(() => signals[0]?.aborted).toBe(true);
+      expect(signals).toHaveLength(1);
+    } finally {
+      socket.destroy();
+      await server.close();
+    }
+  });
+
   it("handles a cancel written in the same chunk right behind another pending request", async () => {
     const pipe = await makePipe("apl-ipc-cancel-chunk-");
     const secret = "e".repeat(43);

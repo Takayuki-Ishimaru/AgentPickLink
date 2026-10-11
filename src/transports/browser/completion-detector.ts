@@ -34,7 +34,8 @@ export class CompletionDetector {
     marker: ResponseMarker,
     timeoutMs = 300_000,
     signal?: AbortSignal,
-    onSettling?: () => void
+    onSettling?: () => void,
+    onGrowing?: (responseChars: number) => void
   ): Promise<CompletionResult> {
     const started = Date.now();
     let last = "";
@@ -52,6 +53,7 @@ export class CompletionDetector {
     // starts the stability measurement above; the next poll that shows that text reports. A change of
     // the text, or a streaming signal, ends the period.
     let settlingReported = false;
+    let observed = false;
     while (Date.now() - started < timeoutMs) {
       if (signal?.aborted)
         return {
@@ -64,6 +66,11 @@ export class CompletionDetector {
         };
       const state = await this.signal(page, marker);
       const now = Date.now();
+      // Report only growth from a previous observation, or a newly resumed generation signal.
+      // The first observation is a baseline, including when the whole answer is already visible.
+      if (observed && (state.text.length > last.length || (state.streaming && settlingReported)))
+        onGrowing?.(state.text.length);
+      observed = true;
       if (state.streaming) {
         sawStreamingSignal = true;
         last = state.text;
