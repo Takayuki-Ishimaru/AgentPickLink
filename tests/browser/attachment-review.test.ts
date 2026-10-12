@@ -319,31 +319,60 @@ describe("attachment review regressions", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-phase-click-"));
     let clicks = 0;
     let clickBy = Infinity;
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let armed!: () => void;
+    const guardArmed = new Promise<void>((resolve) => {
+      armed = resolve;
+    });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let saving: ReturnType<AttachmentSaver["save"]> | undefined;
     const page: PageLike = {
       url: () => "https://m365.example.test/chat",
       waitForEvent: () => new Promise(() => {}),
       evaluate: async (_fn, arg) => {
         clickBy = (arg as { clickBy: number }).clickBy;
+        armed();
         await new Promise((resolve) => setTimeout(resolve, 120));
         if (Date.now() <= clickBy) clicks++;
         return undefined as never;
       }
     };
+    // Filesystem/ACL setup uses real I/O. Start expiry only after this test reaches its guard,
+    // rather than spending the whole 80 ms on a busy runner before any click was attempted.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
       const started = Date.now();
-      const result = await new AttachmentSaver({
+      saving = new AttachmentSaver({
         enabled: true,
         directory,
         allowedHosts: [host],
         overallTimeoutMs: 80,
         timeoutMs: 1000
       }).save(page, [{ index: 1, name: "file.txt", downloadControlIndex: 0 }], context());
-      expect(result[0].stage).toBe("attachment-phase-timeout");
+      await Promise.race([
+        guardArmed,
+        new Promise<never>((_resolve, reject) => {
+          watchdog = realSetTimeout(() => reject(new Error("In-page click guard was not reached")), 5_000);
+        })
+      ]);
+      realClearTimeout(watchdog);
+      expect(Number.isFinite(clickBy)).toBe(true);
       expect(clickBy).toBeLessThanOrEqual(started + 80);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await vi.advanceTimersByTimeAsync(80);
+      const result = await saving;
+      expect(result[0].stage).toBe("attachment-phase-timeout");
+      await vi.advanceTimersByTimeAsync(100);
       expect(clicks).toBe(0);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      try {
+        realClearTimeout(watchdog);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await saving;
+      } finally {
+        vi.useRealTimers();
+        await rm(directory, { recursive: true, force: true });
+      }
     }
   });
 
