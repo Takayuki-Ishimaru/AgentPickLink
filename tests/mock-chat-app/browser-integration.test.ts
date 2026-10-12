@@ -421,12 +421,36 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     await streamingAdapter.submitComposer(browserPage);
     await streamingAdapter.waitForUserMessageAck(browserPage, submission, 2_000);
     const response = await streamingAdapter.waitForResponseStart(browserPage, submission, 2_000);
-    const started = Date.now();
-    const completion = await streamingAdapter.waitForResponseComplete(browserPage, response, 5_000);
-    // The default 3 s quiet grace is skipped because streaming was actually observed.
-    expect(completion).toMatchObject({ complete: true, reason: "stable", sawStreamingSignal: true });
-    expect(completion.finalChars).toBeGreaterThan(0);
-    expect(Date.now() - started).toBeLessThan(2_500);
+    const abort = new AbortController();
+    let observedGrowth = false;
+    const completionWait = streamingAdapter.waitForResponseComplete(
+      browserPage,
+      response,
+      5_000,
+      abort.signal,
+      undefined,
+      () => {
+        observedGrowth = true;
+      }
+    );
+    try {
+      await vi.waitFor(() => expect(observedGrowth).toBe(true), { timeout: 2_000 });
+      const started = Date.now();
+      await page.evaluate(() => {
+        const finish = (window as typeof window & { __aplMockFinishStopControlStream?: () => void })
+          .__aplMockFinishStopControlStream;
+        if (!finish) throw new Error("Mock stop-control stream was not active");
+        finish();
+      });
+      const completion = await completionWait;
+      // The default 3 s quiet grace is skipped after the observed streaming signal clears.
+      expect(completion).toMatchObject({ complete: true, reason: "stable", sawStreamingSignal: true });
+      expect(completion.finalChars).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(2_500);
+    } finally {
+      abort.abort();
+      await completionWait;
+    }
     await expect(streamingAdapter.extractLatestResponse(browserPage, response)).resolves.toMatchObject({
       text: "stream 4"
     });

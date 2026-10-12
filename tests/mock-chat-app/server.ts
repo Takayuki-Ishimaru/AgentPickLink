@@ -648,9 +648,17 @@ function render(
         const timer = setInterval(() => {
           part++;
           node.firstChild?.remove();
-          node.prepend(document.createTextNode('stream ' + part));
-          if (part === 4) { clearInterval(timer); stop.remove(); }
+          node.prepend(document.createTextNode('stream ' + part + ' ' + '.'.repeat(part)));
         }, 150);
+        // Keep the signal until the test has observed response growth through the real detector.
+        // A fixed short stream can finish during acknowledgement or response-start inspection.
+        window.__aplMockFinishStopControlStream = () => {
+          clearInterval(timer);
+          node.firstChild?.remove();
+          node.prepend(document.createTextNode('stream 4'));
+          stop.remove();
+          delete window.__aplMockFinishStopControlStream;
+        };
         return;
       }
       if (mode === 'streaming') {
