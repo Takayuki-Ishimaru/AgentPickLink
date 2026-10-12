@@ -37,8 +37,10 @@ describe("broker log receives BrowserManager diagnostics", () => {
 
     await manager.start();
     expect(manager.isRunning()).toBe(true);
-    // log() is fire-and-forget; give its internal write chain a turn to settle.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // log() queues real filesystem writes. Wait for the expected entry, not a fixed sleep.
+    await expect
+      .poll(() => readFile(brokerLogPath(logsDir), "utf8").catch(() => ""), { timeout: 5_000 })
+      .toContain("browser: 0 browser process(es) already present for this profile at launch start");
 
     const content = await readFile(brokerLogPath(logsDir), "utf8");
     expect(content).toContain(
@@ -73,7 +75,9 @@ describe("broker log receives BrowserManager diagnostics", () => {
     });
 
     await expect(manager.start()).rejects.toMatchObject({ code: "BROWSER_START_FAILED" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect
+      .poll(() => readFile(brokerLogPath(logsDir), "utf8").catch(() => ""), { timeout: 5_000 })
+      .toContain("<launched> pid=4242");
 
     const content = await readFile(brokerLogPath(logsDir), "utf8");
     expect(content).toContain("browser: launch failure call log");
