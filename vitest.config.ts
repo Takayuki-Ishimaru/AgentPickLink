@@ -49,7 +49,8 @@ export default defineConfig({
           name: "browser",
           include: browserTests,
           sequence: { groupOrder: 1 },
-          poolOptions: { forks: { singleFork: true } }
+          maxWorkers: 1,
+          fileParallelism: false
         }
       }
     ]

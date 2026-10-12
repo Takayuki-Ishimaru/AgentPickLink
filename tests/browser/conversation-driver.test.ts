@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { turnFixture } from "../helpers/turn-fixtures.js";
 import { DomainError } from "../../src/domain/errors.js";
 import type { ProgressEvent } from "../../src/domain/progress.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
@@ -1570,17 +1571,22 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
   const entry = (state: EnteredMessage["state"], userCountBefore?: number): EnteredMessage => ({
     ...enteredMessage("the question"),
     state,
+    ...(userCountBefore === undefined ? {} : { turnBefore: turnFixture(userCountBefore) }),
     ...(userCountBefore === undefined ? {} : { userCountBefore })
   });
   /** One exchange per capture, the last one repeating. */
   const exchanges = (...steps: Array<Partial<ConversationExchange>>) => {
     let call = 0;
-    const capture = vi.fn(async () => ({
-      userCount: 0,
-      assistantCount: 0,
-      replyStarted: false,
-      ...steps[Math.min(call++, steps.length - 1)]
-    }));
+    const capture = vi.fn(async () => {
+      const step = steps[Math.min(call++, steps.length - 1)];
+      return {
+        userCount: 0,
+        assistantCount: 0,
+        replyStarted: false,
+        turn: turnFixture(step.userCount ?? 0, step.replyStarted ?? false),
+        ...step
+      };
+    });
     return capture;
   };
   const sendsNothing = {
@@ -1736,7 +1742,7 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
     ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
   });
 
-  it("says the message differs when another user message appeared, and still reads its reply", async () => {
+  it("says the message differs without returning another question's reply", async () => {
     const capture = exchanges({
       userCount: 1,
       latestUserText: "the ques",
@@ -1753,7 +1759,7 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
           entered: entry("unknown", 0)
         }
       )
-    ).resolves.toMatchObject({ message: "differs", reply: "complete" });
+    ).resolves.toEqual({ message: "differs", reply: "none" });
   });
 
   it("waits for a reply to start and reports none when it does not", async () => {

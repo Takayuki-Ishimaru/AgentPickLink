@@ -220,6 +220,7 @@ async function harness(
     (conversations as unknown as { queues: Map<string, number> }).queues.get(handle) ?? 0;
   return {
     service,
+    policy,
     conversations,
     transport,
     approvals,
@@ -844,6 +845,98 @@ describe("InvocationService", () => {
     expect(fixture.transport.lastRequest?.signal).toBe(controller.signal);
   });
 
+  it.each(["before authorization", "during authorization"])(
+    "does not create a browser conversation for an ask cancelled %s",
+    async (when) => {
+      const fixture = await harness();
+      const controller = new AbortController();
+      if (when === "before authorization") controller.abort();
+      else {
+        const authorize = fixture.policy.authorize.bind(fixture.policy);
+        vi.spyOn(fixture.policy, "authorize").mockImplementationOnce(async (...args) => {
+          const result = await authorize(...args);
+          controller.abort();
+          return result;
+        });
+      }
+
+      await expect(
+        fixture.service.invoke(
+          fixture.workspaceRoot,
+          agent.alias,
+          "cancelled question",
+          undefined,
+          "req-cancelled-before-create",
+          undefined,
+          controller.signal
+        )
+      ).rejects.toMatchObject({ code: "SUBMIT_FAILED", options: { submissionState: "not-sent" } });
+      expect(fixture.transport.creates).toBe(0);
+      expect(fixture.transport.invokes).toBe(0);
+      expect(fixture.conversations.activeCount()).toBe(0);
+    }
+  );
+
+  it("does not start interactive sign-in for an already cancelled ask", async () => {
+    const fixture = await harness();
+    fixture.transport.createFailure = new DomainError("AUTH_REQUIRED", "Session expired");
+    fixture.transport.login = vi.fn(async () => ({ authenticated: true, state: "authenticated" }));
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "cancelled question",
+        undefined,
+        "req-cancelled-sign-in",
+        undefined,
+        controller.signal
+      )
+    ).rejects.toMatchObject({ code: "SUBMIT_FAILED", options: { submissionState: "not-sent" } });
+    expect(fixture.transport.login).not.toHaveBeenCalled();
+    expect(fixture.transport.creates).toBe(0);
+  });
+
+  it("hides conversations of an old binding after the alias is rebound and approved again", async () => {
+    const fixture = await harness();
+    const old = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+    const changed = structuredClone(agent);
+    changed.entryPoint.url = "https://m365.example.test/chat/replacement";
+    changed.verification.validatedUrlPattern = "^/chat/replacement$";
+    changed.verification.bindingFingerprint = deriveBindingFingerprint(changed);
+    fixture.registry.agents = [changed];
+    fixture.approvals.approvals[0]!.approvedBindings[0]!.bindingFingerprint =
+      changed.verification.bindingFingerprint;
+    const current = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+
+    expect(await fixture.service.list(fixture.workspaceRoot)).toEqual([current]);
+    await expect(
+      fixture.service.read(fixture.workspaceRoot, old.handle, "req-old-binding")
+    ).rejects.toMatchObject({ code: "CONVERSATION_OWNERSHIP_MISMATCH" });
+    expect(fixture.transport.reads).toBe(0);
+  });
+
+  it("omits a conversation closed while its list authorization was pending", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+    const gate = Promise.withResolvers<void>();
+    const authorize = fixture.policy.authorize.bind(fixture.policy);
+    const pendingAuthorization = vi
+      .spyOn(fixture.policy, "authorize")
+      .mockImplementationOnce(async (...args) => {
+        await gate.promise;
+        return authorize(...args);
+      });
+    const listing = fixture.service.list(fixture.workspaceRoot);
+    await vi.waitFor(() => expect(pendingAuthorization).toHaveBeenCalled());
+    await fixture.service.close(fixture.workspaceRoot, conversation.handle);
+    gate.resolve();
+
+    expect(await listing).toEqual([]);
+  });
+
   it("never sends a request its caller cancelled while it waited, and records no incident for a cancel", async () => {
     const incidents = new IncidentLog();
     const fixture = await harness({ incidents });
@@ -1034,7 +1127,8 @@ describe("InvocationService: a failed ask whose message was or may have been sen
     ["SUBMIT_STATE_UNKNOWN", "unknown", false],
     ["SUBMIT_STATE_UNKNOWN", "sent", false],
     ["RESPONSE_TIMEOUT", "sent", true],
-    ["RESPONSE_TIMEOUT", "unknown", true]
+    ["RESPONSE_TIMEOUT", "unknown", true],
+    ["RESPONSE_EXTRACTION_FAILED", "sent", false]
   ] as const)(
     "keeps a one-shot conversation to be read after %s (%s) and returns its handle",
     async (code, submissionState, retryable) => {
@@ -1102,13 +1196,14 @@ describe("InvocationService: a failed ask whose message was or may have been sen
     ["SUBMIT_STATE_UNKNOWN", undefined],
     ["RESPONSE_TIMEOUT", "not-sent"],
     ["RESPONSE_TIMEOUT", undefined],
+    ["RESPONSE_EXTRACTION_FAILED", "not-sent"],
+    ["RESPONSE_EXTRACTION_FAILED", undefined],
     ["SUBMIT_FAILED", "unknown"],
     ["SUBMIT_FAILED", "sent"],
     ["UI_CHANGED", "not-sent"],
     ["UI_CHANGED", "unknown"],
     ["AGENT_CONTEXT_CHANGED", "sent"],
     ["AGENT_CONTEXT_CHANGED", "unknown"],
-    ["RESPONSE_EXTRACTION_FAILED", "sent"],
     ["AUTH_REQUIRED", "sent"],
     ["BROKER_UNAVAILABLE", "unknown"],
     ["BROWSER_CRASHED", "unknown"]
@@ -1258,6 +1353,37 @@ describe("InvocationService: a failed ask whose message was or may have been sen
     expect(fixture.conversations.get(handle).closeAfterRead).toBe(true);
 
     // The fake transport's reading is a complete reply by default.
+    await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).resolves.toMatchObject({
+      reply: "complete",
+      conversationClosed: true
+    });
+  });
+
+  it("keeps a one-shot conversation for its read when cancellation arrives during final authorization", async () => {
+    const fixture = await harness();
+    const handle = await keptConversation(fixture);
+    const controller = new AbortController();
+    const authorize = fixture.policy.authorize.bind(fixture.policy);
+    let checks = 0;
+    vi.spyOn(fixture.policy, "authorize").mockImplementation(async (...args) => {
+      const result = await authorize(...args);
+      if (++checks === 2) controller.abort();
+      return result;
+    });
+
+    await expect(
+      fixture.service.invoke(
+        fixture.workspaceRoot,
+        agent.alias,
+        "cancelled follow-up",
+        handle,
+        "req-cancelled-final-authorization",
+        undefined,
+        controller.signal
+      )
+    ).rejects.toMatchObject({ code: "SUBMIT_FAILED", options: { submissionState: "not-sent" } });
+    expect(fixture.transport.invokes).toBe(1);
+    expect(fixture.conversations.get(handle).closeAfterRead).toBe(true);
     await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).resolves.toMatchObject({
       reply: "complete",
       conversationClosed: true

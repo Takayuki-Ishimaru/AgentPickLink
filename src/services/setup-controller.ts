@@ -21,6 +21,7 @@ import { splitDiscoveryWarnings } from "../domain/discovery-warnings.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressEvent } from "../domain/progress.js";
 import type { Incident } from "../observability/incidents.js";
+import { sanitizeCorrelationDiagnostics, type CorrelationDiagnostic } from "../observability/correlation.js";
 import { restartBrokerIfStale } from "./broker-staleness.js";
 import {
   applyIntegrations,
@@ -83,9 +84,12 @@ export type BrokerHealthSnapshot = {
   protocolMajor: number;
   protocolMinor: number;
   browserStarted: boolean;
-  transport: { healthy: boolean; details?: string };
+  transport: { healthy: boolean; details?: string; correlations?: CorrelationDiagnostic[] };
   authState?: { state: string; checkedAt: string };
   incidents: Incident[];
+  /** Metadata-only turn-correlation records (counts and hashed anchors, never message text),
+   * reported at the top level by a broker that knows about them. Absent on an older broker. */
+  correlations?: CorrelationDiagnostic[];
   /** G6: set when the broker is running against a development-only configuration (an insecure
    * loopback navigation allowance, or a dev app URL override) -- see `isDevMode()`
    * (src/services/setup-status.ts). Absent on a production broker/older protocol. */
@@ -1005,6 +1009,7 @@ export class SetupController {
       browserChannel: this.state.status?.browser.channel ?? null,
       authState: this.health?.authState ?? this.state.status?.broker.authState ?? null,
       incidents: this.state.incidents,
+      correlations: correlationDiagnostics(this.health),
       lastErrorCode: this.state.error?.code ?? this.lastErrorCode ?? null
     };
     await this.host.clipboard(JSON.stringify(diagnostics, undefined, 2));
@@ -1020,4 +1025,10 @@ export class SetupController {
     void this.service?.cancelDiscovery().catch(() => undefined);
     this.healthSubscription.dispose();
   }
+}
+
+/** The polled broker's correlation records, sanitized: an older broker, a broker that reports none
+ * and one that reports hostile values all yield `[]`. */
+function correlationDiagnostics(health: BrokerHealthSnapshot | undefined): CorrelationDiagnostic[] {
+  return sanitizeCorrelationDiagnostics(health?.correlations ?? health?.transport?.correlations);
 }

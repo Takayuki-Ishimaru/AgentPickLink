@@ -6,6 +6,7 @@ import type { ProgressSink } from "../../domain/progress.js";
 import type { AgentResponse } from "../../domain/response.js";
 import { pathPattern } from "../../domain/text.js";
 import { attachDiagnostics, isUiDriftCode, type IncidentDiagnostics } from "../../observability/incidents.js";
+import { CorrelationDiagnosticLog } from "../../observability/correlation.js";
 import type {
   AgentInvokeRequest,
   AgentReadRequest,
@@ -127,6 +128,7 @@ type DiscoveryFlight = {
 
 /** Broker-owned M365 transport. Its public methods expose domain values only. */
 export class BrowserTransport implements InteractiveAgentTransport {
+  private readonly correlations = new CorrelationDiagnosticLog();
   readonly name = "browser";
   private readonly manager: BrowserManager;
   private readonly policy: NavigationPolicy;
@@ -174,6 +176,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
     const invalidate = (reason: "crash" | "reset") => {
       if (this.active.size) this.contextInvalidated = true;
       this.active.clear();
+      this.correlations.clear();
       for (const handler of this.crashHandlers) handler({ reason });
     };
     this.manager =
@@ -238,6 +241,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
         timeoutMs: options.navigationTimeoutMs
       }),
       {
+        log: options.log,
+        onCorrelation: (diagnostic) => this.correlations.record(diagnostic),
         ackTimeoutMs: options.ackTimeoutMs,
         responseStartTimeoutMs: options.responseStartTimeoutMs,
         attachmentSettleMs: options.attachmentSettleMs,
@@ -287,7 +292,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
           : "The hidden automation browser context is stopped and will start lazily"
       } (${configuration})`,
       devMode: this.devMode,
-      browser: { channel, headless, viewport }
+      browser: { channel, headless, viewport },
+      correlations: this.correlations.list()
     };
   }
 

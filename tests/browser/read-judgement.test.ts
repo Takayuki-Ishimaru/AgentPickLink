@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { turnFixture } from "../helpers/turn-fixtures.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { ConversationDriver, enteredMessage } from "../../src/transports/browser/conversation-driver.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
@@ -67,6 +68,7 @@ function entry(
     ...enteredMessage(QUESTION, options.requestId),
     typed: true,
     state,
+    ...(userCountBefore === undefined ? {} : { turnBefore: turnFixture(userCountBefore) }),
     ...(userCountBefore === undefined ? {} : { userCountBefore }),
     ...(options.settledLongAgo === false ? {} : { settledAt: Date.now() - 60_000 })
   };
@@ -75,13 +77,17 @@ function entry(
 /** One exchange per look, the last one repeating. */
 function looks(...steps: Array<Partial<ConversationExchange>>) {
   let call = 0;
-  return vi.fn(async (): Promise<ConversationExchange> => ({
-    userCount: 0,
-    assistantCount: 0,
-    replyStarted: false,
-    readable: true,
-    ...steps[Math.min(call++, steps.length - 1)]
-  }));
+  return vi.fn(async (): Promise<ConversationExchange> => {
+    const step = steps[Math.min(call++, steps.length - 1)];
+    return {
+      userCount: 0,
+      assistantCount: 0,
+      replyStarted: false,
+      readable: true,
+      turn: turnFixture(step.userCount ?? 0, step.replyStarted ?? false),
+      ...step
+    };
+  });
 }
 
 function adapter(capture: ChatUiAdapter["captureExchange"], overrides: Partial<ChatUiAdapter> = {}) {
@@ -334,8 +340,22 @@ describe("reading: which ask, and cancellation", () => {
       const pressedAt = Date.now();
       const capture = vi.fn(async (): Promise<ConversationExchange> =>
         Date.now() >= pressedAt + 65_000
-          ? { userCount: 1, assistantCount: 1, latestUserText: QUESTION, replyStarted: true, readable: true }
-          : { userCount: 0, assistantCount: 0, replyStarted: false, readable: true, composerText: QUESTION }
+          ? {
+              userCount: 1,
+              assistantCount: 1,
+              latestUserText: QUESTION,
+              replyStarted: true,
+              readable: true,
+              turn: turnFixture(1)
+            }
+          : {
+              userCount: 0,
+              assistantCount: 0,
+              replyStarted: false,
+              readable: true,
+              composerText: QUESTION,
+              turn: turnFixture(0)
+            }
       );
       // The ask already spent the first default 30-second acknowledgement window.
       await vi.advanceTimersByTimeAsync(30_000);
@@ -363,8 +383,22 @@ describe("reading: which ask, and cancellation", () => {
     const shownAt = Date.now() + 150;
     const capture = vi.fn(async (): Promise<ConversationExchange> =>
       Date.now() >= shownAt
-        ? { userCount: 1, assistantCount: 1, latestUserText: QUESTION, replyStarted: true, readable: true }
-        : { userCount: 0, assistantCount: 0, replyStarted: false, readable: true, composerText: "" }
+        ? {
+            userCount: 1,
+            assistantCount: 1,
+            latestUserText: QUESTION,
+            replyStarted: true,
+            readable: true,
+            turn: turnFixture(1)
+          }
+        : {
+            userCount: 0,
+            assistantCount: 0,
+            replyStarted: false,
+            readable: true,
+            composerText: "",
+            turn: turnFixture(0)
+          }
     );
     await expect(
       read(capture, entry("unknown", 0, { settledLongAgo: false }), { ackTimeoutMs: 300 })

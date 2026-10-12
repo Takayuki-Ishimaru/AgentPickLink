@@ -39,7 +39,7 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
     await page.route("https://m365.example.test/chat", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: `<main data-surface="m365-copilot"><h1 data-agent-name="Requirements" data-agent-id="agent-1">Requirements</h1><div role="log"></div><div contenteditable="true" role="textbox"></div><button aria-label="Send">Send</button></main><script>window.sends=0; document.querySelector('button').onclick=()=>window.sends++;</script>`
+        body: `<main data-surface="m365-copilot"><h1 data-agent-name="Requirements" data-agent-id="agent-1">Requirements</h1><div role="log" data-conversation-id="fixture-conversation"></div><div contenteditable="true" role="textbox"></div><button aria-label="Send">Send</button></main><script>window.sends=0; document.querySelector('button').onclick=()=>window.sends++;</script>`
       })
     );
     await page.goto("https://m365.example.test/chat");
@@ -59,11 +59,15 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
     const adapter = create();
     await adapter.fillComposer(page as unknown as PageLike, text);
     const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
+    // Controlled fresh fixture: no historical conversation exists behind this empty DOM.
+    if (marker.turn)
+      Object.assign(marker.turn, { conversationId: "fixture-conversation", emptyVerified: true });
     // This editor has no pre-wrap, so Chromium stores some typed spaces as NBSP; nothing else differs.
     expect(composerTextMatches(marker.composerValue, text)).toBe(true);
     await page.evaluate(() => {
       const user = document.createElement("article");
       user.setAttribute("data-message-author-role", "user");
+      user.setAttribute("data-message-id", "fixture-user");
       const output = document.createElement("div");
       output.setAttribute("data-testid", "chatOutput");
       output.innerHTML = document.querySelector("[contenteditable]")!.innerHTML;
@@ -342,9 +346,11 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
         );
         const marker = await adapter.captureSubmissionMarker(page as unknown as PageLike, "verified");
         expect(marker.composerValue).toBe(text);
+        if (marker.turn) marker.turn.emptyVerified = true;
         await page.evaluate(() => {
           const user = document.createElement("article");
           user.setAttribute("data-message-author-role", "user");
+          user.setAttribute("data-message-id", "fixture-user");
           user.innerHTML = `<div data-testid="chatOutput">${document.querySelector("[contenteditable]")!.innerHTML}</div>`;
           document.querySelector("[role=log]")!.append(user);
         });

@@ -151,7 +151,7 @@ export type Conversation = {
 };
 export type SessionAction = "new" | "list" | "close" | "close_all" | "read";
 /** action=read: whether the last message AgentPickLink entered in the conversation is shown there
- * (`none` when it has entered none), and the state of the reply to the latest user message. */
+ * (`none` when it has entered none), and the state of the reply bound to the confirmed question. */
 export type ReadMessageState = "shown" | "differs" | "not-shown" | "unconfirmed" | "none";
 export type ReadReplyState = "complete" | "incomplete" | "none";
 export type SessionResult = {
@@ -421,7 +421,7 @@ export const sessionOutputSchema = {
           type: "string",
           enum: ["complete", "incomplete", "none"],
           description:
-            "action=read: the reply to the latest user message. complete -- text, citations and attachments hold it; incomplete -- it did not finish while reading (partialResponse holds what it showed); none -- no reply started while reading."
+            "action=read: the reply bound to the confirmed question. complete -- text, citations and attachments hold it; incomplete -- it did not finish while reading (partialResponse holds what it showed); none -- no associated reply started, or the question/reply correspondence could not be confirmed. differs and unconfirmed never return another question's reply."
         },
         text: { type: "string" },
         citations: { type: "array", items: citationSchema },

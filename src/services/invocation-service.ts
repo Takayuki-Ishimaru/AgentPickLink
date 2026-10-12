@@ -205,7 +205,16 @@ export class InvocationService {
     let recordedFailure: DomainError | undefined;
     let freshConversationCloseFailed = false;
     let freshConversationHandle: string | undefined;
+    const assertActive = () => {
+      if (signal?.aborted)
+        throw new DomainError("SUBMIT_FAILED", "The request was cancelled before it was sent.", false, {
+          submissionState: "not-sent"
+        });
+    };
     try {
+      // Authorization can await local stores. Re-check cancellation before allocating a page or
+      // opening interactive sign-in for a one-shot ask whose caller has already stopped waiting.
+      assertActive();
       conversation = handle
         ? this.deps.conversations.assertOwner(handle, {
             workspaceKey: workspace.workspaceKey,
@@ -220,10 +229,7 @@ export class InvocationService {
         this.deps.conversations.runExclusive(activeConversation.handle, async () => {
           try {
             // A caller that gave up while this request was queued never has its message sent.
-            if (signal?.aborted)
-              throw new DomainError("SUBMIT_FAILED", "The request was cancelled before it was sent.", false, {
-                submissionState: "not-sent"
-              });
+            assertActive();
             // A queued invocation may wait while the repository request, local
             // approval, or registry binding changes. Re-evaluate at the last safe
             // boundary before the browser transport is allowed to fill or submit.
@@ -233,6 +239,7 @@ export class InvocationService {
               agentAlias: alias,
               bindingFingerprint: current.agent.verification.bindingFingerprint
             });
+            assertActive();
             // A caller that continues a conversation a failed one-shot ask kept open makes it its own
             // session from here, as its question goes in: it no longer closes after a read.
             if (handle) activeConversation.closeAfterRead = undefined;
@@ -363,11 +370,17 @@ export class InvocationService {
 
   /** Whether a failed ask's conversation is worth reading instead of sending the message again: its
    * message was or may have been sent (SUBMIT_STATE_UNKNOWN), or was sent and its reply did not
-   * finish in time (RESPONSE_TIMEOUT), and the conversation is still open and usable. */
+   * finish in time (RESPONSE_TIMEOUT) or lost its extraction anchor (RESPONSE_EXTRACTION_FAILED),
+   * and the conversation is still open and usable. */
   private readableAfter(domain: DomainError, conversation: Conversation): boolean {
     const state = domain.options.submissionState;
     if (state !== "unknown" && state !== "sent") return false;
-    if (domain.code !== "SUBMIT_STATE_UNKNOWN" && domain.code !== "RESPONSE_TIMEOUT") return false;
+    if (
+      domain.code !== "SUBMIT_STATE_UNKNOWN" &&
+      domain.code !== "RESPONSE_TIMEOUT" &&
+      domain.code !== "RESPONSE_EXTRACTION_FAILED"
+    )
+      return false;
     return (
       this.deps.conversations.has(conversation.handle) &&
       conversation.state === "ready" &&
@@ -537,8 +550,14 @@ export class InvocationService {
     const visible: Conversation[] = [];
     for (const conversation of current) {
       try {
-        await this.deps.policy.authorize(root, conversation.agentAlias);
-        visible.push(conversation);
+        const authorized = await this.deps.policy.authorize(root, conversation.agentAlias);
+        visible.push(
+          this.deps.conversations.assertOwner(conversation.handle, {
+            workspaceKey: authorized.workspace.workspaceKey,
+            agentAlias: authorized.agent.alias,
+            bindingFingerprint: authorized.agent.verification.bindingFingerprint
+          })
+        );
       } catch {
         /* revoked/changed conversations are inaccessible */
       }

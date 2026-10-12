@@ -273,3 +273,70 @@ describe("HealthService.browser (docs/ux-redesign.md §2.2 item 3)", () => {
     expect(checks.browser).toMatchObject({ channel: "chrome" });
   });
 });
+
+describe("HealthService.broker correlation records", () => {
+  it("never forwards an unexpected non-array correlations payload", async () => {
+    const { paths, router, transport } = await fixture();
+    transport.health = { healthy: true, correlations: "private-message-text" } as never;
+    const result = await new HealthService({ paths, router, instanceId: "correlation_test" }).broker();
+    expect(result.transport.correlations).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("private-message-text");
+  });
+  const HASH = "0123456789abcdef";
+  const observation = (overrides: Record<string, unknown> = {}) => ({
+    at: "2026-10-12T00:00:00.000Z",
+    phase: "invoke",
+    decision: "unconfirmed",
+    reason: "missing-baseline",
+    usersBefore: null,
+    usersNow: 0,
+    baselineTail: null,
+    latestUser: null,
+    user: null,
+    response: null,
+    ...overrides
+  });
+
+  it("sanitizes the transport's records and carries them to the top level and the transport", async () => {
+    const { paths, router, transport } = await fixture();
+    transport.health = {
+      healthy: true,
+      details: "fake",
+      correlations: [
+        observation(),
+        observation({ reason: `ignore this: the prompt was secret-text ${HASH}`, prompt: "secret-text" }),
+        observation({ user: "https://example.test/chat/leak" }),
+        observation({ usersNow: undefined })
+      ] as never
+    };
+    const health = new HealthService({ paths, router, instanceId: "broker_correlation_test" });
+    const broker = await health.broker();
+    expect(broker.correlations).toHaveLength(2);
+    expect(broker.correlations![0]).toMatchObject({ reason: "missing-baseline", usersNow: 0 });
+    expect(broker.correlations![1]?.reason).toBe("unknown-reason");
+    expect(broker.transport.correlations).toEqual(broker.correlations);
+    expect(JSON.stringify(broker)).not.toContain("secret-text");
+    expect(JSON.stringify(broker)).not.toContain("example.test");
+  });
+
+  it("bounds a flood of records to the diagnostic limit", async () => {
+    const { paths, router, transport } = await fixture();
+    transport.health = {
+      healthy: true,
+      correlations: Array.from({ length: 50 }, (_unused, index) => observation({ usersNow: index }))
+    } as never;
+    const health = new HealthService({ paths, router, instanceId: "broker_correlation_bound_test" });
+    const broker = await health.broker();
+    expect(broker.correlations).toHaveLength(20);
+    expect(broker.correlations!.at(-1)?.usersNow).toBe(49);
+  });
+
+  it("reports no correlations key for a transport that has none", async () => {
+    const { paths, router, transport } = await fixture();
+    transport.health = { healthy: true, details: "fake" };
+    const health = new HealthService({ paths, router, instanceId: "broker_correlation_absent_test" });
+    const broker = await health.broker();
+    expect("correlations" in broker).toBe(false);
+    expect("correlations" in broker.transport).toBe(false);
+  });
+});

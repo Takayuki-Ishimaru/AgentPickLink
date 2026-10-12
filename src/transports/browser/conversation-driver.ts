@@ -13,6 +13,8 @@ import {
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { changedBeforePress } from "./send-activation.js";
 import { SubmissionTracker } from "./submission-tracker.js";
+import { correlateTurn } from "./turn-correlation.js";
+import type { CorrelationDiagnostic } from "../../observability/correlation.js";
 import {
   BrowserTransportError,
   type BrowserAgentDefinition,
@@ -32,6 +34,9 @@ import {
 import type { ChatUiAdapter, SubmitGuard } from "./ui-adapter.js";
 
 export interface ConversationDriverOptions {
+  /** Metadata-only correlation decisions; never message text or raw DOM identifiers. */
+  log?: (line: string) => void;
+  onCorrelation?: (diagnostic: Omit<CorrelationDiagnostic, "at">) => void;
   /** Spacing of `streaming` progress events while a response grows. */
   streamingProgressIntervalMs?: number;
   /** How long to wait for the submitted prompt to appear as a user message. A read waits as long
@@ -59,6 +64,12 @@ export class ConversationDriver {
   private readonly attachmentSettleMs: number;
   private readonly attachmentMaxWaitMs: number;
   private readonly attachmentPollIntervalMs: number;
+  private readonly log?: (line: string) => void;
+  private readonly onCorrelation?: ConversationDriverOptions["onCorrelation"];
+  private readonly correlationSignatures = new WeakMap<
+    EnteredMessage,
+    Partial<Record<"invoke" | "read", string>>
+  >();
   constructor(
     private readonly navigator: AgentNavigator,
     private readonly attachmentSaver = new AttachmentSaver(),
@@ -70,6 +81,8 @@ export class ConversationDriver {
     this.attachmentSettleMs = options.attachmentSettleMs ?? 2_000;
     this.attachmentMaxWaitMs = options.attachmentMaxWaitMs ?? 6_000;
     this.attachmentPollIntervalMs = Math.max(1, options.attachmentPollIntervalMs ?? 250);
+    this.log = options.log;
+    this.onCorrelation = options.onCorrelation;
   }
   async invoke(
     page: PageLike,
@@ -140,6 +153,7 @@ export class ConversationDriver {
         throw notSentBeforePress(error);
       }
       const marker = await adapter.captureSubmissionMarker(page, afterFillIdentity.digest);
+      if (entered) entered.turnBefore = marker.turn;
       tracker.record(marker);
       if (marker.url !== page.url() || marker.identityDigest !== afterFillIdentity.digest) {
         const currentUrl = page.url();
@@ -226,6 +240,12 @@ export class ConversationDriver {
         request.signal
       );
       tracker.acknowledge(ack);
+      if (entered && marker.userKey) entered.userKey = marker.userKey;
+      if (entered && adapter.captureExchange && (this.log || this.onCorrelation)) {
+        const observed = await adapter.captureExchange(page).catch(() => undefined);
+        if (observed)
+          this.logCorrelation(observed, entered, ack.state === "sent" ? "shown" : "unconfirmed", "invoke");
+      }
       // The control was pressed, so an unconfirmed message may still have been accepted: unknown,
       // never not-sent, whatever the composer shows (v0.2.8 review).
       if (ack.state !== "sent")
@@ -255,7 +275,25 @@ export class ConversationDriver {
           handle: conversation.handle,
           deadline: () => deadline,
           report,
-          assertContext: assertPostSubmitContext,
+          assertContext: async () => {
+            await assertPostSubmitContext();
+            if (responseMarker.turn && adapter.captureExchange) {
+              const current = await adapter.captureExchange(page);
+              const correlated = correlateTurn(marker.turn, current.turn, marker.userKey);
+              if (
+                !correlated.confirmed ||
+                correlated.responseKey !== responseMarker.turn.responseKey ||
+                current.latestUserText === undefined ||
+                enteredMessageDigest(current.latestUserText) !== enteredMessageDigest(marker.composerValue)
+              )
+                throw new BrowserTransportError(
+                  "RESPONSE_EXTRACTION_FAILED",
+                  "The submitted question or its reply anchor was lost. Read the conversation without resending.",
+                  undefined,
+                  { submissionState: "sent" }
+                );
+            }
+          },
           onExtracting: () => tracker.transition("EXTRACTING")
         },
         responseMarker
@@ -372,7 +410,15 @@ export class ConversationDriver {
       }
       const about = entered.requestId === undefined ? {} : { messageRequestId: entered.requestId };
       report("checking-message", "Checking whether the message is in the conversation");
-      const judge = (exchange: ConversationExchange) => enteredMessageState(exchange, entered);
+      const judge = (exchange: ConversationExchange) => {
+        const decision = enteredMessageState(exchange, entered);
+        this.logCorrelation(exchange, entered, decision);
+        if (decision === "shown") {
+          const correlated = correlateTurn(entered.turnBefore, exchange.turn, entered.userKey);
+          entered.userKey = correlated.userKey;
+        }
+        return decision;
+      };
       const shown = (judgement: ReturnType<typeof judge>) => judgement === "shown" || judgement === "differs";
       let exchange = await capture();
       let judgement = judge(exchange);
@@ -405,34 +451,72 @@ export class ConversationDriver {
           "The conversation could not be read: the page did not show its messages. Nothing was sent; read the conversation again."
         );
       const message = judgement;
-      if (!shown(message)) {
+      if (message !== "shown") {
         report("done", "The conversation was read");
         return { message, ...about, reply: "none" };
       }
       await assertPostSubmitContext();
-      if (!exchange.replyStarted) {
+      const replyAnchor = (current: ConversationExchange) => {
+        const correlated = correlateTurn(entered.turnBefore, current.turn, entered.userKey);
+        return correlated.confirmed && correlated.userKey && correlated.responseKey && current.turn
+          ? {
+              documentId: current.turn.documentId,
+              conversationId: current.turn.conversationId,
+              userKey: correlated.userKey,
+              responseKey: correlated.responseKey
+            }
+          : undefined;
+      };
+      if (!replyAnchor(exchange)) {
         report("waiting-response", "Waiting for the agent to start responding");
-        exchange = await watch(exchange, (current) => current.replyStarted, this.responseStartTimeoutMs);
-        if (!exchange.replyStarted) {
+        exchange = await watch(
+          exchange,
+          (current) => !!replyAnchor(current) || judge(current) !== "shown",
+          this.responseStartTimeoutMs
+        );
+        if (judge(exchange) !== "shown") return { message: "unconfirmed", ...about, reply: "none" };
+        if (!replyAnchor(exchange)) {
           report("done", "The conversation was read");
           return { message, ...about, reply: "none" };
         }
         await assertPostSubmitContext();
       }
-      const reply = await this.collectReply(
-        {
-          page,
-          adapter,
-          request,
-          expectFiles: true,
-          handle: conversation.handle,
-          deadline: () => deadline,
-          report,
-          assertContext: assertPostSubmitContext,
-          during: "read"
-        },
-        { assistantCount: exchange.assistantCount, digest: exchange.digest }
-      );
+      const anchor = replyAnchor(exchange)!;
+      const assertReplyContext = async () => {
+        await assertPostSubmitContext();
+        const current = await capture();
+        if (judge(current) !== "shown" || replyAnchor(current)?.responseKey !== anchor.responseKey) {
+          this.logCorrelation(current, entered, "unconfirmed", "read", "response-reassigned");
+          throw new BrowserTransportError(
+            "RESPONSE_EXTRACTION_FAILED",
+            "The question/reply anchor was lost while reading.",
+            undefined,
+            { correlationLost: true }
+          );
+        }
+      };
+      let reply: CollectedReply;
+      try {
+        reply = await this.collectReply(
+          {
+            page,
+            adapter,
+            request,
+            expectFiles: true,
+            handle: conversation.handle,
+            deadline: () => deadline,
+            report,
+            assertContext: assertReplyContext,
+            during: "read"
+          },
+          { assistantCount: exchange.assistantCount, digest: exchange.digest, turn: anchor }
+        );
+        await assertReplyContext();
+      } catch (error) {
+        if (error instanceof BrowserTransportError && error.details?.correlationLost)
+          return { message: "unconfirmed", ...about, reply: "none" };
+        throw error;
+      }
       if (!reply.complete) {
         // A cancelled read reports the cancellation, not a reply that merely did not finish.
         if (request.signal?.aborted) throw cancelled();
@@ -563,6 +647,7 @@ export class ConversationDriver {
     const attachmentCandidates = [...candidates.values()];
     if (attachmentCandidates.length) report("saving-attachments", "Saving returned files");
     const attachments = await this.attachmentSaver.save(page, attachmentCandidates, {
+      replyAnchor: responseMarker.turn,
       workspaceKey: request.workspaceKey ?? "workspace",
       workspaceRoot: request.workspaceRoot,
       requestId: request.requestId ?? context.handle,
@@ -700,6 +785,46 @@ export class ConversationDriver {
       }
     };
   }
+
+  private logCorrelation(
+    exchange: ConversationExchange,
+    entered: EnteredMessage,
+    decision: CorrelationDiagnostic["decision"],
+    phase: CorrelationDiagnostic["phase"] = "read",
+    reason?: string
+  ): void {
+    if (!this.log && !this.onCorrelation) return;
+    const correlated = correlateTurn(entered.turnBefore, exchange.turn, entered.userKey);
+    const hashKey = (value: string | undefined) =>
+      value ? createHash("sha256").update(value).digest("hex").slice(0, 16) : null;
+    try {
+      const diagnostic: Omit<CorrelationDiagnostic, "at"> = {
+        phase,
+        decision,
+        reason: reason ?? correlated.reason,
+        ...(entered.requestId ? { requestHash: hashKey(entered.requestId)! } : {}),
+        usersBefore: entered.userCountBefore ?? null,
+        usersNow: exchange.userCount,
+        baselineTail: hashKey(entered.turnBefore?.messages.at(-1)?.key),
+        latestUser: hashKey(exchange.turn?.messages.filter((item) => item.role === "user").at(-1)?.key),
+        user: hashKey(correlated.userKey),
+        response: hashKey(correlated.responseKey)
+      };
+      const signature = JSON.stringify(diagnostic);
+      const prior = this.correlationSignatures.get(entered) ?? {};
+      if (prior[phase] === signature) return;
+      prior[phase] = signature;
+      this.correlationSignatures.set(entered, prior);
+      try {
+        this.onCorrelation?.(diagnostic);
+      } catch {
+        /* a failing observer must not affect an invocation */
+      }
+      this.log?.(`conversation: correlation ${signature}`);
+    } catch {
+      /* diagnostics never fail a read */
+    }
+  }
 }
 
 type Reporter = (phase: ProgressPhase, message?: string, responseChars?: number) => void;
@@ -760,21 +885,20 @@ export function enteredMessage(message: string, requestId?: string): EnteredMess
  * Only certainty may say "not shown", since that tells the caller it can send the message again:
  * submission was stopped before the send control could be pressed. Neither a retained composer
  * nor an expired acknowledgement wait proves that a possible submission did not happen. The
- * latest user message counts as shown only when the conversation gained a user message since
- * typing began. Even a previous acknowledgement cannot identify a currently visible bubble as
- * this attempt when the page may be showing an earlier identical question. */
+ * latest user message counts as shown only when its identity and its position after the pre-send
+ * tail identify this attempt, or its already-confirmed anchor remains observable. DOM count growth
+ * alone is insufficient: the page may have prepended history ending in an identical question. */
 function enteredMessageState(
   exchange: ConversationExchange,
   entered: EnteredMessage
 ): ConversationReading["message"] | "unreadable" {
   if (entered.state === "not-sent") return "not-shown";
   if (exchange.readable === false) return "unreadable";
-  const added =
-    entered.userCountBefore === undefined ? undefined : exchange.userCount > entered.userCountBefore;
+  const correlated = correlateTurn(entered.turnBefore, exchange.turn, entered.userKey);
   const latest =
     exchange.latestUserText !== undefined && enteredMessageDigest(exchange.latestUserText) === entered.digest;
-  if (latest && added === true) return "shown";
-  if (added === true) return "differs";
+  if (latest && correlated.confirmed) return "shown";
+  if (correlated.confirmed) return "differs";
   return "unconfirmed";
 }
 

@@ -549,3 +549,113 @@ describe("diagnostics", () => {
     expect(host.notices.at(-1)?.text).toContain("Diagnostic");
   });
 });
+
+describe("diagnostics correlation records", () => {
+  const HASH = "0123456789abcdef";
+  const observation = (overrides: Record<string, unknown> = {}) => ({
+    at: "2026-10-12T00:00:00.000Z",
+    phase: "read" as const,
+    decision: "not-shown" as const,
+    reason: "baseline-tail-missing",
+    usersBefore: 3,
+    usersNow: 3,
+    baselineTail: HASH,
+    latestUser: null,
+    user: null,
+    response: null,
+    ...overrides
+  });
+
+  const snapshot = (overrides: Record<string, unknown> = {}) =>
+    ({
+      instanceId: "i1",
+      protocolMajor: 1,
+      protocolMinor: 0,
+      browserStarted: true,
+      transport: { healthy: true },
+      incidents: [],
+      ...overrides
+    }) as BrokerHealthSnapshot;
+
+  function clipboardOf(host: { clipboardText: string[] }): Record<string, unknown> {
+    return JSON.parse(host.clipboardText.at(-1)!) as Record<string, unknown>;
+  }
+
+  it("copies the broker's sanitized top-level records, falling back to the transport", async () => {
+    const { host, controller } = await createHarness();
+
+    host.emitHealth(
+      snapshot({
+        correlations: [observation(), observation({ reason: "secret-reason", prompt: "secret-prompt-text" })]
+      })
+    );
+    await controller.copyDiagnostics();
+    let copied = clipboardOf(host).correlations as Record<string, unknown>[];
+    expect(copied).toHaveLength(2);
+    expect(copied[0]).toMatchObject({ phase: "read", reason: "baseline-tail-missing", usersNow: 3 });
+    expect(copied[1]?.reason).toBe("unknown-reason");
+
+    host.emitHealth(
+      snapshot({ transport: { healthy: true, correlations: [observation({ reason: "document-changed" })] } })
+    );
+    await controller.copyDiagnostics();
+    copied = clipboardOf(host).correlations as Record<string, unknown>[];
+    expect(copied.map((entry) => entry.reason)).toEqual(["document-changed"]);
+
+    expect(JSON.stringify(clipboardOf(host))).not.toContain("secret-prompt-text");
+    expect(Object.keys(copied[0]!).sort()).toEqual(
+      [
+        "at",
+        "baselineTail",
+        "decision",
+        "latestUser",
+        "phase",
+        "reason",
+        "response",
+        "user",
+        "usersBefore",
+        "usersNow"
+      ].sort()
+    );
+  });
+
+  it("copies an empty list with no broker health, and with an older broker that reports none", async () => {
+    const { host, controller } = await createHarness();
+
+    await controller.copyDiagnostics();
+    expect(clipboardOf(host).correlations).toEqual([]);
+
+    host.emitHealth(snapshot());
+    await controller.copyDiagnostics();
+    expect(clipboardOf(host).correlations).toEqual([]);
+
+    host.emitHealth({
+      instanceId: "old",
+      protocolMajor: 1,
+      protocolMinor: 0,
+      browserStarted: false,
+      incidents: []
+    } as unknown as BrokerHealthSnapshot);
+    await controller.copyDiagnostics();
+    expect(clipboardOf(host).correlations).toEqual([]);
+  });
+
+  it("drops malformed records and caps the copied list", async () => {
+    const { host, controller } = await createHarness();
+    host.emitHealth(
+      snapshot({
+        correlations: [
+          ...Array.from({ length: 30 }, (_unused, index) => observation({ usersNow: index })),
+          observation({ usersNow: "many" }),
+          observation({ baselineTail: `https://example.test/${HASH}` })
+        ]
+      })
+    );
+
+    await controller.copyDiagnostics();
+    const copied = clipboardOf(host).correlations as Record<string, unknown>[];
+    expect(copied).toHaveLength(20);
+    expect(copied.at(-1)?.usersNow).toBe(29);
+    expect(JSON.stringify(copied)).not.toContain("example.test");
+  });
+});

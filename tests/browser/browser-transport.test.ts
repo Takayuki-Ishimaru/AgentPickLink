@@ -884,7 +884,12 @@ describe("BrowserTransport reading a conversation (v0.2.8 review 2026-10-10)", (
    * the page shows the user's message only later. */
   function slowPage(events: { started: number; verified: number; filled: number; submitted: number }) {
     const adapter = fixtureAdapter(events, true, true);
-    const verified = { userCount: 0, assistantCount: 0, url: "https://m365.example.test/chat" };
+    const verified = {
+      userCount: 0,
+      assistantCount: 0,
+      url: "https://m365.example.test/chat",
+      turn: turnFixture(0)
+    };
     adapter.captureSubmissionMarker = async () => ({
       ...verified,
       identityDigest: "identity",
@@ -895,8 +900,8 @@ describe("BrowserTransport reading a conversation (v0.2.8 review 2026-10-10)", (
     let shown = false;
     adapter.captureExchange = async () =>
       shown
-        ? { userCount: 1, assistantCount: 1, latestUserText: ask, replyStarted: true }
-        : { userCount: 0, assistantCount: 0, replyStarted: false };
+        ? { userCount: 1, assistantCount: 1, latestUserText: ask, replyStarted: true, turn: turnFixture(1) }
+        : { userCount: 0, assistantCount: 0, replyStarted: false, turn: turnFixture(0) };
     return { adapter, show: () => (shown = true) };
   }
 
@@ -922,6 +927,22 @@ describe("BrowserTransport reading a conversation (v0.2.8 review 2026-10-10)", (
     });
     // Reading never types or presses.
     expect(events).toMatchObject({ filled: 1, submitted: 1 });
+    const health = await transport.healthCheck();
+    expect(health.correlations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: "invoke", decision: "unconfirmed", usersNow: 0 }),
+        expect.objectContaining({
+          phase: "read",
+          decision: "shown",
+          usersNow: 1,
+          reason: "confirmed-user-anchor"
+        })
+      ])
+    );
+    expect(JSON.stringify(health.correlations)).not.toContain(ask);
+    expect(health.correlations!.every((item) => item.user === null || /^[0-9a-f]{16}$/.test(item.user))).toBe(
+      true
+    );
     await transport.dispose();
   }, 20_000);
 
@@ -1141,3 +1162,4 @@ function fixtureAdapter(
     })
   };
 }
+import { turnFixture } from "../helpers/turn-fixtures.js";

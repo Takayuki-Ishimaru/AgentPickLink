@@ -1,4 +1,5 @@
 import type { CompletionResult, PageLike, ResponseMarker } from "./types.js";
+import type { TurnDomRegistry } from "./conversation-dom.js";
 import { RESPONSE_SELECTORS, STOP_GENERATING_PATTERN } from "./selectors/common.js";
 
 export interface CompletionDetectorOptions {
@@ -10,7 +11,7 @@ export interface CompletionDetectorOptions {
   quietStreamingGraceMs?: number;
 }
 
-type CompletionSignal = { text: string; streaming: boolean; id?: string };
+type CompletionSignal = { text: string; streaming: boolean; id?: string; anchorLost?: boolean };
 
 /** Polls observable UI signals; fixed sleep alone is deliberately not used. */
 export class CompletionDetector {
@@ -65,6 +66,8 @@ export class CompletionDetector {
           finalChars: last.length
         };
       const state = await this.signal(page, marker);
+      if (state.anchorLost)
+        return { complete: false, reason: "anchor-lost", sawStreamingSignal, finalChars: 0 };
       const now = Date.now();
       // Report only growth from a previous observation, or a newly resumed generation signal.
       // The first observation is a baseline, including when the whole answer is already visible.
@@ -111,17 +114,26 @@ export class CompletionDetector {
     const stopControl = await this.stopControlVisible(page);
     try {
       if (page.evaluate) {
-        const observed = await page.evaluate<{ text: string; streaming: boolean; id?: string }>(
+        const observed = await page.evaluate<CompletionSignal>(
           (args: { marker: ResponseMarker; selector: string }) => {
             const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
-            const node = nodes[nodes.length - 1];
+            const node = args.marker.turn
+              ? (
+                  globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }
+                ).__aplTurnDomV1?.response(args.marker.turn, args.selector)
+              : nodes[nodes.length - 1];
             const text = node?.innerText?.trim() || "";
             const busy = node?.getAttribute("aria-busy") || "";
             const streaming =
               /generating|生成中|streaming/i.test(busy) ||
               busy === "true" ||
               node?.getAttribute("data-streaming") === "true";
-            return { text, id: node?.id, streaming };
+            return {
+              text,
+              id: node?.id,
+              streaming,
+              ...(args.marker.turn && !node ? { anchorLost: true } : {})
+            };
           },
           { marker, selector: RESPONSE_SELECTORS.join(", ") }
         );

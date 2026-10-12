@@ -1,5 +1,60 @@
 # リリースノート
 
+## v0.2.11 Beta
+
+### 主な変更
+
+- **過去の回答を今回の回答として返す問題を修正しました。** 過去の履歴の読み込みや画面の再描画で、以前送った同じ文面の質問・回答を取り違えないようにしました。回答テキストとファイルは、今回の質問との対応を確認できたものから取得します。対応を確認できない場合は `unconfirmed` または `reply: "none"` を返し、`differs` に別の質問への回答を添えません。
+- **回答取得に失敗した後も、会話を確認できます。** 送信された可能性のある質問で `RESPONSE_EXTRACTION_FAILED` が返り、利用できる会話が残っている場合は、エラーに `conversationHandle` を含めます。`m365_agent_session` の `action: "read"` で、質問を送り直さずに確認できます。
+- **キャンセル済みの質問によるブラウザー操作を抑制しました。** 承認確認や順番待ちの間にキャンセルされた質問では、その後の会話ページ作成や対話的なサインインを開始しません。すでに送信された質問の取り消しを保証するものではありません。
+- **会話一覧の表示を修正しました。** 現在の承認済み接続先と一致しない会話や、一覧の取得中に閉じられた会話を一覧から除外します。
+- **「診断をコピー」に、質問と回答の対応を確認できなかった理由を追加しました。** この判定情報には質問・回答の本文、URL、Cookie、生のメッセージ識別子を含めません。共有前には診断全体の内容を確認してください。
+- **インストール失敗時の後始末を改善しました。** コピーや配置に失敗した場合に一時ディレクトリーの削除を試み、既存の版を保持して再試行できるようにしました。
+- **依存ライブラリと第三者ソフトウェアの一覧を更新しました。** 詳細は [利用 OSS 一覧](OSS-LICENSES.md) を参照してください。
+
+### 更新方法
+
+VS Code 拡張機能を使う場合は、`agent-pick-link-0.2.11.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、VS Code を再読み込みしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。新しい設定項目の追加は不要です。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の会話で確認してください。
+
+画面から質問と回答の対応を確認できない場合は、送信済みの質問でも回答を自動取得できないことがあります。`unconfirmed` や `reply: "none"` を再送の根拠にせず、後で再度読むか Microsoft 365 の元の会話を確認してください。詳しくは [トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.11.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.11-win-x64.zip` / `AgentPickLink-0.2.11-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.11-darwin-arm64.tgz` / `AgentPickLink-0.2.11-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.11-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.11-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版には Node.js 24.21.0 を同梱します。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.11 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。利用する環境で質問・回答・会話の確認・ファイル取得を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed older replies being returned for the current question.** Loading earlier history or redrawing the page no longer substitutes a reply to an earlier identical question. Response text and files are retrieved from a reply whose association with the current question can be confirmed. Otherwise, reading returns `unconfirmed` or `reply: "none"`; `differs` does not include another question's reply.
+- **Preserve a usable conversation after response extraction fails.** When a question was or may have been sent and its conversation remains usable, `RESPONSE_EXTRACTION_FAILED` includes `conversationHandle`. Use `m365_agent_session` with `action: "read"` to inspect it without resending.
+- **Prevent browser operations for questions cancelled during approval checks or while queued.** Such questions do not subsequently create a conversation page or start interactive sign-in. This does not guarantee cancellation of a question already sent to Microsoft 365.
+- **Fixed the conversation list.** Conversations that no longer match the currently approved destination, or that close while the list is being retrieved, are excluded.
+- **Added reasons for unconfirmed question/reply associations to Copy diagnostics.** This information excludes question and answer text, URLs, cookies, and raw message identifiers. Inspect the entire diagnostic report before sharing it.
+- **Improved cleanup after installation failure.** Failed copies or placement attempt to remove temporary directories while retaining the existing version for a retry.
+- **Updated dependencies and the third-party software inventory.** See [Open-source software](OSS-LICENSES.md).
+
+Install `agent-pick-link-0.2.11.vsix`, reload VS Code, and update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused. No new configuration setting is required. Conversation handles issued before a local process restart cannot be reused; inspect existing questions in Microsoft 365.
+
+A sent question may still have no automatically retrievable reply if the page lacks the information needed to confirm its association. Do not resend because of `unconfirmed` or `reply: "none"`; read again later or inspect the original Microsoft 365 conversation. See [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.21.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.11. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Verify questions, answers, conversation reads, and file retrieval in your environment. See [Supported environments and validation scope](RELEASE-CHECKLIST.md) and the [English README](README.en.md).
+
 ## v0.2.10 Beta
 
 - **送信結果が不明な質問の再送案内を修正しました。** 送信操作後に入力欄へ質問が残っていても、質問の表示待ちが終わっただけでは未送信と判断しません。`action: "read"` の結果は `unconfirmed` を維持し、`not-shown` は送信操作前に中止できた場合に限ります。過去に送った同じ文面の質問や履歴の再描画でも、今回の質問と特定できない場合は `unconfirmed` とします。送り直さず、後で再度読むか Microsoft 365 の会話を確認してください。

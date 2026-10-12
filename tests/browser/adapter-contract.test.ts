@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { captureTurnDom } from "../../src/transports/browser/conversation-dom.js";
+import { turnFixture } from "../helpers/turn-fixtures.js";
 import {
   AgentBuilderChatAdapter,
   CopilotStudioM365Adapter,
@@ -283,6 +285,7 @@ describe("current M365 direct-agent landing", () => {
       url: () => "https://m365.example.test/chat/agent/T_agent/conversation/conversation-1",
       evaluate: async (fn: unknown, arg?: unknown) => {
         const source = String(fn);
+        if (fn === captureTurnDom) return turnFixture(1, false);
         if (source.includes("const all")) return { userCount: 1, assistantCount: 0 };
         expect(source).toContain("chatOutput");
         expect(arg).toContain("fai-UserMessage");
@@ -297,6 +300,7 @@ describe("current M365 direct-agent landing", () => {
         {
           userCount: 0,
           assistantCount: 0,
+          turn: turnFixture(0),
           url: page.url(),
           identityDigest: "digest",
           composerValue: "hello\u200b\u200c",
@@ -595,6 +599,7 @@ function pageFixture(
     },
     evaluate: async (fn: unknown, arg?: unknown) => {
       const source = String(fn);
+      if (fn === captureTurnDom) return turnFixture(userCount, assistantCount > 0);
       if (source.includes("hasMainRegion"))
         return { hasMainRegion: true, hasSendButton: true, hasConversationRegion: true };
       if (source.includes("stableAgentId"))

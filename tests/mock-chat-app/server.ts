@@ -629,6 +629,7 @@ function render(
     function append(role, text) {
       const node = document.createElement('article');
       node.dataset.messageAuthorRole = role;
+      node.dataset.messageId = 'message-' + crypto.randomUUID();
       node.textContent = text;
       messages.append(node);
       return node;

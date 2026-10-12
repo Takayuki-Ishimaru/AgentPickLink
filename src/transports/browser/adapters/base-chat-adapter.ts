@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { AuthDetector } from "../auth-detector.js";
 import { CompletionDetector } from "../completion-detector.js";
+import { captureTurnDom } from "../conversation-dom.js";
+import { correlateTurn } from "../turn-correlation.js";
 import {
   composerTextMatches,
   describeComposerMismatch,
@@ -113,6 +115,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   private readonly composerStabilityWindowMs: number;
   private readonly typingDelayMs: number | undefined;
   private readonly sendClickableTimeoutMs: number | undefined;
+  private readonly verifiedEmptyTurns = new WeakMap<
+    PageLike,
+    { documentId: string; conversationId: string }
+  >();
   constructor(options: BaseAdapterOptions) {
     this.id = options.id;
     this.hostnames = new Set(options.hostnames.map((h) => h.toLowerCase()));
@@ -497,7 +503,35 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   }
   async captureConversationMarker(page: PageLike): Promise<ConversationMarker> {
     const value = await this.markerData(page);
+    const turn = await page
+      .evaluate?.<import("../turn-correlation.js").TurnSnapshot>(captureTurnDom, {
+        user: USER_MESSAGE_SELECTORS,
+        assistant: ASSISTANT_MESSAGE_SELECTORS
+      })
+      .catch(() => undefined);
+    const verified = this.verifiedEmptyTurns.get(page);
+    if (
+      verified &&
+      (!turn ||
+        turn.documentId !== verified.documentId ||
+        turn.conversationId !== verified.conversationId ||
+        turn.messages.some((item) => item.role === "user"))
+    )
+      this.verifiedEmptyTurns.delete(page);
     return {
+      ...(turn
+        ? {
+            turn: {
+              ...turn,
+              ...(turn.conversationId &&
+              this.verifiedEmptyTurns.get(page)?.documentId === turn.documentId &&
+              this.verifiedEmptyTurns.get(page)?.conversationId === turn.conversationId &&
+              !turn.messages.some((item) => item.role === "user")
+                ? { emptyVerified: true }
+                : {})
+            }
+          }
+        : {}),
       id: value.id,
       userCount: value.userCount,
       assistantCount: value.assistantCount,
@@ -526,7 +560,22 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     before: ConversationMarker
   ): Promise<{ verified: boolean; reason?: string }> {
     const after = await this.captureConversationMarker(page);
-    if (after.id && before.id && after.id !== before.id) return { verified: true };
+    const beforeId = before.turn?.conversationId ?? before.id;
+    const afterId = after.turn?.conversationId ?? after.id;
+    if (afterId && beforeId && afterId !== beforeId) {
+      if (
+        after.turn?.conversationId &&
+        after.turn.documentId === before.turn?.documentId &&
+        after.turn.conversationId !== before.turn?.conversationId &&
+        after.userCount === 0 &&
+        !after.unreadable
+      )
+        this.verifiedEmptyTurns.set(page, {
+          documentId: after.turn.documentId,
+          conversationId: after.turn.conversationId
+        });
+      return { verified: true };
+    }
     if (
       after.userCount === 0 &&
       after.assistantCount === 0 &&
@@ -701,17 +750,25 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     // Never a bare click: its own actionability wait cannot be cancelled and would press the
     // control whenever it became clickable, even long after the request was cancelled -- or after
     // the composer or the page had changed.
-    await activateSendControl(page, send, signal, {
-      clickableTimeoutMs: this.sendClickableTimeoutMs,
-      diagnostics: () => this.sendControlDiagnostics(page),
-      ...(guard && {
-        press: {
-          composer: () => this.findComposer(page),
-          verify: () => guard.verifyBeforePress(),
-          check: { ...PRESS_CONTEXT_SCOPE, message: guard.message, context: guard.marker.pressContext }
-        }
-      })
-    });
+    try {
+      await activateSendControl(page, send, signal, {
+        clickableTimeoutMs: this.sendClickableTimeoutMs,
+        diagnostics: () => this.sendControlDiagnostics(page),
+        ...(guard && {
+          press: {
+            composer: () => this.findComposer(page),
+            verify: () => guard.verifyBeforePress(),
+            check: { ...PRESS_CONTEXT_SCOPE, message: guard.message, context: guard.marker.pressContext }
+          }
+        })
+      });
+    } catch (error) {
+      if (!(error instanceof BrowserTransportError && error.details?.submissionState === "not-sent"))
+        this.verifiedEmptyTurns.delete(page);
+      throw error;
+    }
+    // Freshness is evidence for this one attempt, not for later empty views of an existing chat.
+    this.verifiedEmptyTurns.delete(page);
   }
   async waitForUserMessageAck(
     page: PageLike,
@@ -724,22 +781,23 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       if (signal?.aborted)
         return { state: "unknown", reason: "cancelled while waiting for submission acknowledgement" };
       const now = await this.captureConversationMarker(page);
-      if (now.userCount === marker.userCount + 1) {
+      const correlation = correlateTurn(marker.turn, now.turn);
+      if (correlation.confirmed) {
         const latest = await this.latestUserMessage(page);
         // The composer text was verified before submission; this only recognises it again, and
         // the message bubble may render spaces differently from the editor.
         if (
           latest !== undefined &&
           foldComposerWhitespace(latest) === foldComposerWhitespace(marker.composerValue)
-        )
+        ) {
+          marker.userKey = correlation.userKey;
           return { state: "sent" };
+        }
         return {
           state: "unknown",
           reason: "a new user message appeared but its content could not be correlated"
         };
       }
-      if (now.userCount > marker.userCount + 1)
-        return { state: "unknown", reason: "more than one new user message observed" };
       await delay(100, page);
     }
     // The send control was already pressed when this wait started, so its end is no evidence that
@@ -764,9 +822,19 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
           undefined,
           { submissionState: "sent" }
         );
-      const now = await this.captureConversationMarker(page);
-      if (now.assistantCount > marker.assistantCount)
-        return { assistantCount: now.assistantCount, digest: now.digest };
+      const now = await this.captureExchange(page);
+      const correlation = correlateTurn(marker.turn, now.turn, marker.userKey);
+      if (correlation.confirmed && correlation.userKey && correlation.responseKey && now.turn)
+        return {
+          assistantCount: now.assistantCount,
+          digest: now.digest,
+          turn: {
+            documentId: now.turn.documentId,
+            conversationId: now.turn.conversationId,
+            userKey: correlation.userKey,
+            responseKey: correlation.responseKey
+          }
+        };
       await delay(100, page);
     }
     throw new BrowserTransportError(

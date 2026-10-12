@@ -49,7 +49,7 @@ export type ConversationReading = {
   message: "shown" | "differs" | "not-shown" | "unconfirmed" | "none";
   /** The request (requestId) of the ask that entered the message `message` describes. */
   messageRequestId?: string;
-  /** The reply to the latest user message when the message is shown or differs: `complete`, still
+  /** The reply bound to the confirmed entered message: `complete`, still
    * `incomplete` when reading ended, or `none` (no reply started while reading). */
   reply: "complete" | "incomplete" | "none";
   /** reply=complete. */

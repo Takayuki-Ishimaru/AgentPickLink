@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DomainError } from "../../src/domain/errors.js";
 import {
   assertNotElevated,
@@ -162,6 +162,40 @@ describe("install.json", () => {
 });
 
 describe("stageVersion", () => {
+  it.each(["copy", "rename"])(
+    "preserves the existing version and removes temporary files after a %s failure",
+    async (phase) => {
+      await withTempDir(async (base) => {
+        const source = path.join(base, "source");
+        const home = path.join(base, "install");
+        const target = path.join(home, "app", "1.0.0");
+        await fs.mkdir(source, { recursive: true });
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(source, "contents.txt"), "new version");
+        await fs.writeFile(path.join(target, "contents.txt"), "existing version");
+        const failure = Object.assign(new Error(`staging ${phase} failed`), { code: "EIO" });
+        const rename = fs.rename.bind(fs);
+        const failingOperation =
+          phase === "copy"
+            ? vi.spyOn(fs, "copyFile").mockRejectedValueOnce(failure)
+            : vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+                if (String(from).includes(".tmp-") && to === target) throw failure;
+                return rename(from, to);
+              });
+        try {
+          await expect(stageVersion({ sourceDir: source, home, version: "1.0.0" })).rejects.toBe(failure);
+        } finally {
+          failingOperation.mockRestore();
+        }
+
+        expect(await fs.readFile(path.join(target, "contents.txt"), "utf8")).toBe("existing version");
+        expect(await fs.readdir(path.join(home, "app"))).toEqual(["1.0.0"]);
+        await stageVersion({ sourceDir: source, home, version: "1.0.0" });
+        expect(await fs.readFile(path.join(target, "contents.txt"), "utf8")).toBe("new version");
+      });
+    }
+  );
+
   it("copies the source tree, preserving the executable bit, and replaces an existing version atomically", async () => {
     await withTempDir(async (home) => {
       const source = await fs.mkdtemp(path.join(os.tmpdir(), "apl-stage-source-"));

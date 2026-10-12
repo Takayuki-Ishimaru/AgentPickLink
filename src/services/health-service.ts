@@ -12,6 +12,7 @@ import { readDescriptor } from "../broker/broker-descriptor.js";
 import { deriveBindingFingerprint, SUPPORTED_BROWSER_ADAPTER_IDS } from "../domain/agent.js";
 import { asDomainError, DomainError } from "../domain/errors.js";
 import { BROKER_PROTOCOL } from "../ipc/protocol.js";
+import { sanitizeCorrelationDiagnostics, type CorrelationDiagnostic } from "../observability/correlation.js";
 import type {
   LocalStatePreparer,
   TransportBrowserDescription,
@@ -48,6 +49,9 @@ export type BrokerHealth = {
   devMode: TransportDevMode;
   /** Present only when the transport can describe what it launches (metadata only). */
   browser?: TransportBrowserDescription;
+  /** The transport's sanitized correlation records, bounded to the diagnostic limit. Absent when
+   * the transport reported none, so a production broker and an older broker look the same. */
+  correlations?: CorrelationDiagnostic[];
 };
 export type DescriptorState = { descriptorPresent: boolean; staleDescriptor: boolean };
 export type AssignmentStatus =
@@ -86,9 +90,18 @@ export class HealthService {
     const { router, instanceId } = this.deps;
     if (!router || !instanceId) throw new DomainError("BROKER_UNAVAILABLE", "The broker is not started.");
     const browser = router.get("browser");
-    const transport: TransportHealth = browser
+    const reported: TransportHealth = browser
       ? await browser.healthCheck()
       : { healthy: false, details: "No browser transport is registered." };
+    // A transport's correlations are untrusted input: whitelist them, then report the same bounded
+    // list both nested and at the top level, where a caller that knows nothing about transports
+    // reads it. Absent when the transport reported none.
+    const correlations = sanitizeCorrelationDiagnostics(reported.correlations);
+    const { correlations: reportedCorrelations, ...transportMetadata } = reported;
+    const transport: TransportHealth = {
+      ...transportMetadata,
+      ...(reportedCorrelations !== undefined ? { correlations } : {})
+    };
     return {
       instanceId,
       protocolMajor: BROKER_PROTOCOL.major,
@@ -96,7 +109,8 @@ export class HealthService {
       browserStarted: browser?.isBrowserRunning?.() ?? false,
       transport,
       devMode: transport.devMode ?? { insecureLoopback: false, devAppUrl: false },
-      ...(transport.browser ? { browser: transport.browser } : {})
+      ...(transport.browser ? { browser: transport.browser } : {}),
+      ...(correlations.length > 0 ? { correlations } : {})
     };
   }
 

@@ -10,6 +10,7 @@ import {
 } from "../../domain/attachment-media.js";
 import type { AgentAttachment } from "../../domain/response.js";
 import { RESPONSE_SELECTORS } from "./selectors/common.js";
+import type { ReplyAnchor, TurnDomRegistry } from "./conversation-dom.js";
 import type {
   ApiRequestLike,
   AttachmentCandidate,
@@ -32,6 +33,8 @@ export type AttachmentSaverOptions = {
 };
 
 export type AttachmentSaveContext = {
+  /** The question/reply that produced these controls; never fall back to a later global reply. */
+  replyAnchor?: ReplyAnchor;
   workspaceKey: string;
   requestId: string;
   workspaceRoot?: string;
@@ -77,6 +80,7 @@ export class AttachmentSaver {
       controller.abort();
     };
     phaseBudgets.set(controller.signal, { deadline, expire });
+    if (context.replyAnchor) replyAnchors.set(controller.signal, context.replyAnchor);
     const cancel = () => controller.abort();
     context.signal?.addEventListener("abort", cancel, { once: true });
     if (context.signal?.aborted) cancel();
@@ -93,6 +97,7 @@ export class AttachmentSaver {
       clearTimeout(timer);
       context.signal?.removeEventListener("abort", cancel);
       phaseBudgets.delete(controller.signal);
+      replyAnchors.delete(controller.signal);
     }
   }
 
@@ -655,9 +660,13 @@ async function revealFileCardControls(
   for (;;) {
     const stage: AttachmentStage = await withinBudget(
       page.evaluate<AttachmentStage>(
-        (args: { selector: string; index: number; events: string[] }) => {
+        (args: { selector: string; index: number; events: string[]; replyAnchor?: ReplyAnchor }) => {
           const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
-          const response = nodes[nodes.length - 1];
+          const response = args.replyAnchor
+            ? (
+                globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }
+              ).__aplTurnDomV1?.response(args.replyAnchor, args.selector)
+            : nodes[nodes.length - 1];
           if (!response) return "card-missing";
           const attachmentRoot = response.closest('[role="article"].fai-CopilotMessage') || response;
           const cards = Array.from(
@@ -694,6 +703,7 @@ async function revealFileCardControls(
         },
         {
           selector: RESPONSE_SELECTORS.join(", "),
+          replyAnchor: signal ? replyAnchors.get(signal) : undefined,
           index: fileCardIndex,
           events: FILE_CARD_HOVER_EVENTS
         }
@@ -736,11 +746,17 @@ async function saveDownloadControl(
         selector: string;
         index: number;
         expectedName: string;
+        replyAnchor?: ReplyAnchor;
         expectedUrl?: string;
         clickBy?: number;
       }) => {
         const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
-        const response = nodes[nodes.length - 1];
+        const response = args.replyAnchor
+          ? (globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }).__aplTurnDomV1?.response(
+              args.replyAnchor,
+              args.selector
+            )
+          : nodes[nodes.length - 1];
         if (!response) throw new Error("attachment-response-missing");
         const attachmentRoot = response.closest('[role="article"].fai-CopilotMessage') || response;
         const controls = Array.from(attachmentRoot.querySelectorAll('button, [role="button"], a')).filter(
@@ -799,6 +815,7 @@ async function saveDownloadControl(
       },
       {
         selector: RESPONSE_SELECTORS.join(", "),
+        replyAnchor: signal ? replyAnchors.get(signal) : undefined,
         index: candidate.downloadControlIndex!,
         expectedName: candidate.name,
         expectedUrl: candidate.url,
@@ -853,9 +870,20 @@ async function saveFileCard(
     signal
   );
   const opening = page.evaluate(
-    (args: { selector: string; index: number; expectedName: string; clickBy?: number }) => {
+    (args: {
+      selector: string;
+      index: number;
+      expectedName: string;
+      clickBy?: number;
+      replyAnchor?: ReplyAnchor;
+    }) => {
       const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
-      const response = nodes[nodes.length - 1];
+      const response = args.replyAnchor
+        ? (globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }).__aplTurnDomV1?.response(
+            args.replyAnchor,
+            args.selector
+          )
+        : nodes[nodes.length - 1];
       if (!response) throw new Error("attachment-response-missing");
       const attachmentRoot = response.closest('[role="article"].fai-CopilotMessage') || response;
       const cards = Array.from(attachmentRoot.querySelectorAll('[role="group"], button, [role="button"], a'));
@@ -903,6 +931,7 @@ async function saveFileCard(
     },
     {
       selector: RESPONSE_SELECTORS.join(", "),
+      replyAnchor: signal ? replyAnchors.get(signal) : undefined,
       index: candidate.fileCardIndex!,
       expectedName: candidate.name,
       clickBy: clickDeadline(timeoutMs, signal)
@@ -934,9 +963,13 @@ async function saveFileCard(
   try {
     for (let attempt = 0; attempt < 40 && !clicked; attempt++) {
       const clicking = page.evaluate<boolean>(
-        (args: { selector: string; index: number; clickBy?: number }) => {
+        (args: { selector: string; index: number; clickBy?: number; replyAnchor?: ReplyAnchor }) => {
           const responses = Array.from(document.querySelectorAll(args.selector));
-          const response = responses[responses.length - 1];
+          const response = args.replyAnchor
+            ? (
+                globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }
+              ).__aplTurnDomV1?.response(args.replyAnchor, args.selector)
+            : responses[responses.length - 1];
           const attachmentRoot = response?.closest('[role="article"].fai-CopilotMessage') || response;
           const cards = attachmentRoot
             ? Array.from(attachmentRoot.querySelectorAll('[role="group"], button, [role="button"], a'))
@@ -979,6 +1012,7 @@ async function saveFileCard(
         },
         {
           selector: RESPONSE_SELECTORS.join(", "),
+          replyAnchor: signal ? replyAnchors.get(signal) : undefined,
           index: candidate.fileCardIndex!,
           clickBy: clickDeadline(timeoutMs, signal)
         }
@@ -1652,3 +1686,5 @@ function filenameFromContentDisposition(value: string | undefined): string | und
 function mediaTypeForName(name: string): string {
   return attachmentMediaType(name);
 }
+
+const replyAnchors = new WeakMap<AbortSignal, ReplyAnchor>();

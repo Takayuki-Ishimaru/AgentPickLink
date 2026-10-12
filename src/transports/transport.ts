@@ -2,6 +2,7 @@ import type { AgentDefinition } from "../domain/agent.js";
 import type { AgentResponse, ConversationReading } from "../domain/response.js";
 import type { ConversationTransportHandle } from "../domain/conversation.js";
 import type { ProgressSink } from "../domain/progress.js";
+import type { CorrelationDiagnostic } from "../observability/correlation.js";
 /** Development relaxations a transport is running with. Reported through `broker.health` so the
  * panel/CLI can say out loud that this broker is not in its production configuration. */
 export type TransportDevMode = { insecureLoopback: boolean; devAppUrl: boolean };
@@ -20,6 +21,9 @@ export type TransportHealth = {
   devMode?: TransportDevMode;
   /** Present when the transport can describe what it launches (see BrowserManager.describe). */
   browser?: TransportBrowserDescription;
+  /** Metadata-only turn-correlation decisions (counts and hashed anchors, never message text);
+   * see src/observability/correlation.ts. Absent on transports that do not correlate turns. */
+  correlations?: CorrelationDiagnostic[];
 };
 export type ValidationResult = { valid: boolean; reason?: string };
 export type InvocationContext = {

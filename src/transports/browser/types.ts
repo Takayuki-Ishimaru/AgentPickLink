@@ -10,6 +10,8 @@
 import type { BrowserAgentDefinition } from "../../domain/agent.js";
 import type { ErrorCode } from "../../domain/errors.js";
 import type { ProgressSink } from "../../domain/progress.js";
+import type { TurnSnapshot } from "./turn-correlation.js";
+import type { ReplyAnchor } from "./conversation-dom.js";
 
 export type { AgentKind, BrowserAgentDefinition } from "../../domain/agent.js";
 export type { InvocationContext, TransportHealth, ValidationResult } from "../transport.js";
@@ -145,6 +147,7 @@ export interface PageHandle {
 }
 
 export interface ConversationMarker {
+  turn?: TurnSnapshot;
   id?: string;
   userCount: number;
   assistantCount: number;
@@ -154,6 +157,7 @@ export interface ConversationMarker {
   unreadable?: true;
 }
 export interface SubmissionMarker extends ConversationMarker {
+  userKey?: string;
   url: string;
   identityDigest: string;
   composerValue: string;
@@ -164,6 +168,7 @@ export interface SubmissionMarker extends ConversationMarker {
   capturedAt: number;
 }
 export interface ResponseMarker {
+  turn?: ReplyAnchor;
   assistantCount: number;
   responseId?: string;
   digest?: string;
@@ -185,6 +190,8 @@ export interface ConversationExchange extends ConversationMarker {
  * and when its request ended. The driver fills in the rest as the submission goes on; `typed` is set
  * once typing begins, and only then does the record replace the conversation's previous one. */
 export interface EnteredMessage {
+  turnBefore?: TurnSnapshot;
+  userKey?: string;
   digest: string;
   requestId?: string;
   typed?: true;
@@ -208,7 +215,7 @@ export interface CompletionResult {
   /** Why the wait ended. Metadata only; every field below is a count or a flag, never page text.
    * Optional so any other CompletionResult producer (a test fixture, a future adapter) keeps
    * compiling. */
-  reason?: "stable" | "timeout" | "cancelled";
+  reason?: "stable" | "timeout" | "cancelled" | "anchor-lost";
   /** True when a stop-generating control or a streaming attribute was seen at least once. */
   sawStreamingSignal?: boolean;
   /** Length of the last observed response text. The text itself never leaves the page. */

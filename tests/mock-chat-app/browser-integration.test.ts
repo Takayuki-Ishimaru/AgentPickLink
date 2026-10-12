@@ -413,7 +413,9 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     });
     await page.goto(`${app.origin}/chat?mode=stop-control-stream`);
     const browserPage = page as unknown as PageLike;
+    const before = await streamingAdapter.captureConversationMarker(browserPage);
     await streamingAdapter.startNewConversation(browserPage);
+    await streamingAdapter.verifyNewConversation(browserPage, before);
     await streamingAdapter.fillComposer(browserPage, "hello");
     const submission = await streamingAdapter.captureSubmissionMarker(browserPage);
     await streamingAdapter.submitComposer(browserPage);
@@ -441,7 +443,9 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
     });
     await page.goto(`${app.origin}/chat?mode=citations`);
     const browserPage = page as unknown as PageLike;
+    const before = await quietAdapter.captureConversationMarker(browserPage);
     await quietAdapter.startNewConversation(browserPage);
+    await quietAdapter.verifyNewConversation(browserPage, before);
     await quietAdapter.fillComposer(browserPage, "hello");
     const submission = await quietAdapter.captureSubmissionMarker(browserPage);
     await quietAdapter.submitComposer(browserPage);
@@ -600,7 +604,9 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
 
   async function submitAndExtract(target: Page) {
     const browserPage = target as unknown as PageLike;
+    const before = await adapter.captureConversationMarker(browserPage);
     await adapter.startNewConversation(browserPage);
+    await adapter.verifyNewConversation(browserPage, before);
     await adapter.fillComposer(browserPage, "hello");
     const submission = await adapter.captureSubmissionMarker(browserPage);
     await adapter.submitComposer(browserPage);

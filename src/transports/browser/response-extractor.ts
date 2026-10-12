@@ -1,4 +1,5 @@
 import { htmlToMarkdown } from "./markdown-converter.js";
+import type { TurnDomRegistry } from "./conversation-dom.js";
 import { RESPONSE_SELECTORS } from "./selectors/common.js";
 import {
   BrowserTransportError,
@@ -47,7 +48,11 @@ export class ResponseExtractor {
         payload = await page.evaluate<ResponsePayload>(
           (args: { marker: ResponseMarker; selector: string }) => {
             const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
-            const node = nodes[nodes.length - 1];
+            const node = args.marker.turn
+              ? (
+                  globalThis as typeof globalThis & { __aplTurnDomV1?: TurnDomRegistry }
+                ).__aplTurnDomV1?.response(args.marker.turn, args.selector)
+              : nodes[nodes.length - 1];
             if (!node) return { html: "", citations: [], actionRequired: false };
             // M365 nests the textual markdown reply inside the assistant article but renders a
             // generated-file card as its sibling. Keep `node` for response text isolation while

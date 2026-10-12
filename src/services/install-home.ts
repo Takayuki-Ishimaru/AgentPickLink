@@ -140,7 +140,7 @@ async function pathExists(target: string): Promise<boolean> {
 
 /** Recursively copies `source` to `destination`, explicitly preserving each file's permission
  * bits (in particular the executable bit) rather than relying on `fs.cp`'s undocumented
- * behaviour. Symbolic links are recreated as links, never followed. */
+ * behaviour. Link targets are copied as regular files/directories for Windows compatibility. */
 async function copyTree(source: string, destination: string): Promise<void> {
   await fs.mkdir(destination, { recursive: true });
   const entries = await fs.readdir(source, { withFileTypes: true });
@@ -208,10 +208,16 @@ export async function stageVersion(opts: StageVersionOptions): Promise<string> {
   const appDir = path.join(opts.home, "app");
   await fs.mkdir(appDir, { recursive: true });
   const temporary = path.join(appDir, `${opts.version}.tmp-${randomBytes(6).toString("hex")}`);
-  await copyTree(opts.sourceDir, temporary);
-  const target = path.join(appDir, opts.version);
-  await replaceDirectoryAtomically(temporary, target);
-  return target;
+  try {
+    await copyTree(opts.sourceDir, temporary);
+    const target = path.join(appDir, opts.version);
+    await replaceDirectoryAtomically(temporary, target);
+    return target;
+  } finally {
+    // An interrupted copy or failed swap must not leave an unrecognized app/<version>.tmp-*
+    // directory that blocks ownership validation on the next prune or uninstall.
+    await fs.rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /* -------------------------------------------------------------------------------- installRuntime */

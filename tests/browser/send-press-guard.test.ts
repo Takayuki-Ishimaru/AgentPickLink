@@ -78,6 +78,7 @@ function fixture(composer: Composer): string {
   const userMessage = (message) => {
     const user = document.createElement('div');
     user.setAttribute('data-message-author-role', 'user');
+    user.setAttribute('data-message-id', 'user-' + crypto.randomUUID());
     user.style.whiteSpace = 'pre-wrap';
     user.textContent = message;
     document.querySelector('[role=log]').append(user);
@@ -90,6 +91,7 @@ function fixture(composer: Composer): string {
     clear();
     const answer = document.createElement('div');
     answer.setAttribute('data-message-author-role', 'assistant');
+    answer.setAttribute('data-message-id', 'answer-' + crypto.randomUUID());
     answer.textContent = 'The answer.';
     document.querySelector('[role=log]').append(answer);
   };
@@ -217,8 +219,8 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
     await browser?.close();
   }, 30_000);
 
-  const adapter = (overrides: ConstructorParameters<typeof M365CopilotChatAdapter>[0] = {}) =>
-    new M365CopilotChatAdapter({
+  const adapter = (overrides: ConstructorParameters<typeof M365CopilotChatAdapter>[0] = {}) => {
+    const chat = new M365CopilotChatAdapter({
       hostnames: ["m365.example.test"],
       stabilityWindowMs: 60,
       composerStabilityMs: 60,
@@ -226,6 +228,17 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       quietStreamingGraceMs: 40,
       ...overrides
     });
+    // This fixture constructs a genuinely fresh controlled conversation. Its provenance is a
+    // test input; the real new-chat ID transition is exercised in read-conversation.test.ts.
+    const capture = chat.captureConversationMarker.bind(chat);
+    chat.captureConversationMarker = async (target) => {
+      const marker = await capture(target);
+      if (marker.turn?.conversationId === "conversation-1" && marker.userCount === 0)
+        marker.turn.emptyVerified = true;
+      return marker;
+    };
+    return chat;
+  };
   const target = () => page as unknown as PageLike;
   async function open(composer: Composer, text = ORIGINAL): Promise<PageLike> {
     await page.goto(`https://m365.example.test/chat?composer=${composer}`);
