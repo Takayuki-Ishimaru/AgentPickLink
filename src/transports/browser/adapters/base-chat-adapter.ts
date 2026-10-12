@@ -509,6 +509,16 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
         assistant: ASSISTANT_MESSAGE_SELECTORS
       })
       .catch(() => undefined);
+    // Messages may appear between the two DOM observations. Use the identity sample's counts
+    // rather than combining its new user with the earlier empty count (which suppresses text).
+    const current = turn
+      ? {
+          ...value,
+          id: turn.conversationId ?? value.id,
+          userCount: turn.messages.filter((item) => item.role === "user").length,
+          assistantCount: turn.messages.filter((item) => item.role === "assistant").length
+        }
+      : value;
     const verified = this.verifiedEmptyTurns.get(page);
     if (
       verified &&
@@ -532,11 +542,11 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
             }
           }
         : {}),
-      id: value.id,
-      userCount: value.userCount,
-      assistantCount: value.assistantCount,
-      digest: hash(JSON.stringify(value)),
-      ...(value.unreadable ? { unreadable: true as const } : {})
+      id: current.id,
+      userCount: current.userCount,
+      assistantCount: current.assistantCount,
+      digest: hash(JSON.stringify(current)),
+      ...(current.unreadable ? { unreadable: true as const } : {})
     };
   }
   async startNewConversation(page: PageLike): Promise<void> {

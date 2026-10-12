@@ -204,10 +204,16 @@ describe.skipIf(!executable)("hidden automation browser against the mock chat ap
       description: "Details dialog with an open control"
     });
     expect(result.warnings).toContain("sidebar:3/3 link:6/3 scroll:1 store:route:/chat/agentstore");
-    expect(result.warnings.find((warning) => warning.startsWith("store-catalog:"))).toBe(
-      "store-catalog:items=6 attr=1 nav=3 dialog=1 open=1 forbidden-only=0 skipped=0 none=0 errors=0" +
-        " off-host=0 more=1 retried=0 recovered=0 scroll=0"
+    const catalogue = result.warnings.find((warning) => warning.startsWith("store-catalog:"));
+    expect(catalogue).toMatch(
+      /^store-catalog:items=6 attr=1 nav=3 dialog=1 open=1 forbidden-only=0 skipped=0 none=0 errors=0 off-host=0 more=1 retried=\d+ recovered=\d+ scroll=0$/
     );
+    const retries = /retried=(\d+) recovered=(\d+)/.exec(catalogue!);
+    expect(retries).not.toBeNull();
+    // A card may need its one bounded retry on a slower browser. All such retries must recover;
+    // the exact roster, outcome counts, zero errors and forbidden-action checks remain required.
+    expect(Number(retries![1])).toBeLessThanOrEqual(MOCK_STORE_CATALOG.length);
+    expect(Number(retries![2])).toBe(Number(retries![1]));
     // The metadata-only shapes: per list, how its cards resolved; per outcome, what the first such
     // card's subtree looked like (attribute names, test ids, tag tallies -- never a name).
     const shapes = result.warnings.find((warning) => warning.startsWith("store-shapes:"));

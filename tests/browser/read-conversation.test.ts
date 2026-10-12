@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentBuilderChatAdapter } from "../../src/transports/browser/adapters/index.js";
 import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js";
 import { AttachmentSaver } from "../../src/transports/browser/attachment-saver.js";
@@ -188,6 +188,56 @@ describe.skipIf(!executable)(
       // One press in all: reading sent nothing.
       expect(await sent()).toEqual([QUESTION]);
     }, 20_000);
+
+    it.each([
+      [QUESTION, "shown", "complete"],
+      ["A different question", "differs", "none"]
+    ] as const)(
+      "reads coherently when a message appears between the count and identity observations: %s",
+      async (displayed, message, reply) => {
+        const target = await open({ drop: true });
+        const entered = enteredMessage(QUESTION);
+        await expect(
+          driver().invoke(target, conversation, agent, adapter(), {
+            message: QUESTION,
+            timeoutMs: 10_000,
+            entered
+          })
+        ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+        const inspected = adapter() as unknown as {
+          markerData: (target: PageLike) => Promise<{
+            id?: string;
+            userCount: number;
+            assistantCount: number;
+            unreadable?: true;
+          }>;
+        };
+        const markerData = inspected.markerData.bind(inspected);
+        const observation = vi.spyOn(inspected, "markerData").mockImplementationOnce(async (pageLike) => {
+          const counts = await markerData(pageLike);
+          expect(counts.userCount).toBe(0);
+          // Publish after the real count sample, before the real identity sample.
+          await page.evaluate(
+            (text) => (window as unknown as { answer: (value: string) => void }).answer(text),
+            displayed
+          );
+          return counts;
+        });
+        try {
+          const reading = await driver().read(target, conversation, agent, adapter(), {
+            entered,
+            timeoutMs: 10_000
+          });
+          expect(reading).toMatchObject({ message, reply });
+          if (reply === "complete") expect(reading.response?.text).toContain("route B");
+          else expect(reading.response).toBeUndefined();
+          expect(await sent()).toEqual([QUESTION]);
+        } finally {
+          observation.mockRestore();
+        }
+      },
+      20_000
+    );
 
     // A retained draft and absent user bubble do not prove that a press was not accepted.
     it("leaves submission unconfirmed even when the composer still holds the message, after waiting the acknowledgement time again", async () => {

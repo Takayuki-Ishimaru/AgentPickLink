@@ -159,18 +159,58 @@ describe.skipIf(!executable)("agent description discovery through a real browser
     process.platform === "win32" ? 60_000 : 15_000
   );
 
-  it.each([false, true])(
-    "bounds retries and closes the page when missing metadata recovers: %s",
-    async (recover) => {
+  it.each([
+    { recover: false, postDispatchFailure: false },
+    { recover: true, postDispatchFailure: false },
+    { recover: false, postDispatchFailure: true },
+    { recover: true, postDispatchFailure: true }
+  ])(
+    "bounds retries and closes the page when missing metadata recovers: $recover, post-dispatch failure: $postDispatchFailure",
+    async ({ recover, postDispatchFailure }) => {
       const context = await browser!.newContext();
+      let restoreLookup: (() => void) | undefined;
       try {
         const page = await context.newPage();
-        const actions: string[] = [];
-        await page.exposeFunction("recordAction", (action: string) => actions.push(action));
+        const visits = new Map<string, Array<{ actions: string[] }>>();
+        await page.exposeFunction("recordAction", (action: string, pathname: string, visit: number) => {
+          const entry = visits.get(pathname)?.[visit - 1];
+          if (!entry) throw new Error("Action outside a recorded agent visit");
+          entry.actions.push(action);
+        });
         const origin = "http://127.0.0.1:9";
         let missingVisits = 0;
+        let injected = false;
+        const getByRole = page.getByRole.bind(page);
+        const lookup = vi.spyOn(page, "getByRole").mockImplementation((role, options) => {
+          const locator = getByRole(role, options);
+          if (
+            postDispatchFailure &&
+            !injected &&
+            role === "button" &&
+            options?.name === "Requirements Agent" &&
+            new URL(page.url()).pathname === "/chat/agent/requirements"
+          ) {
+            const click = locator.click.bind(locator);
+            locator.click = async (clickOptions) => {
+              await click(clickOptions);
+              if (!injected) {
+                injected = true;
+                throw new Error("Controlled failure after the real title click was dispatched");
+              }
+            };
+          }
+          return locator;
+        });
+        restoreLookup = () => lookup.mockRestore();
         await page.route(`${origin}/**`, async (route) => {
           const pathname = new URL(route.request().url()).pathname;
+          let visit = 0;
+          if (pathname.startsWith("/chat/agent/")) {
+            const entries = visits.get(pathname) ?? [];
+            entries.push({ actions: [] });
+            visits.set(pathname, entries);
+            visit = entries.length;
+          }
           if (pathname === "/chat/agent/no-details") missingVisits++;
           const recoveredVisit = recover && pathname === "/chat/agent/no-details" && missingVisits > 1;
           const titleName = recoveredVisit ? "No Details Agent" : "Requirements Agent";
@@ -184,21 +224,22 @@ describe.skipIf(!executable)("agent description discovery through a real browser
             body = `<main>Microsoft 365 Copilot
             <button id="title">${titleName}</button>
             <textarea aria-label="Message"></textarea>
-            <button onclick="recordAction('send')">Send</button>
+            <button onclick="record('send')">Send</button>
           </main>
           <div role="dialog" aria-modal="true" aria-labelledby="missing-dialog-title" id="details" hidden>
             <div id="metadata" hidden><span id="dialog-title">${titleName}</span>
             <span class="fui-Text">Microsoft 365 Copilot エージェント ビルダーを使用して構築します</span>
             <span class="fui-Text"><p>短い説明です。</p></span></div>
             <h2>アクセス許可</h2><p>Permission prose must never become the agent description.</p>
-            <button onclick="recordAction('open')">開く</button>
-            <button onclick="recordAction('add')">追加</button>
+            <button onclick="record('open')">開く</button>
+            <button onclick="record('add')">追加</button>
             <button onclick="dismiss()">閉じる</button>
           </div><script>
+            function record(action) { recordAction(action, ${JSON.stringify(pathname)}, ${visit}); }
             const title = document.getElementById('title');
             const details = document.getElementById('details');
-            title.onclick = () => { details.hidden = false; document.getElementById('metadata').hidden = false; recordAction('details'); };
-            function dismiss() { details.hidden = true; recordAction('dismiss'); }
+            title.onclick = () => { details.hidden = false; document.getElementById('metadata').hidden = false; record('details'); };
+            function dismiss() { details.hidden = true; record('dismiss'); }
             details.onkeydown = (event) => { if (event.key === 'Escape') dismiss(); };
           </script>`;
           } else if (pathname === "/chat/agent/no-details") {
@@ -248,15 +289,33 @@ describe.skipIf(!executable)("agent description discovery through a real browser
           { displayName: "No Details Agent", description: recover ? "短い説明です。" : undefined },
           { displayName: "Requirements Agent", description: "短い説明です。" }
         ]);
-        expect(actions).toEqual(
-          recover ? ["details", "dismiss", "details", "dismiss"] : ["details", "dismiss"]
-        );
+        const missing = visits.get("/chat/agent/no-details")!;
+        const requirements = visits.get("/chat/agent/requirements")!;
+        expect(missing).toHaveLength(2);
+        expect(missing[0]!.actions).toEqual([]);
+        expect(missing[1]!.actions).toEqual(recover ? ["details", "dismiss"] : []);
+        expect(requirements.length).toBeGreaterThanOrEqual(1);
+        expect(requirements.length).toBeLessThanOrEqual(2);
+        // A real click can be dispatched before its completion reports a timeout. A subsequent
+        // optional description revisit is allowed, but never an unbounded retry or unsafe action.
+        for (const entry of [...missing, ...requirements])
+          expect([[], ["details"], ["details", "dismiss"]]).toContainEqual(entry.actions);
+        expect(requirements.at(-1)!.actions).toEqual(["details", "dismiss"]);
+        if (postDispatchFailure) {
+          expect(injected).toBe(true);
+          expect(requirements).toHaveLength(2);
+          expect(requirements[0]!.actions).toEqual(["details"]);
+        }
         expect(missingVisits).toBe(2);
-        expect(result.warnings).toContain(`description-retry:attempted=1 recovered=${Number(recover)}`);
+        const retriedRequirements = requirements.length - 1;
+        expect(result.warnings).toContain(
+          `description-retry:attempted=${1 + retriedRequirements} recovered=${Number(recover) + retriedRequirements}`
+        );
         expect(created).toBe(1);
         expect(closed).toBe(1);
         expect(page.isClosed()).toBe(true);
       } finally {
+        restoreLookup?.();
         await context.close();
       }
     },

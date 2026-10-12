@@ -241,7 +241,7 @@ describe("current M365 direct-agent landing", () => {
     const page: PageLike = {
       url: () =>
         "https://m365.example.test/chat/agent/T_agent.gpt.instance/conversation/954640f2-1fb2-46ed-9479-237ef72abb42",
-      evaluate: async () => ({ userCount: 1, assistantCount: 1 })
+      evaluate: async (fn) => (fn === captureTurnDom ? undefined : { userCount: 1, assistantCount: 1 })
     };
 
     await expect(adapter.captureConversationMarker(page)).resolves.toMatchObject({
