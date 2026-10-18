@@ -419,6 +419,8 @@ export const version = "1.101.0";
 export type MockExtensionContext = {
   subscriptions: MockDisposable[];
   extensionUri: Uri;
+  globalStorageUri: Uri;
+  globalState: { get(key: string): unknown; update(key: string, value: unknown): Promise<void> };
   extension: { packageJSON: { version: string } };
 };
 
@@ -426,9 +428,17 @@ export type MockExtensionContext = {
 export function createExtensionContext(
   options: { extensionRoot?: string; version?: string } = {}
 ): MockExtensionContext {
+  const state = new Map<string, unknown>();
   return {
     subscriptions: [],
     extensionUri: Uri.file(options.extensionRoot ?? "/tmp/apl-extension"),
+    globalStorageUri: Uri.file(path.join(options.extensionRoot ?? "/tmp/apl-extension", "global-storage")),
+    globalState: {
+      get: (key) => state.get(key),
+      update: async (key, value) => {
+        state.set(key, value);
+      }
+    },
     extension: { packageJSON: { version: options.version ?? "0.1.0" } }
   };
 }

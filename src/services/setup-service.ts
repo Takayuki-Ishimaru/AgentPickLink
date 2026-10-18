@@ -16,7 +16,7 @@ import { WorkspaceConfigSchema } from "../domain/workspace.js";
 import { slug } from "../domain/text.js";
 import type { AppPaths } from "../config/paths.js";
 import { loadRegistry, saveRegistry, updateRegistry } from "../config/registry.js";
-import { loadGlobalConfig, saveGlobalConfig } from "../config/global-config.js";
+import { loadGlobalConfig, saveGlobalConfig, updateGlobalConfig } from "../config/global-config.js";
 import { loadApprovals, saveApprovals } from "../config/approvals.js";
 import { atomicWrite } from "../config/storage.js";
 import { initializeLocalState } from "../config/init.js";
@@ -571,7 +571,7 @@ export class SetupService {
   async apply(plan: ApplyPlan, onProgress?: ProgressSink): Promise<ApplyResult> {
     await this.prepare();
 
-    const registry = await loadRegistry(this.deps.paths);
+    let registry = await loadRegistry(this.deps.paths);
     const config = await loadGlobalConfig(this.deps.paths);
     const takenAliases = new Set(registry.agents.map((agent) => agent.alias));
     const registered: ApplyResult["registered"] = [];
@@ -628,32 +628,60 @@ export class SetupService {
 
     if (total > 0 && finalAgents.length === 0) throw firstError;
 
-    const allowedCapabilityClasses = new Set(config.security.allowedCapabilityClasses);
-    if (finalAgents.some((agent) => agent.capabilityClass === "actions-possible"))
-      allowedCapabilityClasses.add("actions-possible");
-    const configCandidate: unknown = {
-      ...config,
-      security: { ...config.security, allowedCapabilityClasses: [...allowedCapabilityClasses] },
-      browser: { ...config.browser, acceptDownloads: plan.acceptDownloads ?? config.browser.acceptDownloads },
-      navigation: {
-        ...config.navigation,
-        downloadHosts: plan.downloadHosts ?? config.navigation.downloadHosts
-      }
+    const configForPlan = (current: GlobalConfig): GlobalConfig => {
+      const allowedCapabilityClasses = new Set(current.security.allowedCapabilityClasses);
+      if (finalAgents.some((agent) => agent.capabilityClass === "actions-possible"))
+        allowedCapabilityClasses.add("actions-possible");
+      const parsed = GlobalConfigSchema.safeParse({
+        ...current,
+        security: { ...current.security, allowedCapabilityClasses: [...allowedCapabilityClasses] },
+        browser: {
+          ...current.browser,
+          acceptDownloads: plan.acceptDownloads ?? current.browser.acceptDownloads
+        },
+        navigation: {
+          ...current.navigation,
+          downloadHosts: plan.downloadHosts ?? current.navigation.downloadHosts
+        }
+      });
+      if (!parsed.success)
+        throw new DomainError(
+          "INVALID_ARGUMENT",
+          parsed.error.issues[0]?.message ?? "The configuration patch is invalid."
+        );
+      return parsed.data;
     };
-    const parsedConfig = GlobalConfigSchema.safeParse(configCandidate);
-    if (!parsedConfig.success)
-      throw new DomainError(
-        "INVALID_ARGUMENT",
-        parsedConfig.error.issues[0]?.message ?? "The configuration patch is invalid."
-      );
-    const changedKeys = computeBrokerScopedConfigChanges(config, parsedConfig.data);
-    await saveGlobalConfig(this.deps.paths, parsedConfig.data);
-
+    // Validate the plan before writing either store, then merge it with current settings at save.
+    configForPlan(config);
+    let changedKeys: string[] = [];
     const byAlias = new Map(finalAgents.map((agent) => [agent.alias, agent]));
-    registry.agents = [...registry.agents.filter((agent) => !byAlias.has(agent.alias)), ...finalAgents].sort(
-      (a, b) => a.alias.localeCompare(b.alias)
-    );
-    await saveRegistry(this.deps.paths, registry);
+    const originalByAlias = new Map(registry.agents.map((agent) => [agent.alias, agent]));
+    registry = await updateRegistry(this.deps.paths, (current) => {
+      for (const agent of finalAgents) {
+        const original = originalByAlias.get(agent.alias);
+        const latest = current.agents.find((entry) => entry.alias === agent.alias);
+        if (
+          (original && !latest) ||
+          (latest &&
+            (!original ||
+              latest.verification.bindingFingerprint !== original.verification.bindingFingerprint))
+        )
+          throw new DomainError(
+            "CONCURRENT_REQUEST",
+            "Agent registrations changed in another window. Refresh the agent list and save again.",
+            true
+          );
+      }
+      current.agents = [...current.agents.filter((agent) => !byAlias.has(agent.alias)), ...finalAgents].sort(
+        (a, b) => a.alias.localeCompare(b.alias)
+      );
+      return finalAgents.length > 0;
+    });
+    const savedConfig = await updateGlobalConfig(this.deps.paths, (current) => {
+      const updated = configForPlan(current);
+      changedKeys = computeBrokerScopedConfigChanges(current, updated);
+      return updated;
+    });
 
     const root = this.deps.root();
     const workspaceFilePath = path.join(root, ".m365-agents.json");
@@ -676,7 +704,7 @@ export class SetupService {
       const approvalStore = await loadApprovals(this.deps.paths);
       const approvalService = new ApprovalService(
         approvalStore,
-        parsedConfig.data.security.allowedCapabilityClasses
+        savedConfig.security.allowedCapabilityClasses
       );
       const approval = approvalService.approve(workspace, registry.agents);
       await saveApprovals(this.deps.paths, approvalStore);
@@ -1372,7 +1400,8 @@ function resolveUniqueAlias(
   let candidate = base;
   let suffix = 2;
   while (taken.has(candidate)) {
-    candidate = `${base}-${suffix}`;
+    const ending = `-${suffix}`;
+    candidate = `${base.slice(0, 64 - ending.length)}${ending}`;
     suffix += 1;
   }
   return candidate;

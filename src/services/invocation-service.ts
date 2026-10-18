@@ -497,7 +497,10 @@ export class InvocationService {
         })
       );
       if (closing === "closed") this.deps.conversations.forget(handle);
-      else if (closing === "failed") await this.cleanupExpiredPages();
+      else if (closing === "failed") {
+        await this.cleanupExpiredPages();
+        result.conversationClosed = !this.deps.conversations.has(handle);
+      }
       return result;
     } catch (error) {
       const domain = this.recordIncident(error, "read", signal);

@@ -184,6 +184,11 @@ describe.skipIf(!executable)("composer fidelity in a real browser", () => {
   );
 
   it("propagates cancellation through the real driver and does not submit", async () => {
+    // A trackable existing turn lets this test reach typing and exercise its cancellation.
+    await page.locator('[role="log"]').evaluate((node) => {
+      node.innerHTML =
+        '<article data-message-author-role="user" data-message-id="old-user">Earlier question</article><article data-message-author-role="assistant" data-message-id="old-answer">Earlier answer</article>';
+    });
     const controller = new AbortController();
     const fingerprint = `sha256:${"a".repeat(64)}`;
     const agent: BrowserAgentDefinition = {

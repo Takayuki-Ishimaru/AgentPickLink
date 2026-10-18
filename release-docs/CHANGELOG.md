@@ -1,5 +1,56 @@
 # リリースノート
 
+## v0.2.12 Beta
+
+### 主な変更
+
+- **拡張機能の自動更新を追加しました。** 初期値はオンです。VS Code 起動時と6時間ごとに GitHub の公開リリース（ベータ版を含む）を確認し、公開された SHA-256 と一致する VSIX を自動インストールします。更新後は通知の **再読み込み** で反映してください。サイドバーの **拡張機能の更新 → 拡張機能の自動更新** で切り替えられ、変更はすぐ保存されます。オフの場合は新しい版を一度通知します。更新確認も止めるには `agentpicklink.checkForUpdates` を無効にします。以前の無効設定は保持しますが、サイドバーで自動更新をオンにすると更新確認も有効になります。機械インストールの更新は引き続き手動です。
+- **送信直前の会話確認を強化しました。** 入力中や送信直前に別の質問が追加された場合や、履歴の読み込み・再描画で会話を追跡できなくなった場合は、同じ質問を重ねて送らないよう送信を止めます。最初から追跡できない会話は `NEW_CONVERSATION_UNVERIFIED / not-sent`、送信された可能性を否定できない変化は `SUBMIT_STATE_UNKNOWN` として返します。入力欄に文面が残っていても自動再送しません。
+- **会話を読み直す際の判定を改善しました。** 回答を待つ間や取得中に対象の質問が別の文面に変わった場合は `differs`、質問との対応を確認できなくなった場合は `unconfirmed` を返し、対応を確認できない回答は返しません。
+- **複数ウィンドウでの設定保存を改善しました。** 保存中に別のウィンドウで追加されたエージェントや、今回の保存対象ではない設定を保持します。同じエイリアスの登録先が変更・削除された場合は保存を止め、一覧の更新を求めます。長い名前のエージェントでエイリアスが重複した場合の保存も修正しました。
+- **会話ページの後始末を改善しました。** 作成に失敗した会話ページを閉じられなかった場合は、次の会話作成時に再び閉じる処理を行います。回答を回収した単発会話の終了状態も、後始末の結果に合わせて返します。
+- **ポータブル版の同梱 Node.js を 24.22.0 に更新しました。**
+
+### 更新方法
+
+v0.2.11 以前からは `agent-pick-link-0.2.12.vsix` を **拡張機能: VSIX からのインストール…** で手動インストールし、VS Code を再読み込みしてください。自動更新は v0.2.12 から利用できます。自動更新を希望しない場合は、更新後にサイドバーでオフにしてください。外部 AI クライアントの MCP 接続と、機械インストールで動いているローカルプロセスも、新しい版に更新・再起動してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。既存の設定、ワークスペース承認、専用ブラウザープロファイルを引き続き利用できます。設定ファイルの手動変更は不要です。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の会話で確認してください。
+
+`SUBMIT_STATE_UNKNOWN`、`unconfirmed`、`reply: "none"` は未送信の証拠ではありません。利用できる `conversationHandle` があれば `m365_agent_session` の `action: "read"` で再送せずに確認し、確認できなければ Microsoft 365 の元の会話を確認してください。詳しくは [トラブルシューティング](TROUBLESHOOTING.md) を参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.12.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.12-win-x64.zip` / `AgentPickLink-0.2.12-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.12-darwin-arm64.tgz` / `AgentPickLink-0.2.12-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.12-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.12-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.12 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。自動検証は模擬画面と API モックを使用します。利用する環境で質問・回答・会話の確認・ファイル取得と更新設定を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Added automatic extension updates, enabled by default.** On startup and every six hours, the extension checks public GitHub releases, including betas, and installs a VSIX whose bytes match its published SHA-256 digest. Reload VS Code from the notification to apply it. The sidebar toggle saves immediately. Turning it off keeps one notification per new version. Disable `agentpicklink.checkForUpdates` to stop both checks and automatic updates. An existing opt-out is preserved; turning automatic updates on in the sidebar also enables release checks. Machine installation updates remain manual.
+- **Strengthened conversation checks immediately before sending.** A new question appearing during input, or a loss of trackable question history, stops another submission. An initially untrackable conversation returns `NEW_CONVERSATION_UNVERIFIED / not-sent`; changes that leave open the possibility of an external send return `SUBMIT_STATE_UNKNOWN`. A retained draft never triggers automatic resending.
+- **Improved reading when the question/reply association changes.** If the question changes to different text while waiting for or extracting a reply, reading returns `differs`; if its association cannot be confirmed, it returns `unconfirmed`. Neither returns an unconfirmed reply.
+- **Improved settings saves across multiple windows.** Saves preserve other agents and settings outside the current changes. A changed or removed destination for the same alias stops the save and asks you to refresh. Duplicate aliases derived from long agent names can also be saved correctly.
+- **Improved conversation cleanup.** Pages left after failed conversation creation are retried for closure on the next creation. The closed status returned after collecting a single-use conversation's reply reflects cleanup results.
+- **Updated the Node.js runtime bundled in portable archives to 24.22.0.**
+
+For the first update from v0.2.11 or earlier, manually install `agent-pick-link-0.2.12.vsix` and reload VS Code. Automatic updates start with v0.2.12; turn them off in the sidebar after installation if desired. Update and restart external clients' MCP connections and local processes used by machine installations. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, workspace approvals, and the dedicated browser profile can be reused without manually editing configuration files. Conversation handles issued before a local process restart cannot be reused; inspect existing questions in Microsoft 365.
+
+Do not treat `SUBMIT_STATE_UNKNOWN`, `unconfirmed`, or `reply: "none"` as proof that a question was not sent. Use `m365_agent_session` with `action: "read"` and a usable `conversationHandle`, or inspect the original Microsoft 365 conversation before deciding to resend. See [Troubleshooting](TROUBLESHOOTING.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.22.0.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.12. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Automated checks use mock pages and API mocks. Validate questions, replies, conversation reading, file retrieval, and update settings in your own environment. See [supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.11 Beta
 
 ### 主な変更

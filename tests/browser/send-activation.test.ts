@@ -314,6 +314,12 @@ window.busy = (busyMs, periodMs) => {
 
   it("propagates a cancellation during a covered send through the real driver: not sent, draft cleared", async () => {
     await page.locator("[contenteditable]").fill("");
+    // Keep a stable conversation tail so the driver reaches the obstructed send gate.
+    await page.locator('[role="log"]').evaluate((node) => {
+      node.setAttribute("data-conversation-id", "fixture-conversation");
+      node.innerHTML =
+        '<article data-message-author-role="user" data-message-id="old-user">Earlier question</article><article data-message-author-role="assistant" data-message-id="old-answer">Earlier answer</article>';
+    });
     const fingerprint = `sha256:${"a".repeat(64)}`;
     const agent: BrowserAgentDefinition = {
       alias: "requirements",

@@ -28,9 +28,9 @@ const tarCommand =
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 // Pinned Node.js runtime version bundled into every portable archive. Looked up from
-// https://nodejs.org/dist/latest-v24.x/ on 2026-09-13: v24.21.0 (Active LTS "Krypton", directory
-// last-modified 2026-09-08 per the server). Override per invocation with --node-version.
-const PINNED_NODE_VERSION = "24.21.0";
+// https://nodejs.org/dist/latest-v24.x/ on 2026-10-18: v24.22.0.
+// Override per invocation with --node-version.
+const PINNED_NODE_VERSION = "24.22.0";
 
 const PLATFORMS = {
   "win-x64": { nodePlatform: "win-x64", isWindows: true, outputExt: "zip" },
@@ -51,9 +51,8 @@ function usageError(message) {
 
 function hostPlatformKey() {
   const { platform, arch } = process;
-  if (platform === "darwin") return arch === "arm64" ? "darwin-arm64" : "darwin-x64";
-  if (platform === "win32") return arch === "arm64" ? "win-arm64" : "win-x64";
-  if (platform === "linux") return "linux-x64";
+  const key = `${platform === "win32" ? "win" : platform}-${arch}`;
+  if (Object.hasOwn(PLATFORMS, key)) return key;
   throw new Error(`Unsupported host platform for portable assembly: ${platform}/${arch}`);
 }
 

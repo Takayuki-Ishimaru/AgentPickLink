@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.11 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.12 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,12 +16,12 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.11
+## What's new in v0.2.12
 
-- Fixed earlier replies being returned for the current question when history loads or the page is redrawn.
-- After response extraction fails, use `action: "read"` with a usable conversation handle to inspect the conversation without resending.
-- Improved browser behavior for cancelled questions, conversation listing, and cleanup after installation failure.
-- Added reasons for unconfirmed question/reply associations to Copy diagnostics and updated dependencies.
+- Added automatic extension updates, enabled by default, checked on startup and every six hours, with a sidebar toggle.
+- Strengthened checks immediately before sending to prevent duplicate submissions when another question appears or the question history cannot be tracked.
+- Improved reading when a question/reply association changes, and cleanup of conversation pages.
+- Improved settings saves across multiple windows and updated the Node.js runtime bundled in portable archives.
 
 See the [release notes](release-docs/CHANGELOG.md) for details and update instructions.
 
@@ -40,21 +40,23 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.11.vsix` from **Releases → v0.2.11 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.12.vsix` from **Releases → v0.2.12 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.11.vsix
+code --install-extension agent-pick-link-0.2.12.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
 ### Updating from an earlier version
 
-Install the v0.2.11 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.12 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+
+Install the VSIX manually for the first update from v0.2.11 or earlier to v0.2.12. Automatic updates are available starting with v0.2.12. To opt out, turn off **Automatically update the extension** in the sidebar after updating. An existing `agentpicklink.checkForUpdates: false` setting is preserved.
 
 ## Install without the extension
 
@@ -77,11 +79,11 @@ Add `--browser` to show setup in your browser. Combine it with `--no-open` to pr
 
 For administrator details (what gets written, execution-control policy, allowlist configuration), see [Managed environments: administrator notes](release-docs/MANAGED-ENVIRONMENTS.en.md).
 
-## Update notifications
+## Automatic extension updates
 
-When VS Code starts, the extension checks the public GitHub releases and notifies you if a newer version is available, including beta releases. Each version is announced once. Open the release page from the notification, download its VSIX, and install it to update. Updates are not installed automatically.
+Automatic updates are enabled by default. On startup and every six hours, the extension checks public GitHub releases, including betas, verifies the VSIX SHA-256 digest, and installs the update. Select **Reload window** in the completion notification to apply it.
 
-Disable `agentpicklink.checkForUpdates` in VS Code settings to stop checking. If offline, normal startup continues and the extension retries on the next startup. This check does not send your questions or workspace contents.
+Toggle **Extension updates → Automatically update the extension** in the sidebar. Changes are saved immediately. When off, each new version is announced once for manual installation. Disable `agentpicklink.checkForUpdates` in VS Code settings to stop both automatic updates and notifications. If offline, normal startup continues and the next check retries. No questions or workspace contents are sent. Machine installation updates remain manual.
 
 ## Initial setup
 
@@ -143,7 +145,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](release-docs/OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](release-docs/THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.11-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.12-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -154,7 +156,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.11.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.12.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 

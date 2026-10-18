@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { AuthDetector } from "../auth-detector.js";
 import { CompletionDetector } from "../completion-detector.js";
 import { captureTurnDom } from "../conversation-dom.js";
-import { correlateTurn } from "../turn-correlation.js";
+import { correlateTurn, submissionBaselineProblem } from "../turn-correlation.js";
 import {
   composerTextMatches,
   describeComposerMismatch,
@@ -124,7 +124,9 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     this.hostnames = new Set(options.hostnames.map((h) => h.toLowerCase()));
     this.surface = options.surface;
     this.canSubmit = !options.diagnosticOnly;
-    this.extractor = new ResponseExtractor({ attachmentHosts: options.attachmentHosts });
+    this.extractor = new ResponseExtractor({
+      attachmentHosts: options.attachmentHosts
+    });
     this.composerStabilityWindowMs = options.composerStabilityMs ?? 500;
     this.typingDelayMs = options.typingDelayMs;
     this.sendClickableTimeoutMs = options.sendClickableTimeoutMs;
@@ -145,7 +147,11 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       return { matched: false, confidence: "none", reason: "unsupported host" };
     const identity = await this.detectAgentIdentity(page);
     if (identity?.surface && identity.surface !== this.surface)
-      return { matched: false, confidence: "none", reason: "unsupported surface" };
+      return {
+        matched: false,
+        confidence: "none",
+        reason: "unsupported surface"
+      };
     const composer = await this.findComposerSafe(page);
     const fingerprint = await this.captureUiFingerprint(page, !!composer, identity?.evidence.length ?? 0);
     const routeAgentId = directAgentIdFromUrl(u);
@@ -162,15 +168,28 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       ((fingerprint.hasSendButton && fingerprint.hasConversationRegion) || verifiedDirectAgentLanding)
     )
       return { matched: true, confidence: "strong" };
-    if (composer) return { matched: true, confidence: "weak", reason: "identity signal unavailable" };
-    return { matched: false, confidence: "none", reason: "chat structure not found" };
+    if (composer)
+      return {
+        matched: true,
+        confidence: "weak",
+        reason: "identity signal unavailable"
+      };
+    return {
+      matched: false,
+      confidence: "none",
+      reason: "chat structure not found"
+    };
   }
   async captureUiFingerprint(
     page: PageLike,
     hasComposer?: boolean,
     identitySignalCount?: number
   ): Promise<UiFingerprint> {
-    let structure = { hasMainRegion: false, hasSendButton: false, hasConversationRegion: false };
+    let structure = {
+      hasMainRegion: false,
+      hasSendButton: false,
+      hasConversationRegion: false
+    };
     try {
       if (page.evaluate)
         structure = await page.evaluate(
@@ -451,7 +470,12 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     const displayName =
       routeAgentId && rawDisplayName && isGenericCopilotName(rawDisplayName) ? undefined : rawDisplayName;
     const stableAgentId = typeof raw.stableAgentId === "string" ? raw.stableAgentId.trim() : undefined;
-    const digest = identityDigest({ adapterId: this.id, surface: this.surface, displayName, stableAgentId });
+    const digest = identityDigest({
+      adapterId: this.id,
+      surface: this.surface,
+      displayName,
+      stableAgentId
+    });
     const evidence = Array.isArray(raw.evidence)
       ? raw.evidence.filter(
           (item): item is string => typeof item === "string" && (item !== "visible-name" || !!displayName)
@@ -549,6 +573,16 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       ...(current.unreadable ? { unreadable: true as const } : {})
     };
   }
+  assertSubmissionBaseline(marker: ConversationMarker | undefined): void {
+    const reason = marker?.unreadable ? "unreadable-baseline" : submissionBaselineProblem(marker?.turn);
+    if (reason)
+      throw new BrowserTransportError(
+        "NEW_CONVERSATION_UNVERIFIED",
+        `The conversation cannot identify a new question reliably (${reason}). No message was sent.`,
+        "Open a new conversation with a verifiable conversation ID and stable message identifiers.",
+        { submissionState: "not-sent" }
+      );
+  }
   async startNewConversation(page: PageLike): Promise<void> {
     const button = page.getByRole?.("button", {
       name: combinedPattern([...JA_TEXT.newChat, ...EN_TEXT.newChat])
@@ -592,7 +626,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
       (before.userCount > 0 || before.assistantCount > 0)
     )
       return { verified: true };
-    return { verified: false, reason: "fresh conversation postcondition was not observable" };
+    return {
+      verified: false,
+      reason: "fresh conversation postcondition was not observable"
+    };
   }
   async captureSubmissionMarker(page: PageLike, verifiedIdentityDigest?: string): Promise<SubmissionMarker> {
     const marker = await this.captureConversationMarker(page);
@@ -660,7 +697,11 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
             const timeout = signal
               ? Math.min(1_000, Math.max(1, typingDeadline - Date.now()))
               : typingTimeoutMs;
-            if (piece !== "\n") await composer.pressSequentially(piece, { delay: delays[attempt], timeout });
+            if (piece !== "\n")
+              await composer.pressSequentially(piece, {
+                delay: delays[attempt],
+                timeout
+              });
             else {
               await composer.press("Shift+Enter", { timeout });
               // A composer that sends on Shift+Enter as well empties itself: stop at the first send.
@@ -768,7 +809,20 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
           press: {
             composer: () => this.findComposer(page),
             verify: () => guard.verifyBeforePress(),
-            check: { ...PRESS_CONTEXT_SCOPE, message: guard.message, context: guard.marker.pressContext }
+            check: {
+              ...PRESS_CONTEXT_SCOPE,
+              message: guard.message,
+              context: guard.marker.pressContext,
+              ...(guard.marker.turn && {
+                turn: {
+                  before: guard.marker.turn,
+                  selectors: {
+                    user: USER_MESSAGE_SELECTORS,
+                    assistant: ASSISTANT_MESSAGE_SELECTORS
+                  }
+                }
+              })
+            }
           }
         })
       });
@@ -789,7 +843,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       if (signal?.aborted)
-        return { state: "unknown", reason: "cancelled while waiting for submission acknowledgement" };
+        return {
+          state: "unknown",
+          reason: "cancelled while waiting for submission acknowledgement"
+        };
       const now = await this.captureConversationMarker(page);
       const correlation = correlateTurn(marker.turn, now.turn);
       if (correlation.confirmed) {
@@ -815,7 +872,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     // composer, only later. A composer that still shows the text proves nothing either. Whether a
     // press can have submitted is settled before and during the press (activateSendControl); from
     // here on the outcome is "sent" or "unknown", and neither is ever retried.
-    return { state: "unknown", reason: "acknowledgement timeout after the send control was activated" };
+    return {
+      state: "unknown",
+      reason: "acknowledgement timeout after the send control was activated"
+    };
   }
   async waitForResponseStart(
     page: PageLike,
@@ -881,7 +941,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
               (user.compareDocumentPosition(assistant) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
             );
           },
-          { user: USER_MESSAGE_SELECTORS, assistant: ASSISTANT_MESSAGE_SELECTORS }
+          {
+            user: USER_MESSAGE_SELECTORS,
+            assistant: ASSISTANT_MESSAGE_SELECTORS
+          }
         );
     } catch {
       /* unreadable: no reply recognised */
@@ -907,9 +970,12 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
   async extractLatestResponse(page: PageLike, marker: ResponseMarker): Promise<ExtractedResponse> {
     return this.extractor.extract(page, marker, this.surface);
   }
-  protected async markerData(
-    page: PageLike
-  ): Promise<{ id?: string; userCount: number; assistantCount: number; unreadable?: true }> {
+  protected async markerData(page: PageLike): Promise<{
+    id?: string;
+    userCount: number;
+    assistantCount: number;
+    unreadable?: true;
+  }> {
     try {
       if (page.evaluate) {
         const marker = await page.evaluate<{
@@ -937,7 +1003,10 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
             conversation: CONVERSATION_ID_SELECTOR
           }
         );
-        return { ...marker, id: marker.id ?? conversationIdFromUrl(page.url()) };
+        return {
+          ...marker,
+          id: marker.id ?? conversationIdFromUrl(page.url())
+        };
       }
     } catch {
       /* fallback */
@@ -1159,7 +1228,9 @@ function composerChangedError(
     whitespace: {
       message: `${subject} changed spaces, tabs or line breaks within the message. The message was not sent.`
     },
-    characters: { message: `${subject} did not retain the exact requested message.` }
+    characters: {
+      message: `${subject} did not retain the exact requested message.`
+    }
   };
   return new BrowserTransportError("UI_CHANGED", explained[kind].message, explained[kind].remediation, {
     submissionState: "not-sent",

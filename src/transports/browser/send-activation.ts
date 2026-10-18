@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { captureTurnDom } from "./conversation-dom.js";
+import { submissionContinuityProblem, type TurnSnapshot } from "./turn-correlation.js";
 import { composerTextMatches, normalizeComposerText, readDomPlainText } from "./composer-text.js";
 import { BrowserTransportError, type LocatorLike, type PageLike } from "./types.js";
 
@@ -51,10 +53,17 @@ export function cancelledBeforeSubmission(): BrowserTransportError {
 
 /** What changed after the message and its recipient were verified: the composer, or the page
  * context that names the agent and the conversation. */
-export type SendPressChange = "composer" | "context";
+export type SendPressChange = "composer" | "context" | "turn";
 
-/** The not-sent failure for a press that was refused because something it depends on changed. */
+/** A refused press: changed turn anchors preserve uncertainty about an external submission. */
 export function changedBeforePress(change: SendPressChange): BrowserTransportError {
+  if (change === "turn")
+    return new BrowserTransportError(
+      "SUBMIT_STATE_UNKNOWN",
+      "The conversation's question anchors changed before the send control was pressed. The message may have been sent another way and was not sent again.",
+      undefined,
+      { submissionState: "unknown" }
+    );
   return change === "composer"
     ? new BrowserTransportError(
         "UI_CHANGED",
@@ -101,6 +110,11 @@ export type SendPressCheck = SendPressContextScope & {
   /** The page context when the message was verified (capturePressContext). Without it, the context
    * when the gate was armed is the reference. */
   context?: string;
+  /** The verified pre-send turn, checked again synchronously at the trusted press. */
+  turn?: {
+    before: TurnSnapshot;
+    selectors: { user: string; assistant: string };
+  };
 };
 
 export type SendActivationOptions = {
@@ -241,7 +255,10 @@ async function waitUntilClickable(
     if (signal?.aborted) throw cancelledBeforeSubmission();
     let failure: unknown;
     try {
-      await click({ trial: true, timeout: Math.max(1, Math.min(slice, deadline - Date.now())) });
+      await click({
+        trial: true,
+        timeout: Math.max(1, Math.min(slice, deadline - Date.now()))
+      });
       return;
     } catch (error) {
       failure = error;
@@ -267,7 +284,11 @@ async function waitUntilClickable(
 }
 
 /** Presses the gate let through and swallowed, and the change that closed it, if one did. */
-type SendGateRecord = { passed: number; blocked: number; change?: SendPressChange };
+type SendGateRecord = {
+  passed: number;
+  blocked: number;
+  change?: SendPressChange;
+};
 type SendGateArming = { armed: true } | { armed: false; change: SendPressChange };
 type SendGateArgs = {
   key: string;
@@ -279,10 +300,17 @@ type SendGateArgs = {
 type SendGateText = {
   read(element: Element): string | undefined;
   matches(observed: string, requested: string): boolean;
+  turnProblem?(before: TurnSnapshot, selectors: { user: string; assistant: string }): string | undefined;
 };
 
 function gateArgs(key: string, op: SendGateArgs["op"], press?: SendPressCheck): SendGateArgs {
-  return { key, op, events: SEND_GATE_EVENTS, expiryMs: SEND_GATE_EXPIRY_MS, ...(press ? { press } : {}) };
+  return {
+    key,
+    op,
+    events: SEND_GATE_EVENTS,
+    expiryMs: SEND_GATE_EXPIRY_MS,
+    ...(press ? { press } : {})
+  };
 }
 
 /** Arms the gate on the composer the adapter finds, so the gate watches exactly the element that was
@@ -337,19 +365,23 @@ function asGateRecord(value: unknown): SendGateRecord | undefined {
   if (!value || typeof value !== "object") return undefined;
   const { passed, blocked, change } = value as Record<string, unknown>;
   if (typeof passed !== "number" || typeof blocked !== "number") return undefined;
-  return change === "composer" || change === "context" ? { passed, blocked, change } : { passed, blocked };
+  return change === "composer" || change === "context" || change === "turn"
+    ? { passed, blocked, change }
+    : { passed, blocked };
 }
 
 function asGateArming(value: unknown): SendGateArming | undefined {
   if (!value || typeof value !== "object") return undefined;
   const { armed, change } = value as Record<string, unknown>;
   if (armed === true) return { armed: true };
-  return change === "composer" || change === "context" ? { armed: false, change } : undefined;
+  return change === "composer" || change === "context" || change === "turn"
+    ? { armed: false, change }
+    : undefined;
 }
 
 /** sendGateScript run on the composer element, with the composer reader and comparison of the
- * broker's own verification (composer-text.ts), so the gate judges the composer exactly as the
- * verification did. Page code cannot import: the three sources are composed into the one function
+ * broker's own verification, plus its turn continuity check. Page code cannot import: these
+ * self-contained sources are composed into the one function
  * text Playwright sends to the page, where it is compiled like any page function. Nothing is
  * compiled in the broker; calling this function here only throws. */
 const sendGateOnComposer = Object.assign(
@@ -363,7 +395,9 @@ const sendGateOnComposer = Object.assign(
         `const normalizeComposerText = ${normalizeComposerText.toString()};`,
         `const composerTextMatches = ${composerTextMatches.toString()};`,
         `const readDomPlainText = ${readDomPlainText.toString()};`,
-        `return (${sendGateScript.toString()})(args, composer, { read: readDomPlainText, matches: composerTextMatches });`,
+        `const captureTurnDom = ${captureTurnDom.toString()};`,
+        `const submissionContinuityProblem = ${submissionContinuityProblem.toString()};`,
+        `return (${sendGateScript.toString()})(args, composer, { read: readDomPlainText, matches: composerTextMatches, turnProblem: (before, selectors) => submissionContinuityProblem(before, captureTurnDom(selectors)) });`,
         "}"
       ].join("\n")
   }
@@ -392,7 +426,12 @@ export function sendGateScript(
   composer?: Element,
   text?: SendGateText
 ): SendGateRecord | SendGateArming | string | boolean {
-  type Gate = { record: SendGateRecord; closed: boolean; pressing: boolean; remove: () => void };
+  type Gate = {
+    record: SendGateRecord;
+    closed: boolean;
+    pressing: boolean;
+    remove: () => void;
+  };
   const host = window as unknown as Record<symbol, Map<string, Gate> | Set<string> | undefined>;
   const gates = (host[Symbol.for("agentpicklink.send-gate")] ??= new Map<string, Gate>()) as Map<
     string,
@@ -446,8 +485,17 @@ export function sendGateScript(
           if (found.length !== 1) return "composer";
           current = found[0]!;
         }
-        if (!text.matches(text.read(current) ?? "", press.message)) return "composer";
-        return contextOf(current) === reference ? undefined : "context";
+        if (contextOf(current) !== reference) return "context";
+        // A retained composer is not evidence that nothing was sent. Check message-owned anchors
+        // before its text so an external send that also clears the draft remains unknown.
+        if (press.turn) {
+          try {
+            if (!text.turnProblem || text.turnProblem(press.turn.before, press.turn.selectors)) return "turn";
+          } catch {
+            return "turn";
+          }
+        }
+        return text.matches(text.read(current) ?? "", press.message) ? undefined : "composer";
       };
       const change = judge();
       if (change) return { armed: false, change };
@@ -483,7 +531,10 @@ export function sendGateScript(
       gate.record.blocked++;
     };
     for (const type of args.events)
-      window.addEventListener(type, listener, { capture: true, passive: false });
+      window.addEventListener(type, listener, {
+        capture: true,
+        passive: false
+      });
     const expiry = setTimeout(() => gate.remove(), args.expiryMs);
     gate.remove = () => {
       clearTimeout(expiry);

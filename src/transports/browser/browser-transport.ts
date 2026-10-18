@@ -153,6 +153,8 @@ export class BrowserTransport implements InteractiveAgentTransport {
     subscribers: Set<ProgressSink>;
   };
   private readonly crashHandlers = new Set<(event: BrowserInvalidationEvent) => void>();
+  /** Failed creation has no public handle; retain its page until a later close succeeds. */
+  private readonly pendingCreationCloses = new Map<string, PageLike>();
   /** authHosts minus appHosts: a host that serves the application itself must never be treated as
    * a sign-in host, or AuthDetector would report every page as interactive-auth. */
   private readonly signInHosts: string[];
@@ -176,6 +178,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
     const invalidate = (reason: "crash" | "reset") => {
       if (this.active.size) this.contextInvalidated = true;
       this.active.clear();
+      this.pendingCreationCloses.clear();
       this.correlations.clear();
       for (const handler of this.crashHandlers) handler({ reason });
     };
@@ -340,6 +343,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
       const pageKey = `page_${context.workspaceKey}_${context.conversationHandle}`
         .replace(/[^A-Za-z0-9_.:-]/g, "_")
         .slice(0, 160);
+      await this.cleanupFailedCreations();
       const pageHandle = await this.manager.createConversationPage(pageKey);
       diagnosticPage = pageHandle.page;
       const navigationDeadline = Date.now() + this.navigationTimeoutMs;
@@ -395,7 +399,11 @@ export class BrowserTransport implements InteractiveAgentTransport {
       } catch (error) {
         // Capture the failing UI while the page is still alive; cleanup destroys its DOM.
         await this.attachFingerprint(error, pageHandle.page, adapter);
-        await this.manager.closePage(pageKey).catch(() => undefined);
+        try {
+          await this.manager.closePage(pageKey, pageHandle.page);
+        } catch {
+          this.pendingCreationCloses.set(pageKey, pageHandle.page);
+        }
         throw error;
       } finally {
         stopWatching?.();
@@ -498,6 +506,19 @@ export class BrowserTransport implements InteractiveAgentTransport {
     } catch {
       /* best effort only */
     }
+  }
+
+  private async cleanupFailedCreations(): Promise<void> {
+    await Promise.all(
+      [...this.pendingCreationCloses].map(async ([key, page]) => {
+        try {
+          await this.manager.closePage(key, page);
+          if (this.pendingCreationCloses.get(key) === page) this.pendingCreationCloses.delete(key);
+        } catch {
+          // Keep ownership and the manager's page limit until a later attempt can close it.
+        }
+      })
+    );
   }
 
   async closeConversation(conversation: TransportConversation): Promise<void> {
@@ -772,6 +793,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
     try {
       this.active.clear();
       await this.manager.resetProfile();
+      this.pendingCreationCloses.clear();
     } catch (error) {
       throw mapTransportError(error);
     }
@@ -782,6 +804,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
     this.discovery.clearDescriptionCache();
     this.active.clear();
     await this.manager.dispose();
+    this.pendingCreationCloses.clear();
   }
 
   private submittingAdapter(id: string): ChatUiAdapter | undefined {

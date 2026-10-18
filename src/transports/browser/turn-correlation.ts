@@ -18,16 +18,8 @@ export type TurnCorrelation = {
   responseKey?: string;
 };
 
-/** Counts alone cannot distinguish appended questions from prepended history. Resolve a new
- * user after the pre-send tail, or retain the already-confirmed user while old nodes virtualize. */
-export function correlateTurn(
-  before: TurnSnapshot | undefined,
-  current: TurnSnapshot | undefined,
-  confirmedUserKey?: string
-): TurnCorrelation {
-  const unknown = (reason: string): TurnCorrelation => ({ confirmed: false, reason });
-  if (!before || !current) return unknown("missing-baseline");
-  const valid = (snapshot: TurnSnapshot) =>
+function validSnapshot(snapshot: TurnSnapshot): boolean {
+  return !!(
     snapshot.documentId &&
     Array.isArray(snapshot.messages) &&
     snapshot.messages.every(
@@ -37,8 +29,69 @@ export function correlateTurn(
         item.key &&
         (item.role === "user" || item.role === "assistant")
     ) &&
+    new Set(snapshot.messages.map((item) => item.key)).size === snapshot.messages.length
+  );
+}
+
+/** Refuse a send whose baseline cannot identify any future appended question. */
+export function submissionBaselineProblem(before: TurnSnapshot | undefined): string | undefined {
+  if (!before) return "missing-baseline";
+  if (!validSnapshot(before)) return "ambiguous-anchors";
+  if (!before.messages.some((item) => item.role === "user"))
+    return before.emptyVerified && before.conversationId ? undefined : "empty-baseline-unverified";
+  return before.messages.at(-1)?.stable === true ? undefined : "unstable-message-identity";
+}
+
+/** A retained stable tail proves that no new question arrived, even when history virtualizes.
+ * Self-contained so the same check can run inside the page's trusted press gate. */
+export function submissionContinuityProblem(
+  before: TurnSnapshot | undefined,
+  current: TurnSnapshot | undefined
+): string | undefined {
+  const valid = (snapshot: TurnSnapshot): boolean =>
+    !!snapshot.documentId &&
+    Array.isArray(snapshot.messages) &&
+    snapshot.messages.every(
+      (item) =>
+        item &&
+        typeof item.key === "string" &&
+        !!item.key &&
+        (item.role === "user" || item.role === "assistant")
+    ) &&
     new Set(snapshot.messages.map((item) => item.key)).size === snapshot.messages.length;
-  if (!valid(before) || !valid(current)) return unknown("ambiguous-anchors");
+  if (!before || !current) return "missing-baseline";
+  if (!valid(before) || !valid(current)) return "ambiguous-anchors";
+  if (
+    before.documentId !== current.documentId ||
+    (before.conversationId && before.conversationId !== current.conversationId)
+  )
+    return "document-changed";
+  if (!before.messages.some((item) => item.role === "user")) {
+    if (!before.emptyVerified || !before.conversationId) return "empty-baseline-unverified";
+    return current.messages.some((item) => item.role === "user") ? "new-user-before-press" : undefined;
+  }
+  const tail = before.messages.at(-1)!;
+  if (tail.stable !== true) return "unstable-message-identity";
+  const index = current.messages.findIndex(
+    (item) => item.key === tail.key && item.role === tail.role && item.stable === true
+  );
+  if (index < 0) return "baseline-tail-missing";
+  const after = current.messages.slice(index + 1);
+  const previous = new Set(before.messages.map((item) => item.key));
+  if (after.some((item) => previous.has(item.key))) return "baseline-reordered";
+  return after.some((item) => item.role === "user") ? "new-user-before-press" : undefined;
+}
+
+/** Counts alone cannot distinguish appended questions from prepended history. Resolve a new
+ * user after the pre-send tail, or retain the already-confirmed user while old nodes virtualize. */
+export function correlateTurn(
+  before: TurnSnapshot | undefined,
+  current: TurnSnapshot | undefined,
+  confirmedUserKey?: string
+): TurnCorrelation {
+  const unknown = (reason: string): TurnCorrelation => ({ confirmed: false, reason });
+  if (!before || !current) return unknown("missing-baseline");
+  if (!validSnapshot(before) || !validSnapshot(current)) return unknown("ambiguous-anchors");
   if (before.documentId !== current.documentId) return unknown("document-changed");
   if (before.conversationId && before.conversationId !== current.conversationId)
     return unknown("document-changed");

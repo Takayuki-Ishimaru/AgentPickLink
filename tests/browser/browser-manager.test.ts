@@ -421,6 +421,42 @@ describe("BrowserManager", () => {
     await manager.close();
   });
 
+  it("does not let a stale cleanup close a replacement page with the same key", async () => {
+    const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-profile-"));
+    const closed: PageLike[] = [];
+    const manager = new BrowserManager({
+      profilePath,
+      launcher: {
+        launchPersistentContext: async () => ({
+          pages: () => [],
+          newPage: async () => {
+            const page: PageLike = {
+              url: () => "about:blank",
+              close: async () => {
+                closed.push(page);
+              }
+            };
+            return page;
+          },
+          close: async () => undefined,
+          on: () => undefined
+        })
+      }
+    });
+    try {
+      const old = await manager.createConversationPage("same");
+      await manager.closePage("same", old.page);
+      const replacement = await manager.createConversationPage("same");
+      await manager.closePage("same", old.page);
+      expect(closed).toEqual([old.page]);
+      expect((await manager.createConversationPage("same")).page).toBe(replacement.page);
+      await manager.closePage("same", replacement.page);
+      expect(closed).toEqual([old.page, replacement.page]);
+    } finally {
+      await manager.close();
+    }
+  });
+
   it("keeps a failed close in the budget and allows a later close retry", async () => {
     const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-profile-"));
     let attempts = 0;

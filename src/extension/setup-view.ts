@@ -64,6 +64,8 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   private view?: vscode.WebviewView;
   private readonly controller: SetupController;
+  private readonly configurationChanged: vscode.Disposable;
+  private preferenceSave: Promise<void> = Promise.resolve();
   private readonly statusEmitter = new vscode.EventEmitter<{ kind: StatusKind; devMode: boolean }>();
   readonly onDidChangeStatus = this.statusEmitter.event;
   private readonly visibilityChanged = new vscode.EventEmitter<boolean>();
@@ -78,6 +80,13 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     createService: (runtime: ExtensionRuntime) => SetupServiceLike = defaultCreateSetupService
   ) {
     this.controller = new SetupController(this, () => createService(runtime));
+    this.configurationChanged = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration("agentpicklink.autoUpdate") ||
+        event.affectsConfiguration("agentpicklink.checkForUpdates")
+      )
+        this.controller.postState();
+    });
   }
 
   get visible(): boolean {
@@ -134,6 +143,8 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   /** Panel -> host. Every case is a plain delegation: the decisions are the controller's. */
   private async handle(message: WebviewMessage): Promise<void> {
     switch (message.type) {
+      case "setAutoUpdate":
+        return this.saveAutoUpdate(message.enabled);
       case "installMachine":
         return this.installMachine();
       case "ready":
@@ -169,6 +180,28 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
   }
 
+  private saveAutoUpdate(enabled: boolean): Promise<void> {
+    // Persist rapid clicks in order so the user's last selection wins.
+    this.preferenceSave = this.preferenceSave.then(async () => {
+      try {
+        const config = this.runtime.configuration();
+        // Turning this on explicitly also re-enables an older opt-out of release checks.
+        if (enabled) await config.update("checkForUpdates", true, vscode.ConfigurationTarget.Global);
+        await config.update("autoUpdate", enabled, vscode.ConfigurationTarget.Global);
+      } catch {
+        this.notify(
+          "warning",
+          this.locale === "ja"
+            ? "自動更新の設定を保存できませんでした。VS Code のユーザー設定を確認してください。"
+            : "Could not save automatic updates. Check your VS Code user settings."
+        );
+      } finally {
+        this.controller.postState();
+      }
+    });
+    return this.preferenceSave;
+  }
+
   async installMachine(): Promise<void> {
     const terminal = await openMachineInstallTerminal(this.runtime);
     const subscription = vscode.window.onDidCloseTerminal((closed) => {
@@ -198,7 +231,15 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   post(message: HostMessage): void {
     void this.view?.webview.postMessage({
       ...message,
-      state: { ...message.state, machineInstall: this.runtime.machineInstallOffer() }
+      state: {
+        ...message.state,
+        machineInstall: this.runtime.machineInstallOffer(),
+        extensionUpdates: {
+          autoUpdate:
+            this.runtime.configuration().get<boolean>("autoUpdate", true) &&
+            this.runtime.configuration().get<boolean>("checkForUpdates", true)
+        }
+      }
     });
   }
 
@@ -363,6 +404,7 @@ export class SetupViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   dispose(): void {
+    this.configurationChanged.dispose();
     this.controller.dispose();
     this.statusEmitter.dispose();
     this.visibilityChanged.dispose();

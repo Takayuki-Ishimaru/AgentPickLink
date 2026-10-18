@@ -43,6 +43,60 @@ const agent: BrowserAgentDefinition = {
 };
 
 describe("conversation submission guard", () => {
+  it.each(["during-wait", "during-extraction"])(
+    "never returns another question's partial answer when the question changes %s",
+    async (phase) => {
+      let changed = false;
+      const turn = turnFixture(1);
+      const extract = vi.fn(async () => {
+        changed = true;
+        return { text: "another question's answer", citations: [], actionRequired: false, truncated: false };
+      });
+      const adapter = fixtureAdapter({
+        captureSubmissionMarker: async () => ({
+          userCount: 0,
+          assistantCount: 0,
+          turn: turnFixture(0),
+          url: "https://m365.example.test/chat",
+          identityDigest: "expected",
+          composerValue: "hello",
+          capturedAt: 0
+        }),
+        captureExchange: async () => ({
+          userCount: 1,
+          assistantCount: 1,
+          replyStarted: true,
+          turn,
+          latestUserText: changed ? "different question" : "hello"
+        }),
+        waitForResponseStart: async () => ({
+          assistantCount: 1,
+          turn: {
+            documentId: turn.documentId,
+            conversationId: turn.conversationId,
+            userKey: "user-0",
+            responseKey: "assistant-0"
+          }
+        }),
+        waitForResponseComplete: async () => {
+          changed = phase === "during-wait";
+          return { complete: false, timedOut: true };
+        },
+        extractLatestResponse: extract
+      });
+      const page: PageLike = { url: () => "https://m365.example.test/chat", on: () => {}, off: () => {} };
+      const driver = new ConversationDriver(
+        new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
+        undefined,
+        { attachmentSettleMs: 0 }
+      );
+      await expect(
+        driver.invoke(page, conversation(), agent, adapter, { message: "hello" })
+      ).rejects.toMatchObject({ code: "RESPONSE_EXTRACTION_FAILED", details: { submissionState: "sent" } });
+      expect(extract).toHaveBeenCalledTimes(phase === "during-wait" ? 0 : 1);
+    }
+  );
+
   it("clears and refuses a composer that changed between fill verification and capture", async () => {
     const clearComposer = vi.fn(async () => {});
     const submitComposer = vi.fn(async () => {});
@@ -806,6 +860,78 @@ describe("the check before the press and the submission state of failures", () =
     });
     expect(record).toEqual({ presses: 0, cleared: 0 });
   });
+
+  it.each(["after-fill", "before-press"])(
+    "refuses a virtualized external send with a retained composer %s",
+    async (phase) => {
+      const record = { presses: 0, cleared: 0 };
+      const before = turnFixture(2);
+      const changed = turnFixture(1);
+      changed.messages = changed.messages.map((item) => ({ ...item, key: `external-${item.key}` }));
+      let captures = 0;
+      const adapter = pressing(
+        {
+          captureConversationMarker: async () => ({ userCount: 2, assistantCount: 2, turn: before }),
+          captureSubmissionMarker: async () => {
+            const advanced = phase === "after-fill" || captures++ > 0;
+            return {
+              userCount: advanced ? 1 : 2,
+              assistantCount: advanced ? 1 : 2,
+              turn: advanced ? changed : before,
+              url: app,
+              identityDigest: "expected",
+              composerValue: "hello",
+              capturedAt: Date.now()
+            };
+          }
+        },
+        record
+      );
+      await expect(
+        driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", details: { submissionState: "unknown" } });
+      expect(record).toEqual({ presses: 0, cleared: 0 });
+    }
+  );
+
+  it.each(["hello", ""])(
+    "keeps a positively different conversation not-sent even with an incomparable user count (draft=%s)",
+    async (draft) => {
+      const record = { presses: 0, cleared: 0 };
+      const before = turnFixture(1);
+      const switched = { ...turnFixture(3), conversationId: "different-conversation" };
+      let advanced = false;
+      const adapter = pressing(
+        {
+          captureConversationMarker: async () => ({
+            userCount: advanced ? 3 : 1,
+            assistantCount: 1,
+            turn: advanced ? switched : before
+          }),
+          captureSubmissionMarker: async () => ({
+            userCount: advanced ? 3 : 1,
+            assistantCount: 1,
+            turn: advanced ? switched : before,
+            url: app,
+            identityDigest: "expected",
+            composerValue: advanced ? draft : "hello",
+            capturedAt: 0
+          }),
+          submitComposer: async (_page, _signal, guard) => {
+            advanced = true;
+            await guard!.verifyBeforePress();
+            record.presses++;
+          }
+        },
+        record,
+        draft
+      );
+      await expect(
+        driver().invoke(plainPage(), conversation(), agent, adapter, { message: "hello" })
+      ).rejects.toMatchObject({ code: "AGENT_CONTEXT_CHANGED", details: { submissionState: "not-sent" } });
+      expect(record).toEqual({ presses: 0, cleared: 1 });
+    }
+  );
 
   // Independent re-review: the composer emptied because the message went out another way, with the
   // user bubble rendered only later, was still reported not-sent.
@@ -1597,6 +1723,28 @@ describe("reading a conversation without sending anything (v0.2.8 review 2026-10
       throw new Error("read must not press send");
     }
   };
+
+  it.each([false, true])(
+    "preserves differs after the initially shown question changes (reply started=%s)",
+    async (replyStarted) => {
+      const capture = exchanges(
+        { userCount: 1, latestUserText: "the question", replyStarted },
+        { userCount: 1, latestUserText: "a different question", replyStarted }
+      );
+      await expect(
+        driver().read(
+          page,
+          conversation(),
+          agent,
+          fixtureAdapter({
+            ...sendsNothing,
+            captureExchange: capture
+          }),
+          { entered: entry("sent", 0) }
+        )
+      ).resolves.toEqual({ message: "differs", reply: "none" });
+    }
+  );
 
   it("reports nothing to read when no message was entered in the conversation", async () => {
     const capture = exchanges({});

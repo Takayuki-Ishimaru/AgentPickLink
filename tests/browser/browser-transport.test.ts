@@ -232,6 +232,39 @@ describe("BrowserTransport conversation creation", () => {
     await transport.dispose();
   });
 
+  it("retries failed creation cleanup before allocating another page", async () => {
+    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+    const adapter = fixtureAdapter(events, false);
+    const transport = await makeTransport(adapter, undefined, undefined, undefined, undefined, undefined, 1);
+    const manager = (transport as unknown as { manager: BrowserManager }).manager;
+    const closePage = manager.closePage.bind(manager);
+    let closes = 0;
+    manager.closePage = async (...args) => {
+      if (++closes <= 2) throw new Error("transient close failure");
+      await closePage(...args);
+    };
+    try {
+      await expect(
+        transport.createConversation(agent, { workspaceKey: "workspace", conversationHandle: "conv_failed" })
+      ).rejects.toMatchObject({ code: "NEW_CONVERSATION_UNVERIFIED" });
+      adapter.verifyNewConversation = async () => ({ verified: true });
+      await expect(
+        transport.createConversation(agent, { workspaceKey: "workspace", conversationHandle: "conv_blocked" })
+      ).rejects.toMatchObject({ code: "CONCURRENT_REQUEST" });
+      await expect(
+        transport.createConversation(agent, {
+          workspaceKey: "workspace",
+          conversationHandle: "conv_recovered"
+        })
+      ).resolves.toMatchObject({ transportId: "browser" });
+      expect(closes).toBe(3);
+      expect(events.filled).toBe(0);
+      expect(events.submitted).toBe(0);
+    } finally {
+      await transport.dispose();
+    }
+  });
+
   it("reports safe observed identity details when verification fails", async () => {
     const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
     const adapter = fixtureAdapter(events, true, true);
@@ -1039,7 +1072,8 @@ async function makeTransport(
   navigate?: (target: string) => string,
   selectAgent?: (agentId: string) => string,
   transitionAfterWait?: string,
-  navigationTimeoutMs?: number
+  navigationTimeoutMs?: number,
+  maxPages?: number
 ): Promise<BrowserTransport> {
   const profilePath = path.join(await mkdtemp(path.join(os.tmpdir(), "apl-browser-")), "profile");
   let currentUrl = url;
@@ -1080,12 +1114,22 @@ async function makeTransport(
   };
   const context: BrowserContextLike = {
     pages: () => [],
-    newPage: async () => page,
+    newPage: async () => {
+      let pageClosed = false;
+      return {
+        ...page,
+        isClosed: () => pageClosed,
+        close: async () => {
+          pageClosed = true;
+        }
+      };
+    },
     close: async () => undefined,
     on: () => undefined
   };
   const manager = new BrowserManager({
     profilePath,
+    maxPages,
     launcher: { launchPersistentContext: async () => context }
   });
   return new BrowserTransport({

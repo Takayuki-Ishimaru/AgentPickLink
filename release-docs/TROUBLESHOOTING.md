@@ -28,6 +28,20 @@
 
 質問を送った後で接続が切れた場合、AgentPickLink はその質問を自動再送しません。復旧後の再送は、元の会話と処理結果を確認してから行ってください。
 
+## 自動更新が反映されない・設定を保存できない場合
+
+拡張機能の自動更新は v0.2.12 から利用できます。v0.2.11 以前からは、まず v0.2.12 の VSIX を手動でインストールしてください。以降は、サイドバーの **拡張機能の自動更新** と VS Code の `agentpicklink.checkForUpdates` が有効か確認します。更新のインストール後は VS Code の再読み込みが必要です。オフラインや取得・検証・インストールの失敗時は、次の確認時に再試行します。すぐ更新する場合は Releases から VSIX を取得して手動でインストールできます。
+
+複数ウィンドウでセットアップを保存して `CONCURRENT_REQUEST` が返る場合は、別のウィンドウでエージェントの登録が変更されています。一覧を更新し、対象を選び直して保存してください。
+
+## 会話を確認できず送信を止めた場合
+
+`NEW_CONVERSATION_UNVERIFIED` と `submissionState: "not-sent"` は、新しい質問を追跡するための会話情報を確認できず、送信前に停止した状態です。Microsoft 365 の元の画面を確認し、新しい会話を作成してから再実行してください。画面の変化が続く場合は、拡張機能の更新を確認してください。
+
+入力中や送信直前に別の質問が追加された場合や、会話履歴を追跡できなくなった場合は、`SUBMIT_STATE_UNKNOWN` を返すことがあります。入力欄に質問が残っていても、送信されていない証拠にはなりません。質問を自動で送り直さず、元の会話か以下の読む操作で確認してください。
+
+English: `NEW_CONVERSATION_UNVERIFIED` with `submissionState: "not-sent"` stops before sending because the conversation cannot reliably track a new question. Inspect Microsoft 365 and create a new conversation before trying again. If question history changes during input or immediately before the send, `SUBMIT_STATE_UNKNOWN` may be returned even when the draft remains. Read or inspect the original conversation before deciding to resend. For `CONCURRENT_REQUEST` during setup, refresh the agent list, reselect agents, and save again.
+
 ## 送信結果が不明・回答が完了しなかった場合
 
 `SUBMIT_STATE_UNKNOWN`、`RESPONSE_TIMEOUT`、送信後の `RESPONSE_EXTRACTION_FAILED` に `error.conversationHandle` が含まれる場合は、質問を再送せず、MCP クライアントから次の引数で `m365_agent_session` を呼び出してください。ハンドルはエラーで返された値に置き換えます。`agent` や `message` は指定しません。
@@ -57,15 +71,15 @@
 
 失敗後の確認用に残した単発の会話は、完了した回答を回収すると閉じ、`conversationClosed: true` を返します。未完了・キャンセルの場合は再度読むことができますが、会話の有効期限・会話数上限・ローカルプロセスの再起動でハンドルが使えなくなる場合があります。ハンドルを受け取ったら早めに確認してください。`CONVERSATION_EXPIRED` / `CONVERSATION_NOT_FOUND` の場合は Microsoft 365 側の会話を確認します。
 
-`BROKER_VERSION_MISMATCH` は古いローカルプロセスが読む操作に対応していない状態です。v0.2.11 に更新して VS Code と MCP 接続を再起動してください。再起動前のハンドルは無効になるため、既存の質問は Microsoft 365 側で確認します。ローカル接続が切れた失敗など、ハンドルが返らない場合も Microsoft 365 側で確認し、自動再送しないでください。
+`BROKER_VERSION_MISMATCH` は古いローカルプロセスが読む操作に対応していない状態です。v0.2.12 に更新して VS Code と MCP 接続を再起動してください。再起動前のハンドルは無効になるため、既存の質問は Microsoft 365 側で確認します。ローカル接続が切れた失敗など、ハンドルが返らない場合も Microsoft 365 側で確認し、自動再送しないでください。
 
 English: When an error carries `conversationHandle`, call `m365_agent_session` with only `action: "read"` and that handle instead of resending. Reading leaves the composer and send button untouched and saves reply files under the usual settings. Only `message: "not-shown"` confirms non-submission; `"unconfirmed"` requires another read later or inspection in Microsoft 365. Replies are `complete`, `incomplete`, or `none`. A retained one-shot conversation closes after its complete reply is collected. Handles can expire or become invalid after process restart; inspect the Microsoft 365 conversation if a handle is unavailable. Reading requires the new MCP connection and local process.
 
 ## 拡張機能が起動しない・質問入力が失敗する
 
-v0.2.5 の VS Code 拡張機能で `Cannot find module './impl/format'` が出る場合は、v0.2.11 の VSIX をインストールし、VS Code を再読み込みしてください。
+v0.2.5 の VS Code 拡張機能で `Cannot find module './impl/format'` が出る場合は、v0.2.12 の VSIX をインストールし、VS Code を再読み込みしてください。
 
-長文の入力中に `UI_CHANGED` と未送信（`not-sent`）が返る場合は、入力を完了・確認できなかった状態です。v0.2.11 では入力の長さに応じて時間上限を調整します。入力が遅い場合は、[設定ガイド](CONFIGURATION.md) の `browser.typingDelayMs` を確認してください。旧版で保存された待ち時間は、更新だけでは変更されません。
+長文の入力中に `UI_CHANGED` と未送信（`not-sent`）が返る場合は、入力を完了・確認できなかった状態です。v0.2.12 では入力の長さに応じて時間上限を調整します。入力が遅い場合は、[設定ガイド](CONFIGURATION.md) の `browser.typingDelayMs` を確認してください。旧版で保存された待ち時間は、更新だけでは変更されません。
 
 ## 送信ボタン待ち・NBSP により未送信になる場合
 
@@ -75,13 +89,13 @@ NBSP（改行しない空白、U+00A0）が通常の空白に変換されたと�
 
 ## 添付取得で認証を再試行する場合
 
-v0.2.11 では、401 / 403 やサインイン画面を検出した場合に限り、同じ専用ブラウザー内のタブで接続状態を確認し、取得を一度再試行します。SharePoint 共有リンクのプレビュー画面では、ファイルの取得先を解決するためにもこの処理を使います。認証フォームの入力や追加認証は自動で行いません。
+v0.2.12 では、401 / 403 やサインイン画面を検出した場合に限り、同じ専用ブラウザー内のタブで接続状態を確認し、取得を一度再試行します。SharePoint 共有リンクのプレビュー画面では、ファイルの取得先を解決するためにもこの処理を使います。認証フォームの入力や追加認証は自動で行いません。
 
 404 / 5xx、容量超過、許可されていない転送先、空の応答、通信エラー、通常の HTML ページは、認証を再試行せず未保存として返します。必要なサインイン・権限・ファイルの存在・容量設定を確認してください。
 
 ## PDF の日本語表示・重なり・ページ数が正しくない
 
-生成するエージェントに、日本語を含む文字に対応するフォントの埋め込み、見出し・本文の文字サイズに合った行間と段落間隔、表紙・結論を含む総ページ数を明示してください。v0.2.11 は、呼び出し元の AI クライアントにもこれらの確認を促す案内を提供します。
+生成するエージェントに、日本語を含む文字に対応するフォントの埋め込み、見出し・本文の文字サイズに合った行間と段落間隔、表紙・結論を含む総ページ数を明示してください。v0.2.12 は、呼び出し元の AI クライアントにもこれらの確認を促す案内を提供します。
 
 フォント名やテキスト抽出だけでは表示の正しさを確認できません。実ファイルを PDF リーダーで開いて各ページの文字・重なり・はみ出しを確認し、実ページ数も確認してください。生成元のエージェントに固定のページ数を求める指示がある場合は、利用者の指定と矛盾していないか確認します。AgentPickLink はエージェントの指示、送信する質問、受信した PDF を自動で書き換えません。案内の追加だけで、すべての生成結果が正しくなることは保証しません。
 
@@ -102,11 +116,11 @@ v0.2.5 では、ブラウザー経由のダウンロードとファイルカー�
 | `download-not-started`       | 待機時間内にダウンロードが始まらなかった         |
 | `download-incomplete`        | ダウンロードが時間内に完了せず、取り消された     |
 
-各操作の待機上限は `browser.navigationTimeoutMs`（既定 45 秒）で、ダウンロード開始待ちは最大 30 秒です。v0.2.11 では、複数ファイルや再試行を含む添付取得全体にも `browser.attachmentPhaseTimeoutMs`（既定 45 秒）を適用します。全体の期限を超えた未取得分は `attachment-phase-timeout`、保存件数上限を超えた分は `attachment-count-limit` として返します。保存済みのファイルは保持します。これらは回答生成の制限時間とは別です。
+各操作の待機上限は `browser.navigationTimeoutMs`（既定 45 秒）で、ダウンロード開始待ちは最大 30 秒です。v0.2.12 では、複数ファイルや再試行を含む添付取得全体にも `browser.attachmentPhaseTimeoutMs`（既定 45 秒）を適用します。全体の期限を超えた未取得分は `attachment-phase-timeout`、保存件数上限を超えた分は `attachment-count-limit` として返します。保存済みのファイルは保持します。これらは回答生成の制限時間とは別です。
 
 大きなファイルや遅い接続では、上限に達して未保存になることがあります。[設定ガイド](CONFIGURATION.md) の上限、サインイン状態、取得先の許可ホストを確認してください。許可されていないホストへの転送は `host-not-allowed / redirect-host-not-allowed` として返します。対象ファイルを Microsoft 365 から直接開けるかも確認し、質問を再送する前に、Microsoft 365 側で処理が完了していないか確認してください。
 
-v0.2.11 は取得経路によらず、同じ失敗に同じ `errorCode` と `stage` を返します。許可されていない取得元は `host-not-allowed / source-host-not-allowed`、許可されていない転送先は `host-not-allowed / redirect-host-not-allowed` です。
+v0.2.12 は取得経路によらず、同じ失敗に同じ `errorCode` と `stage` を返します。許可されていない取得元は `host-not-allowed / source-host-not-allowed`、許可されていない転送先は `host-not-allowed / redirect-host-not-allowed` です。
 
 | `stage`                       | 確認すること                                                       |
 | ----------------------------- | ------------------------------------------------------------------ |

@@ -79,6 +79,8 @@ export type PanelState = {
   clientApplication?: "complete" | "partial" | "not-selected";
   /** Extension-only explicit machine installation offer. */
   machineInstall?: { installedVersion?: string; updateAvailable: boolean };
+  /** Present only in the VS Code sidebar; absent in standalone setup. */
+  extensionUpdates?: { autoUpdate: boolean };
   status?: SetupStatus;
   candidates: AgentCandidate[];
   discoverySummary?: {

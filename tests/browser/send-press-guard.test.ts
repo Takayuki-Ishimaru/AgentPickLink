@@ -180,7 +180,11 @@ const agent: BrowserAgentDefinition = {
   enabled: true,
   capabilityClass: "knowledge-only",
   uiActionPolicy: "never-click",
-  entryPoint: { mode: "direct-chat", url: "https://m365.example.test/chat", surface: "m365-copilot" },
+  entryPoint: {
+    mode: "direct-chat",
+    url: "https://m365.example.test/chat",
+    surface: "m365-copilot"
+  },
   verification: {
     status: "verified",
     adapterId: "m365-copilot-chat@1",
@@ -204,7 +208,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
   let browser: Browser;
   let page: Page;
   beforeAll(async () => {
-    browser = await chromium.launch({ executablePath: executable, headless: true });
+    browser = await chromium.launch({
+      executablePath: executable,
+      headless: true
+    });
     page = await browser.newPage();
     await page.route(
       (url) => url.hostname === "m365.example.test",
@@ -247,7 +254,12 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
   }
   const sent = () =>
     page.evaluate(
-      () => (window as unknown as { sent: Array<{ text: string; agent: string; via: string }> }).sent
+      () =>
+        (
+          window as unknown as {
+            sent: Array<{ text: string; agent: string; via: string }>;
+          }
+        ).sent
     );
   const call = (name: "change" | "benign" | "replaceSend", kind: string) =>
     page.evaluate(
@@ -296,7 +308,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
               new AbortController().signal,
               await guard(ORIGINAL, () => call("change", kind))
             )
-          ).rejects.toMatchObject({ code: expectedCode(kind), details: { submissionState: "not-sent" } });
+          ).rejects.toMatchObject({
+            code: expectedCode(kind),
+            details: { submissionState: "not-sent" }
+          });
           await page.waitForTimeout(200);
           expect(await sent()).toEqual([]);
           expect(await openGates()).toBe(0);
@@ -315,7 +330,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
             new AbortController().signal,
             await guard(ORIGINAL, () => call("change", "composer"))
           )
-        ).rejects.toMatchObject({ code: "UI_CHANGED", details: { submissionState: "not-sent" } });
+        ).rejects.toMatchObject({
+          code: "UI_CHANGED",
+          details: { submissionState: "not-sent" }
+        });
         await page.waitForTimeout(200);
         expect(await sent()).toEqual([]);
       }
@@ -365,7 +383,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
               verified = true;
             })
           )
-        ).rejects.toMatchObject({ code: "UI_CHANGED", details: { submissionState: "not-sent" } });
+        ).rejects.toMatchObject({
+          code: "UI_CHANGED",
+          details: { submissionState: "not-sent" }
+        });
         expect(verified).toBe(false);
         expect(await sent()).toEqual([]);
         expect(await openGates()).toBe(0);
@@ -389,6 +410,78 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       expect(await openGates()).toBe(0);
     });
 
+    it.each(["appended", "virtualized", "missing", "duplicate"] as const)(
+      "keeps changed turn anchors unknown at the press, even with a retained composer: %s",
+      async (change) => {
+        await open("textarea");
+        await page.evaluate(() => {
+          document.querySelector('[role="log"]')!.innerHTML =
+            '<div data-message-author-role="user" data-message-id="old-user">Old question</div>' +
+            '<div data-message-author-role="assistant" data-message-id="old-answer">Old answer</div>';
+        });
+        const checked = await guard(ORIGINAL, () =>
+          page.evaluate((change) => {
+            const log = document.querySelector('[role="log"]')!;
+            const next = '<div data-message-author-role="user" data-message-id="new-user">New question</div>';
+            if (change === "appended") log.insertAdjacentHTML("beforeend", next);
+            else if (change === "virtualized") log.innerHTML = next;
+            else if (change === "missing") log.innerHTML = "";
+            else log.append(log.querySelector('[data-message-id="old-user"]')!.cloneNode(true));
+          }, change)
+        );
+        await expect(adapter().submitComposer(target(), undefined, checked)).rejects.toMatchObject({
+          code: "SUBMIT_STATE_UNKNOWN",
+          details: { submissionState: "unknown" }
+        });
+        expect(await sent()).toEqual([]);
+        expect(await page.locator("textarea").inputValue()).toBe(ORIGINAL);
+        expect(await openGates()).toBe(0);
+      }
+    );
+
+    it("keeps a new question before gate arming unknown and leaves its draft intact", async () => {
+      await open("textarea");
+      const checked = await guard();
+      await page.evaluate(() => {
+        document.querySelector('[role="log"]')!.innerHTML =
+          '<div data-message-author-role="user" data-message-id="external-user">Question sent elsewhere</div>';
+      });
+      await expect(adapter().submitComposer(target(), undefined, checked)).rejects.toMatchObject({
+        code: "SUBMIT_STATE_UNKNOWN",
+        details: { submissionState: "unknown" }
+      });
+      expect(await sent()).toEqual([]);
+      expect(await page.locator("textarea").inputValue()).toBe(ORIGINAL);
+      expect(await openGates()).toBe(0);
+    });
+
+    it.each(["redraw", "prepend", "virtualize"] as const)(
+      "permits message changes that retain the pre-send tail and append no question: %s",
+      async (change) => {
+        await open("textarea");
+        await page.evaluate(() => {
+          document.querySelector('[role="log"]')!.innerHTML =
+            '<div data-message-author-role="user" data-message-id="old-user">Old question</div>' +
+            '<div data-message-author-role="assistant" data-message-id="old-answer">Old answer</div>';
+        });
+        const checked = await guard(ORIGINAL, () =>
+          page.evaluate((change) => {
+            const log = document.querySelector('[role="log"]')!;
+            if (change === "redraw")
+              log.replaceChildren(...Array.from(log.childNodes, (node) => node.cloneNode(true)));
+            else if (change === "prepend")
+              log.insertAdjacentHTML(
+                "afterbegin",
+                '<div data-message-author-role="user" data-message-id="history">History</div>'
+              );
+            else log.querySelector('[data-message-id="old-user"]')!.remove();
+          }, change)
+        );
+        await adapter().submitComposer(target(), undefined, checked);
+        await pressedOnce();
+      }
+    );
+
     it("keeps the cancellation gate: a cancellation during the check presses nothing", async () => {
       await open("rich");
       const controller = new AbortController();
@@ -398,7 +491,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
           controller.signal,
           await guard(ORIGINAL, async () => controller.abort())
         )
-      ).rejects.toMatchObject({ code: "SUBMIT_FAILED", details: { submissionState: "not-sent" } });
+      ).rejects.toMatchObject({
+        code: "SUBMIT_FAILED",
+        details: { submissionState: "not-sent" }
+      });
       await page.waitForTimeout(200);
       expect(await sent()).toEqual([]);
       expect(await openGates()).toBe(0);
@@ -414,7 +510,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
         });
       await expect(
         adapter().submitComposer(target(), new AbortController().signal, await guard(ORIGINAL, broken))
-      ).rejects.toMatchObject({ code: "UI_CHANGED", details: { submissionState: "not-sent" } });
+      ).rejects.toMatchObject({
+        code: "UI_CHANGED",
+        details: { submissionState: "not-sent" }
+      });
       await page.waitForTimeout(200);
       expect(await sent()).toEqual([]);
     });
@@ -457,7 +556,9 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
             options
           )
       };
-      const send = page.getByRole("button", { name: "Send" }) as unknown as LocatorLike;
+      const send = page.getByRole("button", {
+        name: "Send"
+      }) as unknown as LocatorLike;
       await expect(
         activateSendControl(target(), send, new AbortController().signal, {
           diagnostics: async () => ({}),
@@ -523,7 +624,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
 
     it("control: an unchanged page is sent once, after the cover goes away", async () => {
       const response = await invokeCovered(undefined);
-      expect(response).toMatchObject({ submissionState: "sent", text: "The answer." });
+      expect(response).toMatchObject({
+        submissionState: "sent",
+        text: "The answer."
+      });
       expect(await sent()).toEqual([{ text: ORIGINAL, agent: "agent-1", via: "click" }]);
     }, 20_000);
 
@@ -553,7 +657,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
               later
             )
           )
-        ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", details: { submissionState: "unknown" } });
+        ).rejects.toMatchObject({
+          code: "SUBMIT_STATE_UNKNOWN",
+          details: { submissionState: "unknown" }
+        });
         expect(await sent()).toEqual([{ text: ORIGINAL, agent: "agent-1", via: "other" }]);
       },
       20_000
@@ -562,8 +669,14 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
     it("a press the page never acknowledges is unknown, even with the text still in the composer", async () => {
       await open("rich", "");
       await expect(
-        driver().invoke(target(), conversation, agent, adapter(), { message: ORIGINAL, timeoutMs: 10_000 })
-      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN", details: { submissionState: "unknown" } });
+        driver().invoke(target(), conversation, agent, adapter(), {
+          message: ORIGINAL,
+          timeoutMs: 10_000
+        })
+      ).rejects.toMatchObject({
+        code: "SUBMIT_STATE_UNKNOWN",
+        details: { submissionState: "unknown" }
+      });
       expect(await sent()).toHaveLength(1);
       expect(await page.locator("[contenteditable]").textContent()).toBe(ORIGINAL);
     }, 20_000);
@@ -575,7 +688,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       await setFlag("enterSends", true);
       const message = "first line\nsecond line\n\nlast line";
       await expect(
-        driver().invoke(target(), conversation, agent, adapter(), { message, timeoutMs: 10_000 })
+        driver().invoke(target(), conversation, agent, adapter(), {
+          message,
+          timeoutMs: 10_000
+        })
       ).resolves.toMatchObject({ submissionState: "sent" });
       expect(await sent()).toEqual([{ text: message, agent: "agent-1", via: "click" }]);
     }, 20_000);
@@ -602,9 +718,17 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       new ConversationDriver(
         new AgentNavigator(new NavigationPolicy({ appHosts: ["m365.example.test"] })),
         undefined,
-        { ackTimeoutMs: 1_000, responseStartTimeoutMs: 1_000, attachmentSettleMs: 0 }
+        {
+          ackTimeoutMs: 1_000,
+          responseStartTimeoutMs: 1_000,
+          attachmentSettleMs: 0
+        }
       );
-    type Failure = { code?: string; message?: string; details?: { submissionState?: string } };
+    type Failure = {
+      code?: string;
+      message?: string;
+      details?: { submissionState?: string };
+    };
     type Sequence = {
       /** Runs 200 ms after submission starts, while the control is covered. */
       during?: () => Promise<unknown>;
@@ -668,32 +792,42 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
             }
           }
         );
-      const settled: { response?: Awaited<ReturnType<ConversationDriver["invoke"]>>; error?: Failure } =
-        await driver()
-          .invoke(target(), conversation, agent, live, {
-            message: ORIGINAL,
-            timeoutMs: 10_000,
-            signal: controller.signal,
-            onProgress: (event) => {
-              if (event.phase !== "submitting") return;
-              void page.evaluate(() => (window as unknown as { cover(ms: number): void }).cover(650));
-              if (sequence.during) timers.push(setTimeout(() => void sequence.during!(), 200));
-              if (sequence.cancelAfterMs !== undefined)
-                timers.push(setTimeout(cancel, sequence.cancelAfterMs));
-            }
-          })
-          .then(
-            (response) => ({ response }),
-            (error: Failure) => ({ error })
-          );
+      const settled: {
+        response?: Awaited<ReturnType<ConversationDriver["invoke"]>>;
+        error?: Failure;
+      } = await driver()
+        .invoke(target(), conversation, agent, live, {
+          message: ORIGINAL,
+          timeoutMs: 10_000,
+          signal: controller.signal,
+          onProgress: (event) => {
+            if (event.phase !== "submitting") return;
+            void page.evaluate(() => (window as unknown as { cover(ms: number): void }).cover(650));
+            if (sequence.during) timers.push(setTimeout(() => void sequence.during!(), 200));
+            if (sequence.cancelAfterMs !== undefined) timers.push(setTimeout(cancel, sequence.cancelAfterMs));
+          }
+        })
+        .then(
+          (response) => ({ response }),
+          (error: Failure) => ({ error })
+        );
       await page.waitForTimeout(sequence.settleMs ?? 1_000);
       timers.forEach(clearTimeout);
       whenPressStarts = undefined;
       const seen = await page.evaluate(() => {
-        const state = window as unknown as { presses: Array<[string, number, string]>; downs: number };
+        const state = window as unknown as {
+          presses: Array<[string, number, string]>;
+          downs: number;
+        };
         return { presses: state.presses, downs: state.downs };
       });
-      return { ...settled, ...moments, ...seen, recorded: await sent(), gates: await openGates() };
+      return {
+        ...settled,
+        ...moments,
+        ...seen,
+        recorded: await sent(),
+        gates: await openGates()
+      };
     }
     type Run = Awaited<ReturnType<typeof covered>>;
     const stateOf = (run: Run) =>
@@ -704,8 +838,13 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       // A re-rendered send button is a new node with the same name. The press goes to the new node, and
       // nothing about the message or its recipient has changed: no false refusal, and no second press.
       it("a send control re-rendered while covered is pressed once, as the new node", async () => {
-        const run = await covered({ during: () => call("replaceSend", "equivalent") });
-        expect(run.response).toMatchObject({ submissionState: "sent", text: "The answer." });
+        const run = await covered({
+          during: () => call("replaceSend", "equivalent")
+        });
+        expect(run.response).toMatchObject({
+          submissionState: "sent",
+          text: "The answer."
+        });
         expect(run.recorded).toEqual([{ text: ORIGINAL, agent: "agent-1", via: "replacement" }]);
         expect(run.gates).toBe(0);
       }, 20_000);
@@ -756,7 +895,9 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       // Two controls of the same name leave no unique target: Playwright refuses to act on the
       // ambiguous locator, which the activation reports as a send control that changed, not sent.
       it("a send control replaced by two equivalent ones presses nothing", async () => {
-        const run = await covered({ during: () => call("replaceSend", "twin") });
+        const run = await covered({
+          during: () => call("replaceSend", "twin")
+        });
         expect(run.error).toMatchObject({
           code: "UI_CHANGED",
           message: expect.stringContaining("changed before it could be clicked"),
@@ -800,7 +941,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       }
       async function control() {
         const run = await covered({ settleMs: 300 });
-        expect(run.response).toMatchObject({ submissionState: "sent", text: "The answer." });
+        expect(run.response).toMatchObject({
+          submissionState: "sent",
+          text: "The answer."
+        });
         expect(run.recorded).toEqual([{ text: ORIGINAL, agent: "agent-1", via: "click" }]);
         lags.push(pressAt(run)! - run.verified!);
         return run;
@@ -849,7 +993,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       it.for([-40, 0, 40])(
         "cancelled %i ms from the cover's removal: not sent, with no press",
         async (offset, { annotate }) => {
-          const run = await covered({ cancelAfterMs: 650 + offset, settleMs: 300 });
+          const run = await covered({
+            cancelAfterMs: 650 + offset,
+            settleMs: 300
+          });
           await judged(run, `cover removal ${offset >= 0 ? "+" : ""}${offset} ms`, annotate);
           expect(stateOf(run)).toBe("not-sent");
           expect(run.recorded).toEqual([]);
@@ -864,7 +1011,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
         "cancelled %i ms from the press reaching the page: the classification matches what the page saw",
         async (offset, { annotate }) => {
           const lag = await pressLag();
-          const run = await covered({ cancelAfterCheckMs: Math.max(0, lag + offset), settleMs: 300 });
+          const run = await covered({
+            cancelAfterCheckMs: Math.max(0, lag + offset),
+            settleMs: 300
+          });
           await judged(
             run,
             `press ${offset >= 0 ? "+" : ""}${offset} ms (lag ${Math.round(lag)} ms)`,
@@ -879,7 +1029,10 @@ describe.skipIf(!executable)("the send press guard (v0.2.8 review)", () => {
       // gate's closing and the click goes through; had the closing come first, the click would be
       // swallowed. Either way the message may be out: unknown, never not sent.
       it("cancelled as the press starts in the page: unknown, not not-sent", async ({ annotate }) => {
-        const run = await covered({ cancelWhenPressStarts: true, settleMs: 300 });
+        const run = await covered({
+          cancelWhenPressStarts: true,
+          settleMs: 300
+        });
         expect(run.error).toMatchObject({
           code: "SUBMIT_STATE_UNKNOWN",
           details: { submissionState: "unknown" }

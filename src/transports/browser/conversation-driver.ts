@@ -13,7 +13,7 @@ import {
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { changedBeforePress } from "./send-activation.js";
 import { SubmissionTracker } from "./submission-tracker.js";
-import { correlateTurn } from "./turn-correlation.js";
+import { correlateTurn, submissionContinuityProblem, type TurnSnapshot } from "./turn-correlation.js";
 import type { CorrelationDiagnostic } from "../../observability/correlation.js";
 import {
   BrowserTransportError,
@@ -108,6 +108,7 @@ export class ConversationDriver {
     // The user messages the conversation held when typing began: one more before the press may be
     // this message, sent some other way (see sentMeanwhile).
     let userMessagesBeforeTyping: number | undefined;
+    let turnBeforeTyping: TurnSnapshot | undefined;
     const entered = request.entered;
     const stopWatching = this.navigator.watch(page, "app");
     try {
@@ -126,10 +127,12 @@ export class ConversationDriver {
           undefined,
           { submissionState: "not-sent" }
         );
+      const beforeTyping = await adapter.captureConversationMarker(page).catch(() => undefined);
+      adapter.assertSubmissionBaseline?.(beforeTyping);
       tracker.transition("FILLING");
       report("filling", "Entering the prompt into the agent composer");
-      const beforeTyping = await adapter.captureConversationMarker(page).catch(() => undefined);
       userMessagesBeforeTyping = beforeTyping?.userCount;
+      turnBeforeTyping = beforeTyping?.turn;
       if (entered) {
         // From here on this is the conversation's last entered message. A count the page could not
         // really read is no baseline for a later read.
@@ -153,6 +156,18 @@ export class ConversationDriver {
         throw notSentBeforePress(error);
       }
       const marker = await adapter.captureSubmissionMarker(page, afterFillIdentity.digest);
+      if (turnContextChanged(turnBeforeTyping, marker.turn)) {
+        await adapter.clearComposer(page);
+        throw changedBeforePress("context");
+      }
+      if (turnBeforeTyping && submissionContinuityProblem(turnBeforeTyping, marker.turn))
+        throw sentMeanwhile();
+      try {
+        adapter.assertSubmissionBaseline?.(marker);
+      } catch (error) {
+        await adapter.clearComposer(page);
+        throw error;
+      }
       if (entered) entered.turnBefore = marker.turn;
       tracker.record(marker);
       if (marker.url !== page.url() || marker.identityDigest !== afterFillIdentity.digest) {
@@ -204,7 +219,12 @@ export class ConversationDriver {
           } catch (error) {
             throw notSentBeforePress(error);
           }
-          if (now.userCount > marker.userCount) throw sentMeanwhile();
+          if (turnContextChanged(marker.turn, now.turn)) throw changedBeforePress("context");
+          if (
+            now.userCount > marker.userCount ||
+            (marker.turn && submissionContinuityProblem(marker.turn, now.turn))
+          )
+            throw sentMeanwhile();
           try {
             await identity("AGENT_CONTEXT_CHANGED", true);
             if (routeOf(now.url) !== routeOf(marker.url))
@@ -225,7 +245,9 @@ export class ConversationDriver {
         if (error instanceof BrowserTransportError && error.details?.submissionState === "not-sent") {
           // The composer held the message when submission started. One the page has emptied since
           // is the usual sign of a send, perhaps of this message some other way: never not-sent.
-          if (await composerEmptied(adapter, page)) throw sentMeanwhile();
+          const now = await adapter.captureConversationMarker(page).catch(() => undefined);
+          if (!turnContextChanged(marker.turn, now?.turn) && (await composerEmptied(adapter, page)))
+            throw sentMeanwhile();
           await adapter.clearComposer(page);
         }
         throw error;
@@ -332,7 +354,13 @@ export class ConversationDriver {
       // the message may have gone out some other way, such as a key the editor takes as "send".
       if (userMessagesBeforeTyping !== undefined && submissionStateOf(failure) === "not-sent") {
         const now = await adapter.captureConversationMarker(page).catch(() => undefined);
-        if (now && now.userCount > userMessagesBeforeTyping) failure = sentMeanwhile();
+        if (
+          now &&
+          !turnContextChanged(turnBeforeTyping, now.turn) &&
+          (now.userCount > userMessagesBeforeTyping ||
+            (turnBeforeTyping && submissionContinuityProblem(turnBeforeTyping, now.turn)))
+        )
+          failure = sentMeanwhile();
       }
       // A later read of the conversation judges the message by how far its submission got.
       if (entered)
@@ -474,7 +502,13 @@ export class ConversationDriver {
           (current) => !!replyAnchor(current) || judge(current) !== "shown",
           this.responseStartTimeoutMs
         );
-        if (judge(exchange) !== "shown") return { message: "unconfirmed", ...about, reply: "none" };
+        const currentMessage = judge(exchange);
+        if (currentMessage !== "shown")
+          return {
+            message: currentMessage === "differs" ? "differs" : "unconfirmed",
+            ...about,
+            reply: "none"
+          };
         if (!replyAnchor(exchange)) {
           report("done", "The conversation was read");
           return { message, ...about, reply: "none" };
@@ -482,10 +516,13 @@ export class ConversationDriver {
         await assertPostSubmitContext();
       }
       const anchor = replyAnchor(exchange)!;
+      let lostMessage: ConversationReading["message"] = "unconfirmed";
       const assertReplyContext = async () => {
         await assertPostSubmitContext();
         const current = await capture();
-        if (judge(current) !== "shown" || replyAnchor(current)?.responseKey !== anchor.responseKey) {
+        const currentMessage = judge(current);
+        if (currentMessage !== "shown" || replyAnchor(current)?.responseKey !== anchor.responseKey) {
+          lostMessage = currentMessage === "differs" ? "differs" : "unconfirmed";
           this.logCorrelation(current, entered, "unconfirmed", "read", "response-reassigned");
           throw new BrowserTransportError(
             "RESPONSE_EXTRACTION_FAILED",
@@ -514,7 +551,7 @@ export class ConversationDriver {
         await assertReplyContext();
       } catch (error) {
         if (error instanceof BrowserTransportError && error.details?.correlationLost)
-          return { message: "unconfirmed", ...about, reply: "none" };
+          return { message: lostMessage, ...about, reply: "none" };
         throw error;
       }
       if (!reply.complete) {
@@ -571,6 +608,7 @@ export class ConversationDriver {
       }
     );
     if (!completion.complete) {
+      await context.assertContext();
       let partialResponse: PartialResponse | undefined;
       try {
         const partial = await adapter.extractLatestResponse(page, responseMarker);
@@ -578,6 +616,7 @@ export class ConversationDriver {
       } catch {
         /* conservative partial only */
       }
+      await context.assertContext();
       return {
         complete: false,
         ...(partialResponse ? { partialResponse } : {}),
@@ -902,6 +941,17 @@ function enteredMessageState(
   return "unconfirmed";
 }
 
+/** Counts from positively different conversations are incomparable. A missing ID alone is
+ * still ambiguous; it cannot establish that a different conversation was opened. */
+function turnContextChanged(before: TurnSnapshot | undefined, current: TurnSnapshot | undefined): boolean {
+  return !!(
+    before &&
+    current &&
+    (before.documentId !== current.documentId ||
+      (before.conversationId && current.conversationId && before.conversationId !== current.conversationId))
+  );
+}
+
 async function delay(ms: number, page: PageLike): Promise<void> {
   if (page.waitForTimeout) await page.waitForTimeout(ms);
   else await new Promise((resolve) => setTimeout(resolve, ms));
@@ -921,12 +971,11 @@ function abortableDelay(ms: number, signal: AbortSignal | undefined): Promise<vo
   });
 }
 
-/** A user message appeared before the send control was pressed: something else sent a message,
- * possibly this one, so it is neither pressed nor reported as not sent. */
+/** A new question or lost baseline leaves a possible external send unconfirmed. */
 function sentMeanwhile(): BrowserTransportError {
   return new BrowserTransportError(
     "SUBMIT_STATE_UNKNOWN",
-    "A new user message appeared in the conversation before the send control was pressed, so the message may have been sent another way. It was not sent again.",
+    "The conversation's question history changed or could no longer be verified before the send control was pressed, so the message may have been sent another way. It was not sent again.",
     undefined,
     { submissionState: "unknown" }
   );

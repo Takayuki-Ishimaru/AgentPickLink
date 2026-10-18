@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as vscode from "vscode";
 import { DomainError } from "../../src/domain/errors.js";
 import { AgentPickLinkMcpProvider } from "../../src/extension/mcp-provider.js";
 import { SetupViewProvider } from "../../src/extension/setup-view.js";
@@ -31,7 +32,7 @@ type Panel = {
 
 let harness: RuntimeHarness;
 
-async function createPanel(options: { language?: string } = {}): Promise<Panel> {
+async function createPanel(options: { language?: string; workspace?: boolean } = {}): Promise<Panel> {
   harness = await createRuntimeHarness(options);
   const service = new FakeSetupService();
   const mcp = new AgentPickLinkMcpProvider(harness.runtime);
@@ -94,6 +95,68 @@ afterEach(async () => {
 });
 
 describe("runSetup", () => {
+  it("preserves the last selection when preference writes overlap", async () => {
+    const panel = await createPanel();
+    await Promise.all([
+      panel.webview.send({ type: "setAutoUpdate", enabled: true }),
+      panel.webview.send({ type: "setAutoUpdate", enabled: false })
+    ]);
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: false });
+    panel.provider.dispose();
+  });
+
+  it("reports a failed preference save and restores the saved value", async () => {
+    const panel = await createPanel();
+    const config = vscode.workspace.getConfiguration("agentpicklink");
+    vi.spyOn(config, "update").mockRejectedValue(new Error("read-only settings"));
+    const lookup = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue(config);
+    try {
+      await panel.webview.send({ type: "setAutoUpdate", enabled: false });
+      expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: true });
+      expect(vscodeMock.messages[0].kind).toBe("warning");
+    } finally {
+      lookup.mockRestore();
+      panel.provider.dispose();
+    }
+  });
+  it("enables automatic extension updates by default, saves a user preference and restores it", async () => {
+    const panel = await createPanel();
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: true });
+    await panel.webview.send({ type: "setAutoUpdate", enabled: false });
+    expect(vscodeMock.configurationUpdates).toContainEqual({
+      key: "agentpicklink.autoUpdate",
+      value: false,
+      target: 1
+    });
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: false });
+    await panel.webview.send({ type: "ready" });
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: false });
+    expect(panel.service.calls).toEqual([]);
+    panel.provider.dispose();
+  });
+
+  it("reflects settings changed outside the sidebar and re-enables a legacy check opt-out", async () => {
+    const panel = await createPanel();
+    vscodeMock.configuration.set("agentpicklink.checkForUpdates", false);
+    vscodeMock.changeConfiguration("agentpicklink.checkForUpdates");
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: false });
+    await panel.webview.send({ type: "setAutoUpdate", enabled: true });
+    expect(vscodeMock.configuration.get("agentpicklink.checkForUpdates")).toBe(true);
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: true });
+    const before = panel.webview.states.length;
+    panel.provider.dispose();
+    vscodeMock.changeConfiguration("agentpicklink.autoUpdate");
+    expect(panel.webview.states).toHaveLength(before);
+  });
+
+  it("does not require a workspace or workspace trust to disable extension updates", async () => {
+    const panel = await createPanel({ workspace: false });
+    vscodeMock.isTrusted = false;
+    await panel.webview.send({ type: "setAutoUpdate", enabled: false });
+    expect(panel.webview.last().extensionUpdates).toEqual({ autoUpdate: false });
+    expect(panel.service.calls).toEqual([]);
+    panel.provider.dispose();
+  });
   it("goes status -> discover -> selecting with the assigned agents pre-selected", async () => {
     const panel = await createPanel();
     panel.service.discovery = discovery();

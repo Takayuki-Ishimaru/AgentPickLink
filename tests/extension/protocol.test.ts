@@ -3,6 +3,15 @@ import { parseWebviewMessage } from "../../src/extension/protocol.js";
 import { pickLocale, translate } from "../../src/extension/localize.js";
 
 describe("parseWebviewMessage", () => {
+  it("accepts automatic update preferences only with an actual boolean", () => {
+    for (const enabled of [true, false])
+      expect(parseWebviewMessage({ type: "setAutoUpdate", enabled })).toEqual({
+        type: "setAutoUpdate",
+        enabled
+      });
+    for (const enabled of [undefined, "false", 0, null])
+      expect(parseWebviewMessage({ type: "setAutoUpdate", enabled })).toBeUndefined();
+  });
   it("accepts the simple command messages", () => {
     for (const type of [
       "ready",

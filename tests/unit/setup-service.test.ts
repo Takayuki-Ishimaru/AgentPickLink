@@ -17,7 +17,7 @@ import type { CapturedAgent } from "../../src/transports/transport.js";
 import type { IpcClient } from "../../src/ipc/client.js";
 import { loadRegistry, saveRegistry } from "../../src/config/registry.js";
 import { loadApprovals } from "../../src/config/approvals.js";
-import { defaultGlobalConfig, loadGlobalConfig } from "../../src/config/global-config.js";
+import { defaultGlobalConfig, loadGlobalConfig, saveGlobalConfig } from "../../src/config/global-config.js";
 import { HealthService } from "../../src/services/health-service.js";
 import { appPaths, type AppPaths } from "../../src/config/paths.js";
 import { writeDescriptor } from "../../src/broker/broker-descriptor.js";
@@ -532,6 +532,98 @@ describe("SetupService.discover", () => {
 });
 
 describe("SetupService.apply", () => {
+  it("preserves registrations and discovery metadata saved while verification is pending", async () => {
+    const paths = await makeTempPaths();
+    const root = await makeWorkspaceRoot();
+    const existing = verifiedAgent("existing", "https://m365.cloud.microsoft/chat/existing", {
+      description: "Old description"
+    });
+    await saveRegistry(paths, { version: 1, agents: [existing] });
+    const concurrent = verifiedAgent("concurrent", "https://m365.cloud.microsoft/chat/concurrent");
+    const url = "https://m365.cloud.microsoft/chat/new-agent";
+    const client = makeFakeIpcClient({
+      "agent.inspectUrl": async () => {
+        const config = await loadGlobalConfig(paths);
+        await saveGlobalConfig(paths, {
+          ...config,
+          security: { ...config.security, attachmentRetentionHours: 24 }
+        });
+        await saveRegistry(paths, {
+          version: 1,
+          agents: [{ ...existing, description: "Fresh discovery description" }, concurrent]
+        });
+        return captured(url, "New Agent");
+      }
+    });
+    const service = new SetupService(
+      baseDeps(paths, { root: () => root, connect: async () => client as unknown as IpcClient })
+    );
+
+    const result = await service.apply({ agents: [{ url, displayName: "New Agent" }] });
+
+    const registry = await loadRegistry(paths);
+    expect(registry.agents.map((agent) => agent.alias)).toEqual(["concurrent", "existing", "new-agent"]);
+    expect(registry.agents.find((agent) => agent.alias === "existing")?.description).toBe(
+      "Fresh discovery description"
+    );
+    expect(result.approved).toBe(true);
+    expect((await loadGlobalConfig(paths)).security.attachmentRetentionHours).toBe(24);
+  });
+
+  it("refuses to overwrite an alias another window claimed while verification was pending", async () => {
+    const paths = await makeTempPaths();
+    const root = await makeWorkspaceRoot();
+    const concurrent = verifiedAgent("support-bot", "https://m365.cloud.microsoft/chat/concurrent");
+    const url = "https://m365.cloud.microsoft/chat/requested";
+    const client = makeFakeIpcClient({
+      "agent.inspectUrl": async () => {
+        await saveRegistry(paths, { version: 1, agents: [concurrent] });
+        return captured(url, "Support Bot");
+      }
+    });
+    const service = new SetupService(
+      baseDeps(paths, { root: () => root, connect: async () => client as unknown as IpcClient })
+    );
+
+    await expect(service.apply({ agents: [{ url, displayName: "Support Bot" }] })).rejects.toMatchObject({
+      code: "CONCURRENT_REQUEST"
+    });
+    expect((await loadRegistry(paths)).agents).toEqual([concurrent]);
+    await expect(readFile(path.join(root, ".m365-agents.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([63, 64, 80])(
+    "keeps colliding aliases within 64 characters for a %i-character agent name",
+    async (length) => {
+      const paths = await makeTempPaths();
+      const root = await makeWorkspaceRoot();
+      const displayName = "a".repeat(length);
+      const agents = Array.from({ length: 12 }, (_, index) => ({
+        url: `https://m365.cloud.microsoft/chat/long-name-${index}`,
+        displayName
+      }));
+      const client = makeFakeIpcClient({
+        "agent.inspectUrl": (params) => captured(params.url as string, displayName)
+      });
+      const service = new SetupService(
+        baseDeps(paths, { root: () => root, connect: async () => client as unknown as IpcClient })
+      );
+
+      const result = await service.apply({ agents });
+
+      expect(result.registered).toHaveLength(12);
+      expect(result.registered.every((entry) => entry.verified)).toBe(true);
+      const aliases = (await loadRegistry(paths)).agents.map((agent) => agent.alias);
+      expect(new Set(aliases).size).toBe(12);
+      expect(aliases.every((alias) => alias.length <= 64)).toBe(true);
+      expect(aliases).toContain(`${"a".repeat(62)}-2`);
+      expect(aliases).toContain(`${"a".repeat(61)}-12`);
+      expect(result.approved).toBe(true);
+      const workspace = JSON.parse(await readFile(path.join(root, ".m365-agents.json"), "utf8"));
+      expect(workspace.agents).toHaveLength(12);
+    }
+  );
+
   it("reuses a verified registry entry by URL, verifies new agents, uniquifies clashing slugs, skips a failing agent, and writes registry/config/workspace/approvals", async () => {
     const paths = await makeTempPaths();
     const root = await makeWorkspaceRoot();

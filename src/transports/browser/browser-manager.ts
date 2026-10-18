@@ -9,7 +9,7 @@ import {
   type ProcessExec
 } from "../../broker/profile-processes.js";
 import { ensureWindowsLocalAppData, isDeadLockTarget, ProfileManager } from "./profile-manager.js";
-import { BrowserTransportError, type BrowserContextLike, type PageHandle } from "./types.js";
+import { BrowserTransportError, type BrowserContextLike, type PageHandle, type PageLike } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -422,7 +422,7 @@ export class BrowserManager {
     this.pagesByKey.set(pageKey, handle);
     return handle;
   }
-  async closePage(pageKey: string): Promise<void> {
+  async closePage(pageKey: string, expectedPage?: PageLike): Promise<void> {
     // A caller may abandon a conversation while its page is still opening. Awaiting the keyed
     // creation makes that close deterministic and avoids leaving the eventual page orphaned.
     const creating = this.creatingPagesByKey.get(pageKey);
@@ -431,13 +431,18 @@ export class BrowserManager {
       // A context reset can clear this key and let a new context create another page with the
       // same key before the old creation settles. Only close the exact handle this caller was
       // waiting for; otherwise a stale close could tear down the fresh conversation.
-      if (created && this.pagesByKey.get(pageKey) === created) await this.closePage(pageKey);
+      if (
+        created &&
+        this.pagesByKey.get(pageKey) === created &&
+        (!expectedPage || created.page === expectedPage)
+      )
+        await this.closePage(pageKey, expectedPage);
       return;
     }
+    const handle = this.pagesByKey.get(pageKey);
+    if (!handle || (expectedPage && handle.page !== expectedPage)) return;
     const existingClose = this.closingPagesByKey.get(pageKey);
     if (existingClose) return existingClose;
-    const handle = this.pagesByKey.get(pageKey);
-    if (!handle) return;
     let settleClose: (() => void) | undefined;
     let failClose: ((error: unknown) => void) | undefined;
     const closing = new Promise<void>((resolve, reject) => {

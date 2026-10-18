@@ -49,6 +49,8 @@ export interface ChatUiAdapter {
   assertAgentIdentity(page: PageLike, expected: BrowserAgentVerification): Promise<IdentityAssertion>;
   findComposer(page: PageLike): Promise<LocatorLike>;
   captureConversationMarker(page: PageLike): Promise<ConversationMarker>;
+  /** Production adapters reject untrackable turns before typing or pressing Send. */
+  assertSubmissionBaseline?(marker: ConversationMarker | undefined): void;
   startNewConversation(page: PageLike): Promise<void>;
   verifyNewConversation(
     page: PageLike,

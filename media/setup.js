@@ -10,6 +10,10 @@
   var STRINGS = {
     ja: {
       title: "Microsoft 365 エージェント",
+      extensionUpdates: "拡張機能の更新",
+      autoUpdate: "拡張機能の自動更新",
+      autoUpdateHelp:
+        "新しいバージョン（ベータ版を含む）を自動でインストールします。反映には VS Code の再読み込みが必要です。変更はすぐに保存されます。",
       setup: "環境をセットアップする",
       installMachine: "機械インストールを更新",
       machineUpdateAvailable: "この拡張機能から機械インストールを更新できます。",
@@ -141,6 +145,10 @@
     },
     en: {
       title: "Microsoft 365 agents",
+      extensionUpdates: "Extension updates",
+      autoUpdate: "Automatically update the extension",
+      autoUpdateHelp:
+        "Install new versions automatically, including betas. Reload VS Code to apply an update. Changes are saved immediately.",
       setup: "Set up environment",
       installMachine: "Update machine installation",
       machineUpdateAvailable: "This extension can update the machine installation.",
@@ -1374,6 +1382,31 @@
 
   /* ---------------------------------------------------------------- render */
 
+  function extensionUpdatesSection() {
+    if (!state.extensionUpdates) return null;
+    var strings = t();
+    return h(
+      "section",
+      { class: "extension-updates" },
+      h("h2", { text: strings.extensionUpdates }),
+      h(
+        "label",
+        { class: "check" },
+        h("input", {
+          type: "checkbox",
+          id: "extension-auto-update",
+          checked: state.extensionUpdates.autoUpdate,
+          "aria-describedby": "extension-auto-update-help",
+          onchange: function (event) {
+            send({ type: "setAutoUpdate", enabled: event.target.checked });
+          }
+        }),
+        h("span", { text: strings.autoUpdate })
+      ),
+      h("p", { id: "extension-auto-update-help", class: "muted", text: strings.autoUpdateHelp })
+    );
+  }
+
   function render() {
     var completionBefore = document.querySelector(".completion-section");
     if (completionBefore) local.completionExpanded = completionBefore.open;
@@ -1399,7 +1432,8 @@
       agentsSection(),
       optionsSection(),
       saveSection(),
-      advancedSection()
+      advancedSection(),
+      extensionUpdatesSection()
     ].forEach(function (node) {
       if (node) app.appendChild(node);
     });

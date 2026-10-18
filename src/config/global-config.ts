@@ -46,6 +46,19 @@ export async function saveGlobalConfig(paths: AppPaths, config: GlobalConfig): P
     atomicWrite(paths.config, YAML.stringify(GlobalConfigSchema.parse(config)))
   );
 }
+
+/** Merge a settings change with the latest file while holding the ordinary save lock. */
+export async function updateGlobalConfig(
+  paths: AppPaths,
+  update: (current: GlobalConfig) => GlobalConfig
+): Promise<GlobalConfig> {
+  return withFileLock(`${paths.config}.lock`, async () => {
+    const current = await loadGlobalConfig(paths, { readOnly: true });
+    const updated = GlobalConfigSchema.parse(update(current));
+    await atomicWrite(paths.config, YAML.stringify(updated));
+    return updated;
+  });
+}
 function expandEnvironment(value: string): string {
   return value.replace(/%([^%]+)%/g, (token, key: string) => process.env[key] ?? token);
 }

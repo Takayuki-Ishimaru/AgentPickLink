@@ -166,6 +166,62 @@ describe.skipIf(!executable)(
     }
     const sent = () => page.evaluate(() => (window as unknown as { sent: string[] }).sent);
 
+    it.each([false, true])(
+      "refuses an unverified direct landing before typing (conversation ID: %s)",
+      async (hasId) => {
+        await page.goto(agent.entryPoint.url);
+        if (!hasId)
+          await page.locator("#log").evaluate((node) => node.removeAttribute("data-conversation-id"));
+        currentAdapter = makeAdapter();
+        const entered = enteredMessage(QUESTION);
+        await expect(
+          driver().invoke(page as unknown as PageLike, conversation, agent, adapter(), {
+            message: QUESTION,
+            entered
+          })
+        ).rejects.toMatchObject({
+          code: "NEW_CONVERSATION_UNVERIFIED",
+          details: { submissionState: "not-sent" }
+        });
+        expect(await sent()).toEqual([]);
+        expect(await page.locator("#composer").inputValue()).toBe("");
+        expect(entered.typed).not.toBe(true);
+      }
+    );
+
+    it("retains the draft and reports unknown when the verified conversation ID disappears during typing", async () => {
+      const target = await open();
+      const fill = adapter().fillComposer.bind(adapter());
+      vi.spyOn(adapter(), "fillComposer").mockImplementationOnce(async (...args) => {
+        await fill(...args);
+        await page.locator("#log").evaluate((node) => node.removeAttribute("data-conversation-id"));
+      });
+      await expect(
+        driver().invoke(target, conversation, agent, adapter(), { message: QUESTION })
+      ).rejects.toMatchObject({
+        code: "SUBMIT_STATE_UNKNOWN",
+        details: { submissionState: "unknown" }
+      });
+      expect(await sent()).toEqual([]);
+      expect(await page.locator("#composer").inputValue()).toBe(QUESTION);
+    });
+
+    it("refuses a continuation with a recycled baseline tail before typing", async () => {
+      const target = await open();
+      await page.locator("#log").evaluate((node) => {
+        node.innerHTML =
+          '<article data-message-author-role="user" data-message-id="old-user">Earlier question</article><article data-message-author-role="assistant">Earlier answer</article>';
+      });
+      await expect(
+        driver().invoke(target, conversation, agent, adapter(), { message: QUESTION })
+      ).rejects.toMatchObject({
+        code: "NEW_CONVERSATION_UNVERIFIED",
+        details: { submissionState: "not-sent" }
+      });
+      expect(await sent()).toEqual([]);
+      expect(await page.locator("#composer").inputValue()).toBe("");
+    });
+
     // The ask gives up after 400 ms; the page shows the message at 650 ms, inside the second window
     // the read gives it (another 400 ms, counted from the end of the ask).
     it("collects the answer of a message the page showed only after the acknowledgement time, without sending it again", async () => {
@@ -436,17 +492,7 @@ describe.skipIf(!executable)(
       // New adapter has no record of the explicit New chat ID transition performed by open().
       const unverified = makeAdapter();
       const entered = enteredMessage(QUESTION);
-      await page.evaluate(
-        (question) =>
-          document.querySelector("#send")!.addEventListener("click", () =>
-            setTimeout(() => {
-              (window as unknown as { answer(text: string): void }).answer(question);
-              document.querySelector('[data-message-author-role="assistant"]')!.textContent =
-                "HISTORICAL ANSWER";
-            }, 20)
-          ),
-        QUESTION
-      );
+      const before = await unverified.captureConversationMarker(target);
       await expect(
         driver().invoke(target, conversation, agent, unverified, {
           message: QUESTION,
@@ -454,12 +500,29 @@ describe.skipIf(!executable)(
           timeoutMs: 3_000,
           expectFiles: false
         })
-      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+      ).rejects.toMatchObject({
+        code: "NEW_CONVERSATION_UNVERIFIED",
+        details: { submissionState: "not-sent" }
+      });
+      expect(await sent()).toEqual([]);
+      expect(entered.typed).not.toBe(true);
+      // A read of a previously uncertain send must still reject lazy historical messages.
+      Object.assign(entered, {
+        typed: true,
+        state: "unknown",
+        userCountBefore: 0,
+        turnBefore: before.turn,
+        settledAt: Date.now() - 60_000
+      });
+      await page.evaluate((question) => {
+        (window as unknown as { answer(text: string): void }).answer(question);
+        document.querySelector('[data-message-author-role="assistant"]')!.textContent = "HISTORICAL ANSWER";
+      }, QUESTION);
       await expect(
         driver().read(target, conversation, agent, unverified, { entered, timeoutMs: 3_000 })
       ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
       expect(entered.turnBefore?.emptyVerified).toBeUndefined();
-      expect(await sent()).toEqual([QUESTION]);
+      expect(await sent()).toEqual([]);
     }, 10_000);
 
     it("does not reuse new-chat verification after an existing conversation briefly becomes empty", async () => {
@@ -496,11 +559,14 @@ describe.skipIf(!executable)(
           timeoutMs: 3_000,
           expectFiles: false
         })
-      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+      ).rejects.toMatchObject({
+        code: "NEW_CONVERSATION_UNVERIFIED",
+        details: { submissionState: "not-sent" }
+      });
       await expect(
         driver().read(target, conversation, agent, adapter(), { entered: second, timeoutMs: 3_000 })
-      ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
-      expect(await sent()).toEqual([QUESTION, QUESTION]);
+      ).resolves.toEqual({ message: "not-shown", reply: "none" });
+      expect(await sent()).toEqual([QUESTION]);
     }, 10_000);
 
     it("cannot adopt a response without a message ID when its DOM content is reused", async () => {

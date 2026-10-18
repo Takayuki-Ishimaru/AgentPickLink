@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   correlateTurn,
+  submissionContinuityProblem,
   type MessageAnchor,
   type TurnSnapshot
 } from "../../src/transports/browser/turn-correlation.js";
@@ -13,6 +14,34 @@ const snapshot = (...messages: MessageAnchor[]): TurnSnapshot => ({
   messages
 });
 const before = snapshot(user("old-question"), reply("old-answer"));
+
+describe("turn continuity before pressing Send", () => {
+  it.each([before, snapshot(user("older-history"), ...before.messages), snapshot(reply("old-answer"))])(
+    "accepts history changes that retain the stable pre-send tail (#%#)",
+    (current) => {
+      expect(submissionContinuityProblem(before, current)).toBeUndefined();
+    }
+  );
+
+  it.each([
+    snapshot(user("external-question"), reply("external-answer")),
+    snapshot(...before.messages, user("external-question")),
+    snapshot(),
+    { ...before, documentId: "new-document" },
+    { ...before, conversationId: "new-conversation" },
+    snapshot(reply("old-answer"), user("old-question"))
+  ])("rejects an advanced or lost baseline even without count growth (#%#)", (current) => {
+    expect(submissionContinuityProblem(before, current)).toBeTypeOf("string");
+  });
+
+  it("permits only a verified empty baseline with no new user", () => {
+    const empty = { ...snapshot(), emptyVerified: true };
+    expect(submissionContinuityProblem(empty, snapshot())).toBeUndefined();
+    expect(submissionContinuityProblem(empty, snapshot(user("external-question")))).toBeDefined();
+    expect(submissionContinuityProblem(snapshot(), snapshot())).toBeDefined();
+    expect(submissionContinuityProblem(before, undefined)).toBeDefined();
+  });
+});
 
 describe("correlating a submitted turn independently of DOM message counts", () => {
   it.each([1, 2])(

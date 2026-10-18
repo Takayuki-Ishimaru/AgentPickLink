@@ -11,6 +11,7 @@ let disposable: { dispose(): void } | undefined;
 
 beforeEach(async () => {
   resetVscodeMock();
+  vscodeMock.configuration.set("agentpicklink.autoUpdate", false);
   getMock.mockReset();
   harness = await createRuntimeHarness({ language: "ja" });
   Object.assign(harness.context, { globalState: { get: () => undefined, update: async () => undefined } });

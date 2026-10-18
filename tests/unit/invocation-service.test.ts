@@ -1669,6 +1669,23 @@ describe("InvocationService.read", () => {
       });
     });
 
+    it("reports a closed conversation when the immediate page cleanup retry succeeds", async () => {
+      const fixture = await harness();
+      const handle = await keptConversation(fixture);
+      fixture.transport.closeFailure = new DomainError("BROWSER_START_FAILED", "page close failed");
+      fixture.transport.closeFailuresRemaining = 1;
+      fixture.transport.reading = completeReading();
+
+      await expect(fixture.service.read(fixture.workspaceRoot, handle, "req-read")).resolves.toMatchObject({
+        reply: "complete",
+        text: "response-body-marker",
+        conversationClosed: true
+      });
+      expect(fixture.transport.closes).toBe(2);
+      expect(fixture.conversations.has(handle)).toBe(false);
+      expect(fixture.transport.reads).toBe(1);
+    });
+
     it("marks the conversation failed when closing its page fails, but still returns the reply", async () => {
       const fixture = await harness();
       const handle = await keptConversation(fixture);

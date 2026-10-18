@@ -21,6 +21,7 @@ function fixture(): PanelState {
     phase: "connected",
     locale: "ja",
     version: "0.1.0",
+    extensionUpdates: { autoUpdate: true },
     status: setupStatus(),
     candidates: Array.from({ length: 12 }, (_, i) =>
       candidate({
@@ -126,6 +127,37 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     state = fixture();
     await post(state);
   });
+
+  it.each(["ja", "en"] as const)(
+    "toggles automatic updates accessibly in %s and reflects saved settings",
+    async (locale) => {
+      state.locale = locale;
+      state.extensionUpdates = { autoUpdate: true };
+      state.status = undefined;
+      await post(state);
+      const checkbox = page.getByRole("checkbox", {
+        name: locale === "ja" ? "拡張機能の自動更新" : "Automatically update the extension",
+        exact: true
+      });
+      expect(await checkbox.isChecked()).toBe(true);
+      await checkbox.uncheck();
+      expect(await page.evaluate(() => (window as unknown as { sent: unknown[] }).sent)).toContainEqual({
+        type: "setAutoUpdate",
+        enabled: false
+      });
+      state.extensionUpdates.autoUpdate = false;
+      await post(state);
+      expect(await checkbox.isChecked()).toBe(false);
+      await checkbox.check();
+      expect(await page.evaluate(() => (window as unknown as { sent: unknown[] }).sent)).toContainEqual({
+        type: "setAutoUpdate",
+        enabled: true
+      });
+      state.extensionUpdates = undefined;
+      await post(state);
+      expect(await checkbox.count()).toBe(0);
+    }
+  );
 
   it("distinguishes connected from configured and offers cancellation with readable progress", async () => {
     expect(await page.locator(".connection-status").innerText()).toBe("Microsoft 365 に接続済み");
