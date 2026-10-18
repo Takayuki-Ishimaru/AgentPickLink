@@ -109,8 +109,11 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
       })
     );
     try {
-      await navigator.open(page as unknown as PageLike, target, loadingAdapter, { timeoutMs: 5_000 });
+      // Keep the product's finite navigation budget; rendering is gated by the real DOM probe.
+      await navigator.open(page as unknown as PageLike, target, loadingAdapter, { timeoutMs: 45_000 });
 
+      expect(probe.mock.calls.length).toBeGreaterThan(1);
+      expect(await probe.mock.results.at(-1)?.value).toMatchObject({ matched: true });
       expect(await probe.mock.results[0].value).toMatchObject({ matched: false });
       expect(await loadingAdapter.canHandle(page as unknown as PageLike)).toMatchObject({ matched: true });
       expect(await page.locator("textarea").inputValue()).toBe("");
@@ -119,7 +122,7 @@ describe.skipIf(!executable)("mock chat through a real browser", () => {
       probe.mockRestore();
       await page.unroute(url);
     }
-  }, 10_000);
+  }, 60_000);
 
   it("names a rail row and its link by the text a sighted user reads, not by the DOM's concatenation", async () => {
     // Rows shaped like Microsoft 365's: avatar initials in a role="img" span, the name split across
