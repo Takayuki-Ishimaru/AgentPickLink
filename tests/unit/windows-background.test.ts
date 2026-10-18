@@ -66,13 +66,28 @@ describe("Windows background window control", () => {
         "# Compile only: no Windows API is invoked on this host."
       );
       const { execFile } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      // This checks compilation only. The command-contract test retains the product's 15s limit.
+      const startedAt = Date.now();
       const result = await promisify(execFile)(
         process.env.M365_AGENT_TEST_POWERSHELL!,
         ["-NoProfile", "-NonInteractive", "-Command", script],
-        { timeout: 15_000 }
-      );
+        { timeout: 60_000 }
+      ).catch((error: unknown) => {
+        const failure = error as { code?: unknown; killed?: unknown; signal?: unknown };
+        process.stderr.write(
+          "Native helper compilation failed " +
+            JSON.stringify({
+              elapsedMs: Date.now() - startedAt,
+              code: failure?.code,
+              killed: failure?.killed,
+              signal: failure?.signal
+            }) +
+            "\n"
+        );
+        throw error;
+      });
       expect(result.stdout).toContain("APL_WINDOWS_HIDDEN");
     },
-    20_000
+    75_000
   );
 });
