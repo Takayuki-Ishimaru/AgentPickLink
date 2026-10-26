@@ -9,6 +9,7 @@ import { DomainError } from "../domain/errors.js";
 
 const execFileAsync = promisify(execFile);
 const WINDOWS_ACL_TIMEOUT_MS = 30_000;
+const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const ACL_STAGES = new Set([
   "identity",
   "read-acl",
@@ -141,16 +142,16 @@ export async function withFileLock<T>(
 ): Promise<T> {
   await ensurePrivateDirectory(path.dirname(target));
   await fs.writeFile(target, "", { flag: "a", mode: 0o600 });
+  // Lock owners persist Windows ACLs, which can hold the lock for seconds; the default
+  // budget must cover that without becoming an unbounded retry.
+  const budgetMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const release = await lockfile.lock(target, {
-    retries:
-      options.timeoutMs === undefined
-        ? { retries: 10, factor: 1.2, minTimeout: 20, maxTimeout: 250 }
-        : {
-            retries: Math.max(1, Math.ceil(options.timeoutMs / 250)),
-            factor: 1,
-            minTimeout: 250,
-            maxTimeout: 250
-          },
+    retries: {
+      retries: Math.max(1, Math.ceil(budgetMs / 250)),
+      factor: 1,
+      minTimeout: 250,
+      maxTimeout: 250
+    },
     realpath: false
   });
   try {

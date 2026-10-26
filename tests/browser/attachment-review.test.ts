@@ -378,6 +378,14 @@ describe("attachment review regressions", () => {
 
   it("includes the passive SSO retry in the same overall deadline", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "apl-phase-sso-"));
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let entered!: () => void;
+    const navigating = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let saving: ReturnType<AttachmentSaver["save"]> | undefined;
     let requests = 0,
       tabs = 0,
       closed = 0;
@@ -394,7 +402,10 @@ describe("attachment review regressions", () => {
           tabs++;
           return {
             url: () => `https://${host}/file.txt`,
-            goto: () => new Promise(() => {}),
+            goto: () => {
+              entered();
+              return new Promise(() => {});
+            },
             close: async () => {
               closed++;
             }
@@ -402,18 +413,57 @@ describe("attachment review regressions", () => {
         }
       })
     };
+    // Reach SSO with real filesystem I/O before advancing the shared acquisition clock.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
-      const result = await new AttachmentSaver({
+      const started = Date.now();
+      let settled = false;
+      saving = new AttachmentSaver({
         enabled: true,
         directory,
         allowedHosts: [host],
         overallTimeoutMs: 80,
         timeoutMs: 1000
       }).save(page, candidates(2), context());
+      void saving.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      await Promise.race([
+        navigating,
+        new Promise<never>((_resolve, reject) => {
+          watchdog = realSetTimeout(() => reject(new Error("Passive SSO navigation was not reached")), 5_000);
+        })
+      ]);
+      realClearTimeout(watchdog);
+      expect({ requests, tabs, closed, settled }).toEqual({
+        requests: 1,
+        tabs: 1,
+        closed: 0,
+        settled: false
+      });
+      await vi.advanceTimersByTimeAsync(79);
+      expect(settled).toBe(false);
+      expect(closed).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await saving;
+      expect(Date.now() - started).toBe(80);
+      expect(result).toHaveLength(2);
       expect(result.every((item) => item.stage === "attachment-phase-timeout")).toBe(true);
       expect({ requests, tabs, closed }).toEqual({ requests: 1, tabs: 1, closed: 1 });
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      try {
+        realClearTimeout(watchdog);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await saving;
+      } finally {
+        vi.useRealTimers();
+        await rm(directory, { recursive: true, force: true });
+      }
     }
   });
 });

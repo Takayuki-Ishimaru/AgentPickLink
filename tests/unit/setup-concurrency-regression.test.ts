@@ -174,7 +174,8 @@ describe("setup concurrency review regressions", () => {
         async () => {
           await Promise.all([f.root, f.otherRoot].map((root) => stat(path.join(root, ".m365-agents.json"))));
         },
-        { interval: 5, timeout: 1000 }
+        // Windows ACL work inside each apply can delay the workspace-file stage well past 1s.
+        { interval: 5, timeout: process.platform === "win32" ? 30_000 : 1000 }
       );
       // Both old implementations have read their approval snapshot before the lock is released.
       await new Promise((resolve) => setTimeout(resolve, 30));
