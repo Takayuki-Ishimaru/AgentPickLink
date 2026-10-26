@@ -6,8 +6,8 @@ Runtime package notices and bundled third-party notices are reproduced verbatim 
 
 
 ================================================================================
-@modelcontextprotocol/core@2.0.0 — LICENSE
-License declaration: MIT
+@modelcontextprotocol/core@2.3.1 — LICENSE
+License declaration: Apache-2.0
 ================================================================================
 
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.
@@ -230,8 +230,8 @@ the full license text.
 
 
 ================================================================================
-@modelcontextprotocol/server@2.0.0 — LICENSE
-License declaration: MIT
+@modelcontextprotocol/server@2.3.1 — LICENSE
+License declaration: Apache-2.0
 ================================================================================
 
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.
@@ -3849,7 +3849,7 @@ THIS SOFTWARE.
 
 
 ================================================================================
-zod@4.5.4 — LICENSE
+zod@4.6.6 — LICENSE
 License declaration: MIT
 ================================================================================
 

@@ -5,7 +5,7 @@
 AgentPickLink 本体は [MIT ライセンス](../LICENSE) の OSS です。依存ソフトウェアのライセンスは変更しません。
 The AgentPickLink project is MIT licensed. Third-party software retains its original license terms.
 
-この一覧は v0.2.12 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
+この一覧は v0.2.13 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
 This inventory uses the names, pinned versions and license declarations in the lockfile. It includes direct, transitive and platform-specific optional dependencies. Not every entry is installed on every platform or shipped in the VSIX; separate installation paths have separate rows.
 
 実行時に配布するソフトウェアの著作権表示・ライセンス全文・同梱コンポーネントの通知は [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) に収録しています。VSIX 内の各パッケージの LICENSE / NOTICE も保持しています。
@@ -20,8 +20,8 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 | -------------------------------------------------------------------------------------------------- | ------- | ---------- | ----------- | ---------- |
 | [@eslint/js](https://www.npmjs.com/package/@eslint/js/v/10.0.1)                                    | 10.0.1  | MIT        | Development | Direct     |
 | [@modelcontextprotocol/client](https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.3.1) | 2.3.1   | Apache-2.0 | Development | Direct     |
-| [@modelcontextprotocol/core](https://www.npmjs.com/package/@modelcontextprotocol/core/v/2.0.0)     | 2.0.0   | MIT        | Runtime     | Direct     |
-| [@modelcontextprotocol/server](https://www.npmjs.com/package/@modelcontextprotocol/server/v/2.0.0) | 2.0.0   | MIT        | Runtime     | Direct     |
+| [@modelcontextprotocol/core](https://www.npmjs.com/package/@modelcontextprotocol/core/v/2.3.1)     | 2.3.1   | Apache-2.0 | Runtime     | Direct     |
+| [@modelcontextprotocol/server](https://www.npmjs.com/package/@modelcontextprotocol/server/v/2.3.1) | 2.3.1   | Apache-2.0 | Runtime     | Direct     |
 | [@types/node](https://www.npmjs.com/package/@types/node/v/22.20.1)                                 | 22.20.1 | MIT        | Development | Direct     |
 | [@types/proper-lockfile](https://www.npmjs.com/package/@types/proper-lockfile/v/4.1.4)             | 4.1.4   | MIT        | Development | Direct     |
 | [@types/vscode](https://www.npmjs.com/package/@types/vscode/v/1.101.0)                             | 1.101.0 | MIT        | Development | Direct     |
@@ -38,7 +38,7 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 | [typescript-eslint](https://www.npmjs.com/package/typescript-eslint/v/8.69.0)                      | 8.69.0  | MIT        | Development | Direct     |
 | [vitest](https://www.npmjs.com/package/vitest/v/4.1.11)                                            | 4.1.11  | MIT        | Development | Direct     |
 | [yaml](https://www.npmjs.com/package/yaml/v/2.9.0)                                                 | 2.9.0   | ISC        | Runtime     | Direct     |
-| [zod](https://www.npmjs.com/package/zod/v/4.5.4)                                                   | 4.5.4   | MIT        | Runtime     | Direct     |
+| [zod](https://www.npmjs.com/package/zod/v/4.6.6)                                                   | 4.6.6   | MIT        | Runtime     | Direct     |
 
 ## 実行時の間接依存 / Transitive runtime dependencies
 
@@ -207,7 +207,6 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [@humanwhocodes/module-importer](https://www.npmjs.com/package/@humanwhocodes/module-importer/v/1.0.1)                              | 1.0.1   | Apache-2.0    | Development | Transitive |
 | [@humanwhocodes/retry](https://www.npmjs.com/package/@humanwhocodes/retry/v/0.4.3)                                                  | 0.4.3   | Apache-2.0    | Development | Transitive |
 | [@jridgewell/sourcemap-codec](https://www.npmjs.com/package/@jridgewell/sourcemap-codec/v/1.6.0)                                    | 1.6.0   | MIT           | Development | Transitive |
-| [@modelcontextprotocol/core](https://www.npmjs.com/package/@modelcontextprotocol/core/v/2.3.1)                                      | 2.3.1   | Apache-2.0    | Development | Transitive |
 | [@napi-rs/keyring](https://www.npmjs.com/package/@napi-rs/keyring/v/1.3.0)                                                          | 1.3.0   | MIT           | Development | Transitive |
 | [@napi-rs/keyring-darwin-arm64](https://www.npmjs.com/package/@napi-rs/keyring-darwin-arm64/v/1.3.0)                                | 1.3.0   | MIT           | Development | Transitive |
 | [@napi-rs/keyring-darwin-x64](https://www.npmjs.com/package/@napi-rs/keyring-darwin-x64/v/1.3.0)                                    | 1.3.0   | MIT           | Development | Transitive |

@@ -1,4 +1,4 @@
-import { loadApprovals, saveApprovals } from "../../config/approvals.js";
+import { updateApprovals } from "../../config/approvals.js";
 import { loadRegistry } from "../../config/registry.js";
 import { loadGlobalConfig } from "../../config/global-config.js";
 import { DomainError } from "../../domain/errors.js";
@@ -18,11 +18,7 @@ export async function runWorkspaceApprove(
   options?: { yes?: boolean }
 ): Promise<Record<string, unknown>> {
   const workspace = await deps.workspaces.load(deps.root());
-  const [registry, approvals, config] = await Promise.all([
-    loadRegistry(deps.paths),
-    loadApprovals(deps.paths),
-    loadGlobalConfig(deps.paths)
-  ]);
+  const [registry, config] = await Promise.all([loadRegistry(deps.paths), loadGlobalConfig(deps.paths)]);
   const details = workspace.config.agents.map((requested) => {
     const agent = registry.agents.find((item) => item.alias === requested.alias);
     return {
@@ -40,11 +36,12 @@ export async function runWorkspaceApprove(
   const prompter = withYes(deps.prompter, !!options?.yes);
   if (!(await prompter.confirm("Approve exactly these local agent bindings for this workspace?")))
     throw new DomainError("INVALID_ARGUMENT", "Workspace approval was not confirmed.");
-  const approval = new ApprovalService(approvals, config.security.allowedCapabilityClasses).approve(
-    workspace,
-    registry.agents
+  const approval = await updateApprovals(deps.paths, (approvals) =>
+    new ApprovalService(approvals, config.security.allowedCapabilityClasses).approve(
+      workspace,
+      registry.agents
+    )
   );
-  await saveApprovals(deps.paths, approvals);
   return {
     approved: true,
     workspaceKey: workspace.workspaceKey,

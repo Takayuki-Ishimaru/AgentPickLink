@@ -28,9 +28,9 @@ const tarCommand =
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 // Pinned Node.js runtime version bundled into every portable archive. Looked up from
-// https://nodejs.org/dist/latest-v24.x/ on 2026-10-18: v24.22.0.
+// https://nodejs.org/dist/latest-v24.x/ on 2026-10-26: v24.22.1.
 // Override per invocation with --node-version.
-const PINNED_NODE_VERSION = "24.22.0";
+const PINNED_NODE_VERSION = "24.22.1";
 
 const PLATFORMS = {
   "win-x64": { nodePlatform: "win-x64", isWindows: true, outputExt: "zip" },

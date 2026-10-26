@@ -16,8 +16,8 @@ import { WorkspaceConfigSchema } from "../domain/workspace.js";
 import { slug } from "../domain/text.js";
 import type { AppPaths } from "../config/paths.js";
 import { loadRegistry, saveRegistry, updateRegistry } from "../config/registry.js";
-import { loadGlobalConfig, saveGlobalConfig, updateGlobalConfig } from "../config/global-config.js";
-import { loadApprovals, saveApprovals } from "../config/approvals.js";
+import { loadGlobalConfig, updateGlobalConfig } from "../config/global-config.js";
+import { loadApprovals, updateApprovals } from "../config/approvals.js";
 import { atomicWrite } from "../config/storage.js";
 import { initializeLocalState } from "../config/init.js";
 import { GlobalConfigSchema, type GlobalConfig } from "../config/schema.js";
@@ -576,6 +576,7 @@ export class SetupService {
     const takenAliases = new Set(registry.agents.map((agent) => agent.alias));
     const registered: ApplyResult["registered"] = [];
     const finalAgents: BrowserAgentDefinition[] = [];
+    const planByAlias = new Map<string, { planAgent: ApplyPlanAgent; reused: boolean }>();
     let firstError: unknown;
     const total = plan.agents.length;
 
@@ -610,6 +611,7 @@ export class SetupService {
             takenAliases.add(finalEntry.alias);
           }
           finalAgents.push(finalEntry);
+          planByAlias.set(finalEntry.alias, { planAgent, reused: !!reused });
           registered.push({ alias: finalEntry.alias, displayName: finalEntry.displayName, verified: true });
         } catch (error) {
           firstError ??= error;
@@ -630,7 +632,7 @@ export class SetupService {
 
     const configForPlan = (current: GlobalConfig): GlobalConfig => {
       const allowedCapabilityClasses = new Set(current.security.allowedCapabilityClasses);
-      if (finalAgents.some((agent) => agent.capabilityClass === "actions-possible"))
+      if (mergedAgents.some((agent) => agent.capabilityClass === "actions-possible"))
         allowedCapabilityClasses.add("actions-possible");
       const parsed = GlobalConfigSchema.safeParse({
         ...current,
@@ -651,6 +653,9 @@ export class SetupService {
         );
       return parsed.data;
     };
+    // `mergedAgents` starts as the pre-lock view and is replaced by the merged result inside
+    // `updateRegistry` below, so the capability policy reflects the latest registry entries.
+    let mergedAgents: BrowserAgentDefinition[] = finalAgents;
     // Validate the plan before writing either store, then merge it with current settings at save.
     configForPlan(config);
     let changedKeys: string[] = [];
@@ -664,18 +669,61 @@ export class SetupService {
           (original && !latest) ||
           (latest &&
             (!original ||
-              latest.verification.bindingFingerprint !== original.verification.bindingFingerprint))
+              latest.verification.bindingFingerprint !== original.verification.bindingFingerprint ||
+              deriveBindingFingerprint(latest) !== original.verification.bindingFingerprint))
         )
           throw new DomainError(
             "CONCURRENT_REQUEST",
             "Agent registrations changed in another window. Refresh the agent list and save again.",
             true
           );
+        const plan = planByAlias.get(agent.alias);
+        if (latest && plan?.reused) {
+          // A concurrent metadata edit keeps the binding fingerprint, so removal/rebind checks
+          // above miss it: reject only when the other window changed an explicitly-set field to
+          // a value that differs from both the plan snapshot and this plan's final value.
+          for (const field of ["description", "usageHint", "capabilityClass"] as const) {
+            if (plan.planAgent[field] === undefined) continue;
+            if (latest[field] === original?.[field] || latest[field] === agent[field]) continue;
+            throw new DomainError(
+              "CONCURRENT_REQUEST",
+              `Agent ${agent.alias} was edited in another window. Refresh the agent list and save again.`,
+              true
+            );
+          }
+        }
       }
-      current.agents = [...current.agents.filter((agent) => !byAlias.has(agent.alias)), ...finalAgents].sort(
+      const merged = finalAgents.map((agent) => {
+        const latest = current.agents.find((entry) => entry.alias === agent.alias);
+        const plan = latest ? planByAlias.get(agent.alias) : undefined;
+        if (!latest || !plan?.reused) return agent;
+        const original = originalByAlias.get(agent.alias);
+        // Reused agents: start from the latest entry and override only the fields this plan
+        // explicitly sets (normalized final values), keeping everything else from latest.
+        const next: BrowserAgentDefinition = { ...latest };
+        if (plan.planAgent.description !== undefined) next.description = agent.description;
+        if (plan.planAgent.usageHint !== undefined) next.usageHint = agent.usageHint;
+        if (plan.planAgent.capabilityClass !== undefined) next.capabilityClass = agent.capabilityClass;
+        // Carry this operation's verified display-name repair (repairReusedEntry) onto latest,
+        // field by field; a differing latest verification without our own repair survives.
+        if (
+          original &&
+          agent.verification.expectedDisplayName !== original.verification.expectedDisplayName
+        ) {
+          next.verification = {
+            ...latest.verification,
+            expectedDisplayName: agent.verification.expectedDisplayName,
+            validatedAt: agent.verification.validatedAt
+          };
+        }
+        next.verification = { ...next.verification, bindingFingerprint: deriveBindingFingerprint(next) };
+        return next;
+      });
+      mergedAgents = merged;
+      current.agents = [...current.agents.filter((agent) => !byAlias.has(agent.alias)), ...merged].sort(
         (a, b) => a.alias.localeCompare(b.alias)
       );
-      return finalAgents.length > 0;
+      return merged.length > 0;
     });
     const savedConfig = await updateGlobalConfig(this.deps.paths, (current) => {
       const updated = configForPlan(current);
@@ -701,13 +749,12 @@ export class SetupService {
     let approvedBindings: unknown[] = [];
     if (workspaceFileExists) {
       const workspace = await this.workspaces.load(root);
-      const approvalStore = await loadApprovals(this.deps.paths);
-      const approvalService = new ApprovalService(
-        approvalStore,
-        savedConfig.security.allowedCapabilityClasses
+      const approval = await updateApprovals(this.deps.paths, (approvalStore) =>
+        new ApprovalService(approvalStore, savedConfig.security.allowedCapabilityClasses).approve(
+          workspace,
+          registry.agents
+        )
       );
-      const approval = approvalService.approve(workspace, registry.agents);
-      await saveApprovals(this.deps.paths, approvalStore);
       approved = true;
       approvedBindings = approval.approvedBindings;
     }
@@ -756,11 +803,13 @@ export class SetupService {
         // Re-load so `approve()` sees the just-written (shorter) agent list rather than the
         // in-memory `workspace` captured before the write.
         const reloaded = await this.workspaces.load(root);
-        const approvalStore = await loadApprovals(this.deps.paths);
         const config = await loadGlobalConfig(this.deps.paths);
-        const approvalService = new ApprovalService(approvalStore, config.security.allowedCapabilityClasses);
-        approvalService.approve(reloaded, registry.agents);
-        await saveApprovals(this.deps.paths, approvalStore);
+        await updateApprovals(this.deps.paths, (approvalStore) => {
+          new ApprovalService(approvalStore, config.security.allowedCapabilityClasses).approve(
+            reloaded,
+            registry.agents
+          );
+        });
       }
     }
     return this.status();
@@ -774,9 +823,9 @@ export class SetupService {
     await this.prepare();
     const root = this.deps.root();
     const workspace = await this.workspaces.load(root);
-    const approvalStore = await loadApprovals(this.deps.paths);
-    new ApprovalService(approvalStore).revoke(workspace.workspaceKey);
-    await saveApprovals(this.deps.paths, approvalStore);
+    await updateApprovals(this.deps.paths, (approvalStore) => {
+      new ApprovalService(approvalStore).revoke(workspace.workspaceKey);
+    });
 
     let client: IpcClient | undefined;
     try {
@@ -1012,34 +1061,41 @@ export class SetupService {
     attachmentRetentionHours?: number;
     attachmentQuotaBytes?: number;
   }): Promise<UpdateConfigResult> {
-    const config = await loadGlobalConfig(this.deps.paths);
-    const candidate: unknown = {
-      ...config,
-      browser: {
-        ...config.browser,
-        channel: patch.channel ?? config.browser.channel,
-        headless: patch.headless ?? config.browser.headless,
-        acceptDownloads: patch.acceptDownloads ?? config.browser.acceptDownloads
-      },
-      navigation: {
-        ...config.navigation,
-        downloadHosts: patch.downloadHosts ?? config.navigation.downloadHosts
-      },
-      security: {
-        ...config.security,
-        ...(patch.attachmentRetentionHours !== undefined
-          ? { attachmentRetentionHours: patch.attachmentRetentionHours }
-          : {}),
-        ...(patch.attachmentQuotaBytes !== undefined
-          ? { attachmentQuotaBytes: patch.attachmentQuotaBytes }
-          : {})
-      }
-    };
-    const parsed = GlobalConfigSchema.safeParse(candidate);
-    if (!parsed.success)
-      throw new DomainError("INVALID_ARGUMENT", parsed.error.issues[0]?.message ?? "Invalid configuration.");
-    const changedKeys = computeBrokerScopedConfigChanges(config, parsed.data);
-    await saveGlobalConfig(this.deps.paths, parsed.data);
+    let changedKeys: string[] = [];
+    // Read, patch and write under the config lock so concurrent patches from other windows merge
+    // instead of overwriting each other; validation inside the callback rejects before any write.
+    await updateGlobalConfig(this.deps.paths, (current) => {
+      const candidate: unknown = {
+        ...current,
+        browser: {
+          ...current.browser,
+          channel: patch.channel ?? current.browser.channel,
+          headless: patch.headless ?? current.browser.headless,
+          acceptDownloads: patch.acceptDownloads ?? current.browser.acceptDownloads
+        },
+        navigation: {
+          ...current.navigation,
+          downloadHosts: patch.downloadHosts ?? current.navigation.downloadHosts
+        },
+        security: {
+          ...current.security,
+          ...(patch.attachmentRetentionHours !== undefined
+            ? { attachmentRetentionHours: patch.attachmentRetentionHours }
+            : {}),
+          ...(patch.attachmentQuotaBytes !== undefined
+            ? { attachmentQuotaBytes: patch.attachmentQuotaBytes }
+            : {})
+        }
+      };
+      const parsed = GlobalConfigSchema.safeParse(candidate);
+      if (!parsed.success)
+        throw new DomainError(
+          "INVALID_ARGUMENT",
+          parsed.error.issues[0]?.message ?? "Invalid configuration."
+        );
+      changedKeys = computeBrokerScopedConfigChanges(current, parsed.data);
+      return parsed.data;
+    });
     return { restartRequired: changedKeys.length > 0, changedKeys };
   }
 
@@ -1083,32 +1139,38 @@ export class SetupService {
     if (!(await fileExists(path.join(root, ".m365-agents.json")))) return;
     const workspace = await this.workspaces.load(root);
     if (!workspace.config.agents.some((entry) => entry.alias === alias)) return;
-    const approvalStore = await loadApprovals(this.deps.paths);
-    const approval = approvalStore.approvals.find((entry) => entry.workspaceKey === workspace.workspaceKey);
-    if (!approval?.approvedBindings.some((binding) => binding.alias === alias)) return;
-
-    let config = await loadGlobalConfig(this.deps.paths);
+    const precheck = await loadApprovals(this.deps.paths);
+    const pre = precheck.approvals.find((entry) => entry.workspaceKey === workspace.workspaceKey);
+    if (!pre?.approvedBindings.some((binding) => binding.alias === alias)) return;
     const updated = agents.find((agent) => agent.alias === alias);
+    // Persist any policy widening through the locked config merge before taking the approvals
+    // lock, so the two locks are never held at once.
+    let config = await loadGlobalConfig(this.deps.paths, { readOnly: true });
     if (
       updated?.capabilityClass === "actions-possible" &&
       !config.security.allowedCapabilityClasses.includes("actions-possible")
     ) {
-      const candidate: unknown = {
-        ...config,
-        security: {
-          ...config.security,
-          allowedCapabilityClasses: [...config.security.allowedCapabilityClasses, "actions-possible"]
-        }
-      };
-      const parsed = GlobalConfigSchema.safeParse(candidate);
-      if (parsed.success) {
-        await saveGlobalConfig(this.deps.paths, parsed.data);
-        config = parsed.data;
-      }
+      config = await updateGlobalConfig(this.deps.paths, (current) => {
+        if (current.security.allowedCapabilityClasses.includes("actions-possible")) return current;
+        const candidate: unknown = {
+          ...current,
+          security: {
+            ...current.security,
+            allowedCapabilityClasses: [...current.security.allowedCapabilityClasses, "actions-possible"]
+          }
+        };
+        const parsed = GlobalConfigSchema.safeParse(candidate);
+        if (!parsed.success) return current;
+        return parsed.data;
+      });
     }
-    const approvalService = new ApprovalService(approvalStore, config.security.allowedCapabilityClasses);
-    approvalService.approve(workspace, agents);
-    await saveApprovals(this.deps.paths, approvalStore);
+    const allowedCapabilityClasses = config.security.allowedCapabilityClasses;
+    await updateApprovals(this.deps.paths, (approvalStore) => {
+      // Re-check inside the lock: a concurrent revoke must not be resurrected by this re-approve.
+      const approval = approvalStore.approvals.find((entry) => entry.workspaceKey === workspace.workspaceKey);
+      if (!approval?.approvedBindings.some((binding) => binding.alias === alias)) return;
+      new ApprovalService(approvalStore, allowedCapabilityClasses).approve(workspace, agents);
+    });
   }
 
   private toRegistered(agent: BrowserAgentDefinition): NonNullable<AgentCandidate["registered"]> {

@@ -72,14 +72,28 @@ export async function checkGithubUpdate(options: {
   active: () => boolean;
   notify: (tag: string) => Promise<boolean>;
   open: (url: string) => PromiseLike<unknown>;
+  /** Whether the notification action is still allowed to run; defaults to `active`. */
+  notifyActive?: () => boolean;
+  /** False resolves as soon as the notification is shown: its action then runs detached. */
+  awaitNotification?: boolean;
 }): Promise<void> {
   if (!options.active()) return;
   const release = newestRelease(await options.fetchReleases(), options.installed);
   if (!options.active() || !release || options.state.get(NOTICE_KEY) === release.tag) return;
   await options.state.update(NOTICE_KEY, release.tag);
   if (!options.active()) return;
-  const open = await options.notify(release.tag);
-  if (open && options.active()) await options.open(release.url);
+  const live = options.notifyActive ?? options.active;
+  const act = async (): Promise<void> => {
+    const open = await options.notify(release.tag);
+    if (open && live()) await options.open(release.url);
+  };
+  if (options.awaitNotification === false) {
+    // A notice can sit in the notification center for hours; its action must neither hold the
+    // caller's scheduler nor surface a rejection nobody is awaiting.
+    void act().catch(() => {});
+    return;
+  }
+  await act();
 }
 
 export function fetchReleases(signal: AbortSignal): Promise<unknown> {

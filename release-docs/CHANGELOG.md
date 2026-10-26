@@ -1,5 +1,60 @@
 # リリースノート
 
+## v0.2.13 Beta
+
+### 主な変更
+
+- **複数ウィンドウでのワークスペース承認を修正しました。** 異なるワークスペースで承認・取消・再承認を同時に行っても、別のワークスペースの承認を失わないようにしました。
+- **詳細設定を同時に保存した際の上書きを修正しました。** 別のウィンドウで変更された、今回の保存対象ではない設定を保持します。
+- **エージェントの情報を保存する際の競合処理を改善しました。** 保存中に別のウィンドウで変更された説明・利用ヒント・機能区分など、今回指定していない項目を保持します。同じ項目を異なる内容に変更した場合は保存を止め、一覧の更新を求めます。
+- **更新通知を開いたままでも更新確認が進むようにしました。** 通知への操作待ちで6時間ごとの確認や自動更新の有効化が止まる問題を修正しました。
+- **複数ウィンドウで同じ更新を繰り返しインストールすることを防ぎます。** 別のウィンドウでインストールが完了した同じ更新を再取得せず、古いウィンドウからそれより古い版へ戻すことも防ぎます。更新後は各ウィンドウで VS Code を再読み込みしてください。
+- **同梱する MCP SDK と入力検証ライブラリを更新しました。** 公開されたセキュリティ修正を取り込んでいます。
+- **ポータブル版の同梱 Node.js を 24.22.1 に更新しました。** [Node.js のセキュリティ更新](https://nodejs.org/en/blog/release/v24.22.1)を取り込んでいます。
+
+### 更新方法
+
+v0.2.12 で自動更新を有効にしている場合は、更新のインストール後に VS Code を再読み込みしてください。手動で更新する場合や v0.2.11 以前から更新する場合は、`agent-pick-link-0.2.13.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、再読み込みしてください。自動更新は v0.2.12 から利用でき、サイドバーの **拡張機能の更新 → 拡張機能の自動更新** で切り替えられます。
+
+機械インストールの更新は引き続き手動です。ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行してください。既存の設定・ワークスペース承認・専用ブラウザープロファイルを引き続き利用できます。外部 AI クライアントの MCP 接続やローカルプロセスも更新・再起動してください。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の元の会話で確認してください。
+
+今回の修正は、以前の版ですでに失われた設定や承認を自動復元するものではありません。見当たらない場合は設定内容と対象エージェントを確認し、保存・承認し直してください。保存時に `CONCURRENT_REQUEST` が表示された場合は、一覧を更新して変更内容を確認し直してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.13.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.13-win-x64.zip` / `AgentPickLink-0.2.13-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.13-darwin-arm64.tgz` / `AgentPickLink-0.2.13-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.13-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.13-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.13 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。自動検証は模擬画面と API モックを使用します。利用する環境で質問・回答・ファイル取得、設定保存と更新動作を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed concurrent workspace approvals.** Approving, revoking, or re-approving different workspaces in multiple windows preserves the other workspaces' approvals.
+- **Fixed lost changes when saving advanced settings concurrently.** Saves preserve settings changed in another window outside the requested edits.
+- **Improved concurrent agent metadata saves.** Descriptions, usage hints, and capability classes changed in another window are retained when this save does not set those fields. Conflicting edits to the same field stop the save and ask you to refresh.
+- **Pending update notifications no longer block update checks.** Six-hour checks and enabling automatic updates proceed while a notification remains open.
+- **Avoided repeated installation of the same successful update across windows.** A window skips an update already installed by another window and does not replace a newer installed version with an older one. Reload VS Code in each window after updating.
+- **Updated the bundled MCP SDK and input validation library** to include published security fixes.
+- **Updated the Node.js runtime bundled in portable archives to 24.22.1**, incorporating the [Node.js security release](https://nodejs.org/en/blog/release/v24.22.1).
+
+With automatic updates enabled in v0.2.12, reload VS Code after installation. For manual updates or updates from v0.2.11 or earlier, install `agent-pick-link-0.2.13.vsix` and reload. Automatic updates have been available since v0.2.12 and can be toggled in the sidebar.
+
+Machine installation updates remain manual. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, approvals, and the dedicated browser profile can be reused. Update and restart external clients' MCP connections and local processes too. Conversation handles issued before a restart cannot be reused; inspect existing questions in the original Microsoft 365 conversation.
+
+These fixes do not automatically restore settings or approvals already lost in earlier versions. Review and save or approve them again if needed. On `CONCURRENT_REQUEST`, refresh the agent list and review your edits before saving.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives bundle Node.js 24.22.1.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.13. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Automated checks use mock pages and API mocks. Validate questions, replies, file retrieval, settings saves, and update behavior in your environment. See [supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.12 Beta
 
 ### 主な変更
