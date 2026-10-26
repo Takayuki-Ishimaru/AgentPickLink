@@ -6,7 +6,7 @@ import {
   type BrowserAgentDefinition
 } from "../../domain/agent.js";
 import { DomainError } from "../../domain/errors.js";
-import { loadRegistry, saveRegistry } from "../../config/registry.js";
+import { updateRegistry } from "../../config/registry.js";
 import { assertSupportedTopology } from "../../services/workspace-service.js";
 import { pathPattern, slug } from "../../domain/text.js";
 import type { CapturedAgent } from "../../transports/transport.js";
@@ -62,16 +62,19 @@ export async function runAgentAdd(
     }
   };
   provisional.verification.bindingFingerprint = deriveBindingFingerprint(provisional);
-  const registry = await loadRegistry(deps.paths);
-  if (registry.agents.some((item) => item.alias === provisional.alias) && !options.force)
-    throw new DomainError(
-      "INVALID_ARGUMENT",
-      `Alias ${provisional.alias} already exists. Remove it first or use --force to save an unverified replacement.`
+  // Duplicate check and write share one registry lock, so two simultaneous registrations of the
+  // same alias cannot both pass the check and neither can drop another window's agent.
+  await updateRegistry(deps.paths, (current) => {
+    if (current.agents.some((item) => item.alias === provisional.alias) && !options.force)
+      throw new DomainError(
+        "INVALID_ARGUMENT",
+        `Alias ${provisional.alias} already exists. Remove it first or use --force to save an unverified replacement.`
+      );
+    current.agents = [...current.agents.filter((item) => item.alias !== provisional.alias), provisional].sort(
+      (a, b) => a.alias.localeCompare(b.alias)
     );
-  registry.agents = [...registry.agents.filter((item) => item.alias !== provisional.alias), provisional].sort(
-    (a, b) => a.alias.localeCompare(b.alias)
-  );
-  await saveRegistry(deps.paths, registry);
+    return true;
+  });
   return {
     added: true,
     alias: provisional.alias,

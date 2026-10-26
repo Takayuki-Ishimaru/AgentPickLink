@@ -1,6 +1,6 @@
 import { AliasSchema } from "../../domain/agent.js";
 import { DomainError } from "../../domain/errors.js";
-import { loadRegistry, saveRegistry } from "../../config/registry.js";
+import { updateRegistry } from "../../config/registry.js";
 import type { CommandDeps } from "../command-deps.js";
 
 export async function runAgentRemove(deps: CommandDeps, alias: string): Promise<Record<string, unknown>> {
@@ -9,9 +9,15 @@ export async function runAgentRemove(deps: CommandDeps, alias: string): Promise<
       "INVALID_ARGUMENT",
       "Agent alias must be lowercase alphanumeric with optional hyphens."
     );
-  const current = await loadRegistry(deps.paths);
-  const next = { ...current, agents: current.agents.filter((agent) => agent.alias !== alias) };
-  if (next.agents.length === current.agents.length) return { removed: false, alias };
-  await saveRegistry(deps.paths, next);
-  return { removed: true, alias };
+  // Existence check and deletion share one registry lock, so a concurrent registration or
+  // removal by another window is never overwritten and `removed` reports current state.
+  let removed = false;
+  await updateRegistry(deps.paths, (current) => {
+    const next = current.agents.filter((agent) => agent.alias !== alias);
+    if (next.length === current.agents.length) return false;
+    current.agents = next;
+    removed = true;
+    return true;
+  });
+  return { removed, alias };
 }

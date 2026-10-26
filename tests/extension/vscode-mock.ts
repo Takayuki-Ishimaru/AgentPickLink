@@ -70,6 +70,22 @@ export class Uri {
     readonly fragment = ""
   ) {}
 
+  static from(value: {
+    scheme: string;
+    authority?: string;
+    path?: string;
+    query?: string;
+    fragment?: string;
+  }): Uri {
+    return new Uri(
+      value.scheme,
+      value.authority ?? "",
+      value.path ?? "",
+      value.query ?? "",
+      value.fragment ?? ""
+    );
+  }
+
   static file(fsPath: string): Uri {
     return new Uri("file", "", fsPath);
   }

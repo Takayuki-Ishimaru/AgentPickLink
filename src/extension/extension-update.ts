@@ -4,6 +4,7 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 import { compareVersions } from "../services/update-checker.js";
 import { downloadExtensionRelease, type ExtensionRelease } from "../services/extension-update.js";
+import { readInstalledExtensionVersion } from "./installed-extension.js";
 
 /** Durable proof, in storage shared by every window, that an exact release finished installing. */
 const RECEIPT_FILE = "installed-release.json";
@@ -55,15 +56,19 @@ async function writeReceipt(file: string, receipt: Receipt): Promise<void> {
  * One install at a time across VS Code windows; VS Code validates the VSIX manifest itself. The
  * lock only covers the install itself, so the receipt written after each success is what tells a
  * second window that the identical release is already installed (success -> reload) instead of
- * downloading and installing it again. Every receipt read happens under the lock, so a receipt a
- * faster window wrote -- identical or newer -- is never missed. Failures write nothing and retry.
+ * downloading and installing it again. The on-disk inventory must agree with the receipt before
+ * it can be reused; external downgrades invalidate that proof, and newer installs are protected.
+ * Unavailable installation state defers the update. Failed native installs write no receipt.
  */
 export async function installExtensionRelease(
   context: vscode.ExtensionContext,
   release: ExtensionRelease,
   signal: AbortSignal,
   active: () => boolean,
-  download = downloadExtensionRelease
+  download = downloadExtensionRelease,
+  installedVersionReader: (
+    context: vscode.ExtensionContext
+  ) => Promise<string | undefined> = readInstalledExtensionVersion
 ): Promise<boolean> {
   const enabled = () => !signal.aborted && active();
   if (!enabled()) return false;
@@ -80,18 +85,29 @@ export async function installExtensionRelease(
   let directory: string | undefined;
   try {
     if (!enabled()) return false;
+    // The receipt describes the install on disk, not this window's runtime, so nothing is skipped
+    // or downloaded before the actual installed version is known: unknown defers, newer is protected.
+    const actual = await installedVersionReader(context);
+    if (!actual) return false;
+    const againstRelease = compareVersions(actual, release.tag);
+    if (againstRelease === undefined || againstRelease === 1) return false;
     const receipt = await readReceipt(receiptFile);
     // Reading the receipt is asynchronous: re-check cancellation before claiming anything.
     if (!enabled()) return false;
-    if (isReceipt(receipt, release)) return true;
-    // A newer release is installed here: a stale window must not roll the shared install back.
-    if (receipt && compareVersions(release.tag, receipt.tag) === -1) return false;
+    // Exact only when the disk still holds the receipted version; a stale receipt of a version that
+    // is no longer on disk (external downgrade) must not block a repair, newer or identical.
+    if (receipt && isReceipt(receipt, release) && compareVersions(actual, receipt.tag) === 0) return true;
     const bytes = await download(release, signal);
     if (!enabled()) return false;
     directory = await mkdtemp(path.join(storage, "update-"));
     const file = path.join(directory, release.name);
     await writeFile(file, bytes, { mode: 0o600 });
     if (!enabled()) return false;
+    // Another window or an external change may have moved the install while downloading.
+    const after = await installedVersionReader(context);
+    if (!after) return false;
+    const againstAfter = compareVersions(after, release.tag);
+    if (againstAfter === undefined || againstAfter === 1 || !enabled()) return false;
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(file));
     await writeReceipt(receiptFile, { tag: release.tag, sha256: release.sha256 });
     return true;

@@ -8,7 +8,7 @@
 
 [日本語](README.md) | [English](README.en.md)
 
-**v0.2.13 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.14 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,13 +16,12 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.13
+## What's new in v0.2.14
 
-- Fixed lost changes when multiple windows approve or revoke workspaces, or save distinct advanced settings, at the same time.
-- Agent saves preserve descriptions, usage hints, and other metadata outside the requested edits. Conflicting edits to the same field stop the save and ask you to refresh.
-- Pending update notifications no longer block periodic checks or enabling automatic updates. Multiple windows also avoid installing the same successful update again.
-- Included security updates for the bundled MCP SDK and input validation library.
-- Updated the Node.js runtime bundled in portable archives to 24.22.1.
+- Automatic updates check the actual installed state, allowing retries after a manual downgrade while preserving a newer installed version.
+- Concurrent agent edits, removals, and CLI registrations preserve information saved by other operations.
+- MCP connection checks preserve Japanese and other UTF-8 text received in separate chunks.
+- Dedicated browser-profile checks correctly reject cloud-synchronized locations with previously overlooked subdirectory names.
 
 See the [release notes](CHANGELOG.md) for details and update instructions.
 
@@ -41,23 +40,23 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.13.vsix` from **Releases → v0.2.13 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.14.vsix` from **Releases → v0.2.14 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.13.vsix
+code --install-extension agent-pick-link-0.2.14.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
 ### Updating from an earlier version
 
-Install the v0.2.13 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.14 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
-If automatic updates are enabled in v0.2.12, reload VS Code after the update is installed. From v0.2.11 or earlier, or when automatic updates are disabled, manually install the v0.2.13 VSIX. To opt out, turn off **Automatically update the extension** in the sidebar after updating. An existing `agentpicklink.checkForUpdates: false` setting is preserved.
+If automatic updates are enabled in v0.2.12 or later, reload VS Code after the update is installed. From v0.2.11 or earlier, or when automatic updates are disabled, manually install the v0.2.14 VSIX. To opt out, turn off **Automatically update the extension** in the sidebar after updating. An existing `agentpicklink.checkForUpdates: false` setting is preserved.
 
 ## Install without the extension
 
@@ -146,7 +145,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.13-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.14-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -157,7 +156,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.13.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.14.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 

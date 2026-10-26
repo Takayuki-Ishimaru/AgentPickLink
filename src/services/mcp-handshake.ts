@@ -12,6 +12,7 @@
  * `ReadBuffer.readMessage`'s own behaviour.
  */
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { DomainError } from "../domain/errors.js";
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -91,11 +92,13 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
   protocolError.catch(() => undefined);
 
   let stderr = "";
+  let stderrBytes = 0;
+  const stderrDecoder = new StringDecoder("utf8");
   let stderrOverLimit = false;
   child.stderr?.on("data", (chunk: Buffer) => {
     if (stderrOverLimit) return;
-    stderr += chunk.toString("utf8");
-    if (stderr.length > MAX_BUFFER_BYTES) {
+    stderrBytes += chunk.length;
+    if (stderrBytes > MAX_BUFFER_BYTES) {
       stderrOverLimit = true;
       protocolErrorReject(
         new DomainError(
@@ -103,12 +106,18 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
           `${opts.command} wrote more than ${MAX_BUFFER_BYTES} bytes to stderr during the MCP handshake.`
         )
       );
+      return;
     }
+    stderr += stderrDecoder.write(chunk);
+  });
+  child.stderr?.on("end", () => {
+    if (!stderrOverLimit) stderr += stderrDecoder.end();
   });
 
   const pending = new Map<string, PendingCall>();
   let nextId = 1;
-  let buffer = "";
+  // Frame raw bytes before decoding: a data event can end inside a UTF-8 character.
+  let buffer: Buffer = Buffer.alloc(0);
   let stdoutOverLimit = false;
 
   const send = (message: Record<string, unknown>): void => {
@@ -130,23 +139,23 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
 
   child.stdout?.on("data", (chunk: Buffer) => {
     if (stdoutOverLimit) return;
-    buffer += chunk.toString("utf8");
-    if (buffer.length > MAX_BUFFER_BYTES) {
+    buffer = Buffer.concat([buffer, chunk]);
+    const failStdoutLimit = (): void => {
       stdoutOverLimit = true;
-      buffer = "";
+      buffer = Buffer.alloc(0);
       protocolErrorReject(
         new DomainError(
           "BROKER_PROTOCOL_ERROR",
           `${opts.command} sent more than ${MAX_BUFFER_BYTES} bytes without a newline during the MCP handshake.`
         )
       );
-      return;
-    }
-    let index = buffer.indexOf("\n");
+    };
+    let index = buffer.indexOf(0x0a);
     while (index !== -1) {
-      const line = buffer.slice(0, index).replace(/\r$/, "");
-      buffer = buffer.slice(index + 1);
-      index = buffer.indexOf("\n");
+      if (index > MAX_BUFFER_BYTES) return failStdoutLimit();
+      const line = buffer.subarray(0, index).toString("utf8").replace(/\r$/, "");
+      buffer = buffer.subarray(index + 1);
+      index = buffer.indexOf(0x0a);
       if (line.trim().length === 0) continue;
       let message: unknown;
       try {
@@ -168,6 +177,7 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
         waiter.resolve(record.result);
       }
     }
+    if (buffer.length > MAX_BUFFER_BYTES) failStdoutLimit();
   });
 
   let timeoutHandle: NodeJS.Timeout | undefined;

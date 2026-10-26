@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   startUpdateCheck,
@@ -36,6 +38,22 @@ afterEach(async () => {
   await h.dispose();
 });
 const dependencies = () => ({ fetch: vi.fn(async () => feed), install: vi.fn(async () => true) });
+// Real temp inventory/manifest, in the legacy default-profile layout the reader falls back to.
+const inventory = () => path.join(path.dirname(h.extensionRoot), "extensions.json");
+async function installedOnDisk(version: string) {
+  const folder = `agentpicklink.agent-pick-link-${version}`;
+  await mkdir(path.join(path.dirname(h.extensionRoot), folder), { recursive: true });
+  await writeFile(
+    path.join(path.dirname(h.extensionRoot), folder, "package.json"),
+    JSON.stringify({ publisher: "agentpicklink", name: "agent-pick-link", version })
+  );
+  await writeFile(
+    inventory(),
+    JSON.stringify([
+      { identifier: { id: "agentpicklink.agent-pick-link" }, version, relativeLocation: folder }
+    ])
+  );
+}
 const retainNotification = () =>
   vi.spyOn(window, "showInformationMessage").mockImplementation(
     () =>
@@ -74,6 +92,15 @@ describe("independent review: actual notification lifetime and multiple windows"
   });
 
   it("does not repeat the same successful update in a second already-open window", async () => {
+    await installedOnDisk("0.1.0");
+    vscodeMock.commands.set("workbench.extensions.installExtension", async (uri: unknown) =>
+      installedOnDisk(
+        path
+          .basename((uri as { fsPath: string }).fsPath)
+          .replace(/^agent-pick-link-/, "")
+          .replace(/\.vsix$/, "")
+      )
+    );
     vi.useFakeTimers();
     const download = vi.fn(async () => Buffer.from("vsix"));
     const deps = {
@@ -203,4 +230,37 @@ describe("independent review: actual notification lifetime and multiple windows"
       vscodeMock.executedCommands.filter((entry) => entry.command === "workbench.action.reloadWindow")
     ).toHaveLength(mode === "unchanged" ? 1 : 0);
   });
+});
+
+describe("v0.2.13 install completion preferences", () => {
+  it.each(["checkForUpdates", "autoUpdate", "dispose"])(
+    "does not create a stale reload action after %s changes during native install",
+    async (setting) => {
+      vi.useFakeTimers();
+      let finish!: (value: boolean) => void;
+      const deps = {
+        fetch: vi.fn(async () => feed),
+        install: vi.fn(
+          () =>
+            new Promise<boolean>((resolve) => {
+              finish = resolve;
+            })
+        )
+      };
+      d = startUpdateCheck(h.context as never, h.runtime, deps);
+      await vi.advanceTimersByTimeAsync(UPDATE_CHECK_DELAY_MS);
+      expect(deps.install).toHaveBeenCalledOnce();
+      if (setting === "dispose") d.dispose();
+      else {
+        vscodeMock.configuration.set(`agentpicklink.${setting}`, false);
+        vscodeMock.changeConfiguration(`agentpicklink.${setting}`);
+      }
+      finish(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vscodeMock.messages).toHaveLength(0);
+      expect(vscodeMock.executedCommands).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+      expect(deps.install).toHaveBeenCalledOnce();
+    }
+  );
 });

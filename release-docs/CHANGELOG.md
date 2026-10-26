@@ -1,5 +1,56 @@
 # リリースノート
 
+## v0.2.14 Beta
+
+### 主な変更
+
+- **手動で版を戻した後の自動更新を修正しました。** 過去の更新記録だけで判断せず、実際にインストールされている版を確認します。手動で旧版に戻した後も更新を再試行でき、別ウィンドウや手動操作ですでに入った新しい版を古い版で上書きしません。インストール状態を確認できない場合は自動更新を見送ります。
+- **エージェントの個別編集・削除と CLI 登録の同時実行を改善しました。** 別のウィンドウや CLI が追加・編集した他のエージェントを保持します。説明や利用ヒントなどの個別編集では、今回指定していない項目の変更も保持します。同じエイリアスを同時に CLI 登録した場合は、明示的な上書き指定がなければ重複を拒否します。
+- **MCP 接続確認で日本語などの文字が分割されて届く場合の処理を修正しました。** 受信の区切りによる文字化けを防ぎ、接続確認で受け取るデータの上限をバイト単位で適用します。
+- **専用ブラウザープロファイルの場所の検査を修正しました。** クラウド同期フォルダー内のサブフォルダー名が `..private` などで始まる場合も、同期対象の場所として拒否します。専用プロファイルには、同期されないローカルフォルダーを指定してください。
+
+### 更新方法
+
+v0.2.12 以降で自動更新を有効にしている場合は、更新のインストール後に VS Code を再読み込みしてください。手動で更新する場合や v0.2.11 以前から更新する場合は、`agent-pick-link-0.2.14.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、再読み込みしてください。自動更新が進まない場合も、同じ VSIX で手動更新できます。自動更新はサイドバーの **拡張機能の更新 → 拡張機能の自動更新** で切り替えられます。
+
+機械インストールの更新は引き続き手動です。ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行してください。既存の設定・ワークスペース承認・専用ブラウザープロファイルを引き続き利用できます。外部 AI クライアントの MCP 接続やローカルプロセスも更新・再起動してください。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の元の会話で確認してください。
+
+以前の版ですでに失われたエージェント情報は自動復元しません。見当たらない場合は、登録内容を確認して登録し直してください。`BROWSER_PROFILE_INVALID` が表示された場合は、クラウド同期の対象外に専用プロファイルを指定し、必要に応じてサインインし直してください。設定ファイルの形式に変更はありません。
+
+### 配布物
+
+- `agent-pick-link-0.2.14.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.14-win-x64.zip` / `AgentPickLink-0.2.14-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.14-darwin-arm64.tgz` / `AgentPickLink-0.2.14-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.14-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.14-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版の同梱 Node.js は、v0.2.13 と同じ 24.22.1 です。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向けです。Linux は開発・CI 専用で、標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。対応環境に変更はありません。
+
+v0.2.14 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。自動検証は模擬画面と API モックを使用します。利用する環境で質問・回答・ファイル取得、エージェントの編集と更新動作を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)、[導入手順](README.md) を参照してください。
+
+### English
+
+- **Fixed automatic updates after a manual downgrade.** Update decisions check the version actually installed rather than relying solely on a past update record. Updates can be retried after a manual downgrade, and a newer version installed manually or by another window is protected from replacement by an older update. Automatic installation is deferred when the installed state cannot be confirmed.
+- **Improved concurrent agent editing, removal, and CLI registration.** Changes to other agents made by another window or CLI are preserved. Individual edits also preserve metadata fields outside the requested edits. Concurrent CLI registrations of the same alias reject duplicates unless an explicit overwrite is requested.
+- **Fixed split multibyte characters during MCP connection checks.** Japanese and other UTF-8 text is preserved across incoming chunks, and connection-check data limits are applied in bytes.
+- **Corrected dedicated browser-profile location checks.** Subdirectories of a cloud-sync folder are rejected even when their names begin with `..private` or similar text. Use a dedicated local folder outside cloud synchronization.
+
+With automatic updates enabled in v0.2.12 or later, reload VS Code after installation. For manual updates, updates from v0.2.11 or earlier, or an automatic update that does not proceed, install `agent-pick-link-0.2.14.vsix` and reload. Automatic updates can be toggled in the sidebar.
+
+Machine installation updates remain manual. For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Existing settings, approvals, and the dedicated browser profile can be reused. Update and restart external clients' MCP connections and local processes too. Conversation handles issued before a restart cannot be reused; inspect existing questions in the original Microsoft 365 conversation.
+
+Previously lost agent information is not restored automatically; review and register it again if needed. On `BROWSER_PROFILE_INVALID`, choose a dedicated profile outside cloud synchronization and sign in again if necessary. Configuration file formats are unchanged.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives continue to bundle Node.js 24.22.1, the same version as v0.2.13.
+
+Support remains unchanged: Windows 11 with Microsoft Edge is the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for v0.2.14. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified. Automated checks use mock pages and API mocks. Validate questions, replies, file retrieval, agent edits, and update behavior in your environment. See [supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.13 Beta
 
 ### 主な変更

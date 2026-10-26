@@ -1,5 +1,6 @@
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { commands } from "vscode";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installExtensionRelease } from "../../src/extension/extension-update.js";
@@ -16,9 +17,25 @@ const release: ExtensionRelease = {
   sha256: "a".repeat(64)
 };
 const bytes = Buffer.from("vsix");
+// Faithful model of the on-disk install: the version changes only when the native install command
+// succeeds, never after a download or install failure.
+let installed = "0.1.0";
+const installedVersion = async () => installed;
 beforeEach(async () => {
   resetVscodeMock();
   harness = await createRuntimeHarness();
+  installed = "0.1.0";
+  const execute = commands.executeCommand.bind(commands);
+  vi.spyOn(commands, "executeCommand").mockImplementation(async (command: string, ...args: unknown[]) => {
+    const result = await execute(command, ...args);
+    if (command === "workbench.extensions.installExtension") {
+      installed = path
+        .basename((args[0] as { fsPath: string }).fsPath)
+        .replace(/^agent-pick-link-/, "")
+        .replace(/\.vsix$/, "");
+    }
+    return result;
+  });
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -29,7 +46,7 @@ const install = (
   download = vi.fn(async () => bytes),
   active = () => true,
   signal = new AbortController().signal
-) => installExtensionRelease(harness.context as never, release, signal, active, download);
+) => installExtensionRelease(harness.context as never, release, signal, active, download, installedVersion);
 const storage = () => harness.context.globalStorageUri.fsPath;
 
 describe("VS Code VSIX installation", () => {
@@ -82,6 +99,7 @@ describe("VS Code VSIX installation", () => {
         throw new Error("rejected");
       });
     await expect(install(download)).rejects.toThrow();
+    expect(installed).toBe("0.1.0");
     expect(await readdir(storage())).toEqual([]);
     vscodeMock.commands.delete("workbench.extensions.installExtension");
     expect(await install()).toBe(true);
@@ -139,7 +157,8 @@ describe("VS Code VSIX installation", () => {
         different,
         new AbortController().signal,
         () => true,
-        download
+        download,
+        installedVersion
       )
     ).toBe(true);
     expect(download).toHaveBeenCalledOnce();
@@ -150,6 +169,8 @@ describe("VS Code VSIX installation", () => {
     "rejects an older update when the newer receipt appears %s during lock acquisition",
     async (duringLock) => {
       await mkdir(storage(), { recursive: true });
+      // The newer release is on disk now: the running window's older update must not roll it back.
+      installed = "0.2.0";
       const receipt = path.join(storage(), "installed-release.json");
       const newer = JSON.stringify({ tag: "v0.2.0", sha256: "b".repeat(64) });
       if (duringLock) {

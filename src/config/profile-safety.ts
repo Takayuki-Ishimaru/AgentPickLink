@@ -100,7 +100,7 @@ function samePath(left: string, right: string): boolean {
 
 function isWithin(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 async function assertNoRedirectedComponent(target: string): Promise<void> {

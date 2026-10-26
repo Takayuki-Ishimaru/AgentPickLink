@@ -20,7 +20,10 @@ type FakeServerBehavior =
   | "exit-after-initialize"
   | "ignore-sigterm"
   | "flood-stdout"
-  | "flood-stderr";
+  | "flood-stderr"
+  | "split-unicode"
+  | "unicode-stdout-limit"
+  | "unicode-stderr-limit";
 
 /** A tiny, dependency-free fake MCP server: NDJSON JSON-RPC over stdio, matching the framing
  * `@modelcontextprotocol/server`'s stdio transport uses (see mcp-handshake.ts's header comment).
@@ -32,6 +35,10 @@ function fakeServerScript(behavior: FakeServerBehavior, extra = ""): string {
   if (behavior === "flood-stdout") return 'setInterval(() => process.stdout.write("x".repeat(65536)), 5);\n';
   if (behavior === "flood-stderr")
     return 'setInterval(() => process.stderr.write("x".repeat(65536) + "\\n"), 5);\n';
+  if (behavior === "unicode-stdout-limit" || behavior === "unicode-stderr-limit") {
+    const stream = behavior === "unicode-stdout-limit" ? "stdout" : "stderr";
+    return `process.${stream}.write("あ".repeat(400000)); setInterval(() => {}, 1000);\n`;
+  }
 
   const preamble = behavior === "noisy" ? 'process.stdout.write("not json at all\\n");\n' : "";
   const pidWrite =
@@ -43,21 +50,37 @@ function fakeServerScript(behavior: FakeServerBehavior, extra = ""): string {
   // Exits right after answering `initialize`, before `tools/list` ever arrives.
   const exitAfterInitialize = behavior === "exit-after-initialize" ? "      process.exit(0);" : "";
   const writeFn =
-    behavior === "split"
+    behavior === "split-unicode"
       ? [
           "function write(message) {",
-          "  const text = JSON.stringify(message);",
-          "  const mid = Math.floor(text.length / 2);",
-          "  process.stdout.write(text.slice(0, mid));",
-          '  setTimeout(() => process.stdout.write(text.slice(mid) + "\\n"), 20);',
+          '  if (message.result.serverInfo) message.result.serverInfo.name = "日本語😀";',
+          '  if (message.result.tools) message.result.tools = [{ name: "検索😀" }];',
+          '  const bytes = Buffer.from(JSON.stringify(message) + "\\n");',
+          "  const split = bytes.findIndex((byte) => byte >= 0x80) + 1;",
+          '  process.stderr.write(Buffer.from("診断😀").subarray(0, 1));',
+          "  process.stdout.write(bytes.subarray(0, split));",
+          "  setTimeout(() => {",
+          '    process.stderr.write(Buffer.from("診断😀").subarray(1));',
+          // Give the diagnostic stream time to drain before the response completes the handshake.
+          "    setTimeout(() => process.stdout.write(bytes.subarray(split)), 20);",
+          "  }, 30);",
           "}"
         ].join("\n")
-      : [
-          "function write(message) {",
-          preamble,
-          `  process.stdout.write(JSON.stringify(message) + "${lineEnding}");`,
-          "}"
-        ].join("\n");
+      : behavior === "split"
+        ? [
+            "function write(message) {",
+            "  const text = JSON.stringify(message);",
+            "  const mid = Math.floor(text.length / 2);",
+            "  process.stdout.write(text.slice(0, mid));",
+            '  setTimeout(() => process.stdout.write(text.slice(mid) + "\\n"), 20);',
+            "}"
+          ].join("\n")
+        : [
+            "function write(message) {",
+            preamble,
+            `  process.stdout.write(JSON.stringify(message) + "${lineEnding}");`,
+            "}"
+          ].join("\n");
   return [
     pidWrite,
     ignoreSigterm,
@@ -195,6 +218,26 @@ describe("mcpHandshake", () => {
       expect(result.tools).toEqual(["fake_tool_a", "fake_tool_b"]);
     });
   });
+
+  it("preserves UTF-8 characters split across stdout and stderr chunks", async () => {
+    await withScript("split-unicode", async (scriptPath) => {
+      const result = await mcpHandshake({ command: process.execPath, args: [scriptPath], timeoutMs: 5_000 });
+      expect(result.serverName).toBe("日本語😀");
+      expect(result.tools).toEqual(["検索😀"]);
+      expect(result.stderr).toBe("診断😀診断😀");
+    });
+  });
+
+  it.each(["unicode-stdout-limit", "unicode-stderr-limit"] as const)(
+    "enforces the byte limit for multibyte output (%s)",
+    async (behavior) => {
+      await withScript(behavior, async (scriptPath) => {
+        await expect(
+          mcpHandshake({ command: process.execPath, args: [scriptPath], timeoutMs: 5_000 })
+        ).rejects.toMatchObject({ code: "BROKER_PROTOCOL_ERROR" });
+      });
+    }
+  );
 
   it("rejects with the exited-early DomainError (not an uncaught EPIPE) when the server exits between initialize and tools/list", async () => {
     await withScript("exit-after-initialize", async (scriptPath) => {

@@ -15,7 +15,7 @@ import {
 import { WorkspaceConfigSchema } from "../domain/workspace.js";
 import { slug } from "../domain/text.js";
 import type { AppPaths } from "../config/paths.js";
-import { loadRegistry, saveRegistry, updateRegistry } from "../config/registry.js";
+import { loadRegistry, updateRegistry } from "../config/registry.js";
 import { loadGlobalConfig, updateGlobalConfig } from "../config/global-config.js";
 import { loadApprovals, updateApprovals } from "../config/approvals.js";
 import { atomicWrite } from "../config/storage.js";
@@ -784,11 +784,14 @@ export class SetupService {
         "INVALID_ARGUMENT",
         "Agent alias must be lowercase alphanumeric with optional hyphens."
       );
-    const registry = await loadRegistry(this.deps.paths);
-    if (!registry.agents.some((agent) => agent.alias === parsedAlias.data))
-      throw new DomainError("AGENT_NOT_FOUND", `Agent ${parsedAlias.data} is not in the local registry.`);
-    registry.agents = registry.agents.filter((agent) => agent.alias !== parsedAlias.data);
-    await saveRegistry(this.deps.paths, registry);
+    // Existence check and deletion share one registry lock: a concurrent registration or edit
+    // from another window must never be lost, and AGENT_NOT_FOUND must reflect current state.
+    const registry = await updateRegistry(this.deps.paths, (current) => {
+      if (!current.agents.some((agent) => agent.alias === parsedAlias.data))
+        throw new DomainError("AGENT_NOT_FOUND", `Agent ${parsedAlias.data} is not in the local registry.`);
+      current.agents = current.agents.filter((agent) => agent.alias !== parsedAlias.data);
+      return true;
+    });
 
     const root = this.deps.root();
     const workspaceFilePath = path.join(root, ".m365-agents.json");
@@ -866,23 +869,27 @@ export class SetupService {
         "INVALID_ARGUMENT",
         "Agent alias must be lowercase alphanumeric with optional hyphens."
       );
-    const registry = await loadRegistry(this.deps.paths);
-    const index = registry.agents.findIndex((agent) => agent.alias === parsedAlias.data);
-    if (index < 0)
-      throw new DomainError("AGENT_NOT_FOUND", `Agent ${parsedAlias.data} is not in the local registry.`);
-    const existing = registry.agents[index];
-    const capabilityChanged =
-      patch.capabilityClass !== undefined && patch.capabilityClass !== existing.capabilityClass;
-    const next: BrowserAgentDefinition = {
-      ...existing,
-      displayName: patch.displayName?.trim() || existing.displayName,
-      description:
-        patch.description !== undefined ? patch.description.trim() || undefined : existing.description,
-      usageHint: patch.usageHint !== undefined ? patch.usageHint.trim() || undefined : existing.usageHint,
-      capabilityClass: patch.capabilityClass ?? existing.capabilityClass
-    };
-    registry.agents = [...registry.agents.slice(0, index), next, ...registry.agents.slice(index + 1)];
-    await saveRegistry(this.deps.paths, registry);
+    // Read, merge and write under one registry lock so a concurrent registration or another
+    // window's metadata edit is never overwritten; only the requested fields merge in.
+    let capabilityChanged = false;
+    const registry = await updateRegistry(this.deps.paths, (current) => {
+      const index = current.agents.findIndex((agent) => agent.alias === parsedAlias.data);
+      if (index < 0)
+        throw new DomainError("AGENT_NOT_FOUND", `Agent ${parsedAlias.data} is not in the local registry.`);
+      const existing = current.agents[index];
+      capabilityChanged =
+        patch.capabilityClass !== undefined && patch.capabilityClass !== existing.capabilityClass;
+      const next: BrowserAgentDefinition = {
+        ...existing,
+        displayName: patch.displayName?.trim() || existing.displayName,
+        description:
+          patch.description !== undefined ? patch.description.trim() || undefined : existing.description,
+        usageHint: patch.usageHint !== undefined ? patch.usageHint.trim() || undefined : existing.usageHint,
+        capabilityClass: patch.capabilityClass ?? existing.capabilityClass
+      };
+      current.agents = [...current.agents.slice(0, index), next, ...current.agents.slice(index + 1)];
+      return true;
+    });
 
     if (capabilityChanged) await this.reapproveIfAssignedAndApproved(parsedAlias.data, registry.agents);
     return this.status();

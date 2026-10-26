@@ -78,7 +78,7 @@ export function startUpdateCheck(
         if (!(await deps.install(context, release, abort.signal, active))) return;
         // Do not reinstall while this window still runs the old extension awaiting reload.
         installed = true;
-        if (stopped) return;
+        if (!live()) return;
         runtime.log(`update-check: installed ${release.tag}; reload required`);
         notify(
           runtime.locale === "ja"

@@ -129,11 +129,13 @@ export function correlateTurn(
   return {
     confirmed: true,
     reason:
-      replies.length === 1 && replies[0]?.role === "assistant" && replies[0].stable !== true
-        ? "unstable-message-identity"
-        : confirmedUserKey
-          ? "confirmed-user-anchor"
-          : "appended-after-tail",
+      replies.length > 1
+        ? "ambiguous-response-roots"
+        : replies.length === 1 && replies[0]?.role === "assistant" && replies[0].stable !== true
+          ? "unstable-message-identity"
+          : confirmedUserKey
+            ? "confirmed-user-anchor"
+            : "appended-after-tail",
     userKey: user.key,
     ...(responseKey ? { responseKey } : {})
   };

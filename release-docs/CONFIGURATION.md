@@ -33,11 +33,15 @@ Codex 設定は、AgentPickLink の対象外設定を保持したうえで更新
 
 `agentpicklink.checkForUpdates` も初期値 `true` です。これをユーザー設定で無効にすると、自動更新と更新通知を両方停止します。以前の設定で無効にしていた場合も保持します。サイドバーで自動更新をオンにすると、リリース確認も再び有効になります。
 
-English: Automatic extension updates are enabled by default in v0.2.13. GitHub releases, including betas, are checked on startup and every six hours; the downloaded VSIX must match its published SHA-256 digest. Reload VS Code to apply an installed update. The sidebar toggle saves immediately. Turning automatic updates off keeps one notification per new version; setting `agentpicklink.checkForUpdates` to `false` stops both updates and notifications. An existing opt-out is preserved. Turning automatic updates on in the sidebar also enables release checks. Machine installation updates remain manual.
+English: Automatic extension updates are enabled by default in v0.2.14. GitHub releases, including betas, are checked on startup and every six hours; the downloaded VSIX must match its published SHA-256 digest. Reload VS Code to apply an installed update. The sidebar toggle saves immediately. Turning automatic updates off keeps one notification per new version; setting `agentpicklink.checkForUpdates` to `false` stops both updates and notifications. An existing opt-out is preserved. Turning automatic updates on in the sidebar also enables release checks. Machine installation updates remain manual.
 
 複数ウィンドウで設定を保存した場合、別の項目への変更は保持されます。エージェントの説明・利用ヒントなど、同じ項目を異なる内容に変更した場合は保存を止めるため、一覧を更新して選び直してください。更新通知を開いたままでも定期確認は続き、別ウィンドウでインストール済みの同じ更新は繰り返しインストールしません。
 
 English: Concurrent saves preserve edits to distinct settings. Conflicting edits to the same agent metadata field stop the save; refresh the list before saving again. Pending update notifications do not block periodic checks, and a successful update installed by another window is not installed again.
+
+v0.2.14 では、自動更新の前に実際のインストール状態を確認します。手動で旧版に戻した後も再試行でき、すでに入っている新しい版は古い更新で上書きしません。状態を確認できない場合は自動更新を見送るため、必要に応じて Releases の VSIX で手動更新してください。
+
+English: v0.2.14 checks the actual installed version before automatic installation. It can retry after a manual downgrade and protects newer installed versions. When the installed state cannot be confirmed, installation is deferred; use the release VSIX for a manual update if needed.
 
 ## ローカルデータ
 
@@ -72,11 +76,11 @@ English: `browser.composerStabilityMs` controls input stability (default 500 ms,
 
 ### 質問入力の速度
 
-`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.13 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
+`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.14 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
 
 既存の設定に保存された正の値は更新時にも保持します。例えば `20` を保存していた環境は、そのまま 20 ミリ秒で入力します。新しい入力速度を使うには値を `0` に変更し、接続プロセスを再起動してください。正の値を指定した場合は、入力し直す場合にも同じ値を使います。入力操作の時間上限は質問の長さと設定に応じて調整しますが、各試行で最大 2 分です。
 
-English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.13. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
+English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.14. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
 
 入力検証では段落・改行・空行を確認し、CRLF / CR を LF として比較します。全角・半角の変換、ZWJ・ゼロ幅文字の削除、前後空白やコードの字下げの変更は一致扱いにしません。入力や送信前の確認待ちでキャンセルを受け取ると、入力を止め、下書きを消去して `SUBMIT_FAILED / not-sent` を返します。送信済みの質問は取り消しません。
 

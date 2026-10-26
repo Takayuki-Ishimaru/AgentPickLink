@@ -148,7 +148,7 @@ describe("correlating a submitted turn independently of DOM message counts", () 
   it("cannot associate a recycled DOM response with a stable question", () => {
     expect(
       correlateTurn(before, snapshot(...before.messages, user("new"), { ...reply("node:2"), stable: false }))
-    ).toMatchObject({ confirmed: true, userKey: "new" });
+    ).toMatchObject({ confirmed: true, userKey: "new", reason: "unstable-message-identity" });
     expect(
       correlateTurn(before, snapshot(...before.messages, user("new"), { ...reply("node:2"), stable: false }))
         .responseKey
@@ -168,9 +168,12 @@ describe("correlating a submitted turn independently of DOM message counts", () 
       confirmed: true
     });
     expect(correlateTurn(before, snapshot(...before.messages, user("new"))).responseKey).toBeUndefined();
-    expect(
-      correlateTurn(before, snapshot(...before.messages, user("new"), reply("a"), reply("b"))).responseKey
-    ).toBeUndefined();
+    const ambiguous = correlateTurn(
+      before,
+      snapshot(...before.messages, user("new"), reply("a"), reply("b"))
+    );
+    expect(ambiguous).toMatchObject({ confirmed: true, userKey: "new", reason: "ambiguous-response-roots" });
+    expect(ambiguous.responseKey).toBeUndefined();
   });
   it("does not mutate input and keeps interleaved requests independent", () => {
     const a = snapshot(...before.messages, user("a"), reply("answer-a"));

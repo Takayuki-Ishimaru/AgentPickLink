@@ -13,6 +13,8 @@ import { ApprovalService } from "../../src/services/approval-service.js";
 import { SetupService } from "../../src/services/setup-service.js";
 import { WorkspaceService } from "../../src/services/workspace-service.js";
 import type { IpcClient } from "../../src/ipc/client.js";
+import { runAgentAdd } from "../../src/cli/commands/agent-add.js";
+import { runAgentRemove } from "../../src/cli/commands/agent-remove.js";
 import { runWorkspaceApprove } from "../../src/cli/commands/workspace-approve.js";
 import { runWorkspaceRevoke } from "../../src/cli/commands/workspace-revoke.js";
 import { makeCommandDeps } from "../cli/helpers.js";
@@ -342,4 +344,147 @@ describe("setup concurrency review regressions", () => {
       expect((await loadApprovals(f.paths)).approvals).toHaveLength(0);
     }
   );
+});
+
+describe("v0.2.13 registry mutation review regressions", () => {
+  async function contended<T>(paths: ReturnType<typeof appPaths>, action: () => Promise<T>) {
+    const unlock = await holdLock(`${paths.registry}.lock`);
+    const pending = action();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    } finally {
+      await unlock();
+    }
+    return pending;
+  }
+
+  it("keeps both removals from different setup windows", async () => {
+    const f = await fixture();
+    await saveRegistry(f.paths, { version: 1, agents: [agent("alpha"), agent("beta"), agent("keep")] });
+    const results = await contended(f.paths, () =>
+      Promise.allSettled([f.service().removeAgent("alpha"), f.service(f.otherRoot).removeAgent("beta")])
+    );
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect((await loadRegistry(f.paths)).agents.map((a) => a.alias)).toEqual(["keep"]);
+  });
+
+  it.each(["same-agent", "different-agents"])("keeps metadata edits to %s", async (mode) => {
+    const f = await fixture();
+    await saveRegistry(f.paths, { version: 1, agents: [agent("alpha"), agent("beta")] });
+    await contended(f.paths, () =>
+      Promise.all([
+        f.service().updateAgentMetadata("alpha", { description: "new description" }),
+        (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          return f
+            .service(f.otherRoot)
+            .updateAgentMetadata(mode === "same-agent" ? "alpha" : "beta", { usageHint: "new hint" });
+        })()
+      ])
+    );
+    const { agents } = await loadRegistry(f.paths);
+    expect(agents.find((a) => a.alias === "alpha")?.description).toBe("new description");
+    expect(agents.find((a) => a.alias === (mode === "same-agent" ? "alpha" : "beta"))?.usageHint).toBe(
+      "new hint"
+    );
+  });
+
+  it("does not resurrect a removed agent when another window edits metadata", async () => {
+    const f = await fixture();
+    const alpha = agent("alpha"),
+      beta = agent("beta");
+    await saveRegistry(f.paths, { version: 1, agents: [alpha, beta] });
+    const roster = {
+      agents: [alpha, beta].map((a) => ({ url: a.entryPoint.url, displayName: a.displayName }))
+    };
+    await f.service().apply(roster);
+    await f.service(f.otherRoot).apply(roster);
+    await contended(f.paths, () =>
+      Promise.all([
+        f.service().removeAgent("alpha"),
+        f.service(f.otherRoot).updateAgentMetadata("beta", { description: "fresh" })
+      ])
+    );
+    const { agents } = await loadRegistry(f.paths);
+    expect(agents.map((a) => a.alias)).toEqual(["beta"]);
+    expect(agents[0].description).toBe("fresh");
+    const workspace = await new WorkspaceService().load(f.otherRoot);
+    const approvals = await loadApprovals(f.paths);
+    const approval = new ApprovalService(approvals);
+    expect(approval.status(workspace, new Map(agents.map((a) => [a.alias, a])))).toBe("approval-required");
+  });
+
+  it("keeps simultaneous CLI removals and reports a repeated removal accurately", async () => {
+    const f = await fixture();
+    await saveRegistry(f.paths, { version: 1, agents: [agent("alpha"), agent("beta"), agent("keep")] });
+    const { deps } = makeCommandDeps({ paths: f.paths });
+    const result = await contended(f.paths, () =>
+      Promise.all([runAgentRemove(deps, "alpha"), runAgentRemove(deps, "beta")])
+    );
+    expect(result.map((r) => r.removed)).toEqual([true, true]);
+    expect((await loadRegistry(f.paths)).agents.map((a) => a.alias)).toEqual(["keep"]);
+    expect(await runAgentRemove(deps, "alpha")).toMatchObject({ removed: false });
+  });
+
+  function addDeps(f: Awaited<ReturnType<typeof fixture>>, alias: string) {
+    return makeCommandDeps({
+      paths: f.paths,
+      env: { M365_AGENT_ALIAS: alias, M365_AGENT_CAPABILITY_CLASS: "knowledge-only" },
+      connectOrStartDefaultBroker: async () =>
+        ({
+          close() {},
+          async call() {
+            return {
+              url: `https://m365.cloud.microsoft/chat/${alias}`,
+              displayName: alias,
+              surface: "m365-copilot",
+              adapterId: "agent-builder-chat@1",
+              validatedUrlPattern: `^/chat/${alias}$`
+            };
+          }
+        }) as unknown as IpcClient
+    }).deps;
+  }
+
+  it("keeps different aliases registered by simultaneous CLI adds", async () => {
+    const f = await fixture();
+    await contended(f.paths, () =>
+      Promise.all([
+        runAgentAdd(addDeps(f, "alpha"), { url: "https://m365.cloud.microsoft/chat/alpha" }),
+        runAgentAdd(addDeps(f, "beta"), { url: "https://m365.cloud.microsoft/chat/beta" })
+      ])
+    );
+    expect((await loadRegistry(f.paths)).agents.map((a) => a.alias)).toEqual(["alpha", "beta"]);
+  });
+
+  it("checks duplicate aliases inside the lock and preserves force replacement semantics", async () => {
+    const f = await fixture();
+    const deps = addDeps(f, "alpha");
+    const result = await contended(f.paths, () =>
+      Promise.allSettled([
+        runAgentAdd(deps, { url: "https://m365.cloud.microsoft/chat/alpha" }),
+        runAgentAdd(deps, { url: "https://m365.cloud.microsoft/chat/alpha" })
+      ])
+    );
+    expect(result.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(result.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { code: "INVALID_ARGUMENT" }
+    });
+    await runAgentAdd(deps, { url: "https://m365.cloud.microsoft/chat/alpha", force: true });
+    expect((await loadRegistry(f.paths)).agents).toMatchObject([
+      { alias: "alpha", enabled: false, verification: { status: "unverified" } }
+    ]);
+  });
+
+  it("keeps a CLI removal alongside a different CLI addition", async () => {
+    const f = await fixture();
+    await saveRegistry(f.paths, { version: 1, agents: [agent("alpha"), agent("keep")] });
+    await contended(f.paths, () =>
+      Promise.all([
+        runAgentRemove(makeCommandDeps({ paths: f.paths }).deps, "alpha"),
+        runAgentAdd(addDeps(f, "beta"), { url: "https://m365.cloud.microsoft/chat/beta" })
+      ])
+    );
+    expect((await loadRegistry(f.paths)).agents.map((a) => a.alias)).toEqual(["beta", "keep"]);
+  });
 });
