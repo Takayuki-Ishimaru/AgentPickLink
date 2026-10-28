@@ -89,6 +89,7 @@ export class InvocationService {
     // Authorize before opening a window or joining another caller's sign-in. A fresh attempt
     // below authorizes again after the human wait, before allocating a new conversation.
     const { agent } = await this.deps.policy.authorize(root, alias);
+    alias = agent.alias;
     const transport = this.deps.router.select(agent);
     if (this.signIns.has(transport) || (transport.login && transport.isLoginPending?.())) {
       await this.signIn(transport, onProgress);
@@ -164,6 +165,7 @@ export class InvocationService {
 
   private async createConversationAttempt(root: string, alias: string): Promise<Conversation> {
     const { workspace, agent } = await this.deps.policy.authorize(root, alias);
+    alias = agent.alias;
     const conversation = this.deps.conversations.create({
       workspaceKey: workspace.workspaceKey,
       agentAlias: alias,
@@ -200,6 +202,7 @@ export class InvocationService {
   ) {
     const started = this.now();
     const { workspace, agent } = await this.deps.policy.authorize(root, alias);
+    alias = agent.alias;
     let conversation: Conversation | undefined;
     let phase = handle ? "invoke" : "create";
     let recordedFailure: DomainError | undefined;
@@ -378,7 +381,8 @@ export class InvocationService {
     if (
       domain.code !== "SUBMIT_STATE_UNKNOWN" &&
       domain.code !== "RESPONSE_TIMEOUT" &&
-      domain.code !== "RESPONSE_EXTRACTION_FAILED"
+      domain.code !== "RESPONSE_EXTRACTION_FAILED" &&
+      !(domain.code === "UI_CHANGED" && state === "sent")
     )
       return false;
     return (
@@ -391,7 +395,7 @@ export class InvocationService {
   /**
    * `conversation.read` (m365_agent_session action=read): reads a conversation of this workspace
    * without sending anything -- whether the last message entered in it is shown there, and the
-   * reply to the latest user message, waiting for it to finish. Same boundaries as an ask: the
+   * reply to the latest user message; waitMs explicitly opts into waiting. Same boundaries as an ask: the
    * conversation must belong to the workspace, its agent must still be approved with the binding the
    * conversation was opened with, and the read runs in the conversation's own lock and the
    * workspace's limiter. A conversation a failed one-shot ask kept open closes once a read returns
@@ -402,7 +406,8 @@ export class InvocationService {
     handle: string,
     requestId: string,
     onProgress?: ProgressSink,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    waitMs?: number
   ) {
     const started = this.now();
     const workspace = await this.deps.policy.loadWorkspace(root);
@@ -431,7 +436,8 @@ export class InvocationService {
           const reading = await transport.readConversation(this.transportHandle(current), {
             requestId,
             onProgress,
-            signal
+            signal,
+            waitMs
           });
           const response = reading.response;
           const attachments = response?.attachments ?? [];
@@ -698,9 +704,11 @@ export type ReadResult = Omit<ConversationReading, "response"> &
 function readableFailure(domain: DomainError, handle: string): DomainError {
   const read = `call m365_agent_session with action=read and conversationHandle=${handle}`;
   const remediation =
-    domain.code === "RESPONSE_TIMEOUT"
-      ? `The prompt was not resubmitted. To collect the reply once it finishes, ${read}; it sends nothing.`
-      : `The message was not sent again. To learn whether it arrived and to collect the reply, ${read}; it sends nothing. A retained draft or an expired acknowledgement wait does not prove non-submission. If read reports message=unconfirmed, do not resend: read again later or ask the user to check Microsoft 365. Send the message again only if read reports message=not-shown (submission stopped before the send control could be pressed).`;
+    domain.code === "UI_CHANGED"
+      ? `Microsoft 365 may have changed its page structure. The question was sent and must not be resent. To inspect the current state, ${read}; it sends nothing. Check the conversation in Microsoft 365 and share doctor output or Copy diagnostics with the maintainer.`
+      : domain.code === "RESPONSE_TIMEOUT"
+        ? `The prompt was not resubmitted. To inspect the current reply, ${read}; it sends nothing. The default is an immediate snapshot; set waitMs (up to 300000) to wait for completion and collect files.`
+        : `The message was not sent again. To learn whether it arrived and to collect the reply, ${read}; it sends nothing. A retained draft or an expired acknowledgement wait does not prove non-submission. If read reports message=unconfirmed, do not resend: read again later or ask the user to check Microsoft 365. Send the message again only if read reports message=not-shown (submission stopped before the send control could be pressed).`;
   const readable = new DomainError(domain.code, domain.message, domain.retryable, {
     ...domain.options,
     remediation,

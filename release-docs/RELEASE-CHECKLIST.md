@@ -1,6 +1,6 @@
 # 対応環境と検証範囲
 
-v0.2.14 Beta の対応環境と確認範囲を説明します。
+v0.2.15 Beta の対応環境と確認範囲を説明します。
 
 ## 対応環境
 
@@ -19,7 +19,7 @@ Windows ARM64、macOS Intel、Linux x64 のアーカイブも配布しますが�
 
 ## この版で未確認の範囲
 
-v0.2.14 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。
+v0.2.15 の変更について、Windows デスクトップ実機、実 Microsoft 365 テナント、実際の VS Code 画面での追加確認は行っていません。実際の AI クライアントの停止操作によるキャンセルと、最終配布物のすべての OS・CPU での実機動作も未確認です。
 
 以前の版や限定した環境での確認結果を、すべての環境の動作保証として扱いません。PDF のフォント・レイアウト・ページ数は、生成された実ファイルを確認してください。
 
@@ -29,12 +29,16 @@ SmartScreen、AppLocker / WDAC、Gatekeeper などの実行制御や、組織の
 
 ## English
 
-v0.2.14 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
+v0.2.15 Beta primarily targets Windows 11 with Microsoft Edge. macOS is for development and verification. Linux archives are for development/CI only; standard `serve` returns `PLATFORM_UNSUPPORTED`. Use a local, single-folder workspace. WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported.
 
 Public CI is configured for Windows, macOS, and Ubuntu with Node.js 22 / 24. It uses local mock browser pages and VS Code API mocks, and does not verify a live tenant or the actual VS Code interface. Select the relevant version or commit in [GitHub Actions](https://github.com/Takayuki-Ishimaru/AgentPickLink/actions/workflows/ci.yml) to view its results.
 
-Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.14 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified.
+Additional Windows desktop, live Microsoft 365 tenant, and actual VS Code interface checks have not been performed for the v0.2.15 changes. Cancellation through actual AI clients' stop controls and native execution of the final distribution on every OS/CPU remain unverified.
 
 Earlier or limited checks do not establish compatibility for all environments. Verify questions, answers, generated files, agent types, UI languages, and re-login with MFA or Conditional Access in your deployment environment. Saving setup settings does not verify live responses or file content. Inspect generated PDFs for correct fonts, layout, and page counts.
 
 See [Managed environments](MANAGED-ENVIRONMENTS.en.md) for execution controls and client policy considerations.
+
+## リリース成果物の出所確認
+
+`Build release artifacts` ワークフローは、公式リポジトリのタグ push または手動実行で、VSIX・各プラットフォームのアーカイブ・ソース・`SHA256SUMS` を Actions の成果物として保存します。タグを対象とした実行のみビルドの attestation を生成します。公開やリリースへの添付は行いません。対象の実行結果を確認してから成果物を利用してください。ダウンロードした各ファイルの出所は `gh attestation verify <ファイル> -R Takayuki-Ishimaru/AgentPickLink` で検証できます（[GitHub の公式手順](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)）。拡張機能の自動更新にはビルド証明が必須です。対象のタグでこのワークフローを実行し、その VSIX を変更せずリリースに添付してください。ローカルや別のワークフローで作り直した VSIX、証明のない旧リリース、ブランチを対象とした手動実行の成果物は自動更新に使えません。証明の不在・不一致・ネットワーク障害時はインストールしません。

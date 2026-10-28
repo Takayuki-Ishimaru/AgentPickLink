@@ -9,6 +9,7 @@ import { AgentNavigator } from "../../src/transports/browser/agent-navigator.js"
 import { AttachmentSaver } from "../../src/transports/browser/attachment-saver.js";
 import { ConversationDriver, enteredMessage } from "../../src/transports/browser/conversation-driver.js";
 import { NavigationPolicy } from "../../src/transports/browser/navigation-policy.js";
+import { responseStructure } from "../../src/transports/browser/response-structure.js";
 import type { BrowserAgentDefinition, PageLike } from "../../src/transports/browser/types.js";
 
 const executable = [
@@ -165,6 +166,49 @@ describe.skipIf(!executable)(
       return page as unknown as PageLike;
     }
     const sent = () => page.evaluate(() => (window as unknown as { sent: string[] }).sent);
+
+    it("counts only new visible unknown prose in the confirmed question's region, exposing no text", async () => {
+      const target = await open();
+      await page.locator("#log").evaluate((node) => {
+        const prior = document.createElement("p");
+        prior.textContent = "Existing page furniture. ".repeat(10);
+        node.append(prior);
+      });
+      await responseStructure(target);
+      await page.locator("#log").evaluate((node) => {
+        const user = document.createElement("article");
+        user.dataset.messageAuthorRole = "user";
+        user.dataset.messageId = "new-question";
+        user.textContent = "The submitted question";
+        node.prepend(user);
+        for (const role of ["status", "progressbar", "alert"]) {
+          const status = document.createElement("div");
+          status.setAttribute("role", role);
+          status.innerHTML = `<p>${"Searching organizational data. ".repeat(10)}</p>`;
+          node.append(status);
+        }
+        const hidden = document.createElement("p");
+        hidden.hidden = true;
+        hidden.textContent = "Hidden content ".repeat(20);
+        node.append(hidden);
+        const outside = document.createElement("p");
+        outside.textContent = "Outside conversation ".repeat(20);
+        document.querySelector("main")!.append(outside);
+      });
+      const exchange = await adapter().captureExchange(target);
+      const key = exchange.turn!.messages.find((node) => node.role === "user")!.key;
+      expect(await responseStructure(target, key)).toEqual({ elements: 0, chars: 0 });
+      await page.locator("#log").evaluate((node) => {
+        const answer = document.createElement("div");
+        answer.textContent = "PRIVATE unknown response ".repeat(10);
+        node.append(answer);
+      });
+      const structure = await responseStructure(target, key);
+      expect(structure?.elements).toBe(1);
+      expect(structure?.chars).toBeGreaterThan(80);
+      expect(JSON.stringify(structure)).not.toMatch(/PRIVATE|question|Searching/);
+      expect(await responseStructure(target, "unconfirmed-user")).toBeUndefined();
+    });
 
     it.each([false, true])(
       "refuses an unverified direct landing before typing (conversation ID: %s)",

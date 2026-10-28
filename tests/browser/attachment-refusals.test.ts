@@ -243,7 +243,7 @@ describe("one refusal, one error code and stage on every acquisition path", () =
       })
     ]);
     expect(cancelled).toBe(1);
-    expect(await savedFiles(workspaceRoot)).toEqual([]);
+    expect(await savedFiles(workspaceRoot)).toEqual([".gitignore"]);
   });
 });
 

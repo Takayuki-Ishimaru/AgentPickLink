@@ -93,6 +93,24 @@ describe("buildApplyPlan", () => {
     });
   });
 
+  it.each(["", "   ", "Not Valid"])("rejects an explicit invalid alias %j before approval", (alias) => {
+    expect(() =>
+      buildApplyPlan(input({ agents: [{ key: "agent-architecture", alias }] }), candidates)
+    ).toThrowError(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
+  });
+
+  it("uses the previously verified URL when a matched identity has moved", () => {
+    const original = candidates[0];
+    const moved = {
+      ...original,
+      url: "https://m365.cloud.microsoft/chat/new",
+      registered: { ...original.registered!, entryPointUrl: original.url }
+    };
+    const { plan } = buildApplyPlan(input({ agents: [{ key: moved.key }] }), [moved]);
+    expect(plan.agents[0].url).toBe(original.url);
+    expect(plan.agents[0].alias).toBe("requirements");
+  });
+
   it("lets a webview-edited usage hint override the registered one", () => {
     const { plan } = buildApplyPlan(
       input({ agents: [{ key: "agent-requirements", usageHint: "  Ask about scope  " }] }),
@@ -164,10 +182,18 @@ describe("normalizeDownloadHost", () => {
   });
 });
 
+it("uses an explicitly edited alias for a new candidate", () => {
+  const item = { ...candidates[1], key: "japanese", displayName: "営業" };
+  const result = buildApplyPlan(input({ agents: [{ key: "japanese", alias: "sales" }] }), [item]);
+  expect(result.plan.agents[0].alias).toBe("sales");
+});
+
 describe("previewAlias", () => {
   it("slugifies a display name", () => {
     expect(previewAlias("Requirements Agent (v2)")).toBe("requirements-agent-v2");
-    expect(previewAlias("要件エージェント")).toBe("agent");
+    expect(previewAlias("要件エージェント", "id-a")).toMatch(/^agent-[0-9a-f]{8}$/);
+    expect(previewAlias("要件エージェント", "id-a")).toBe(previewAlias("営業", "id-a"));
+    expect(previewAlias("要件エージェント", "id-a")).not.toBe(previewAlias("要件エージェント", "id-b"));
   });
 });
 

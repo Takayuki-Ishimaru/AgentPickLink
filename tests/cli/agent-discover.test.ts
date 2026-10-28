@@ -106,6 +106,6 @@ describe("agent discover", () => {
 
     const result = await runAgentDiscover(deps, { json: true });
 
-    expect(result).toEqual({ candidates: [], warnings: [] });
+    expect(result).toEqual({ candidates: [], warnings: [], partial: false });
   });
 });

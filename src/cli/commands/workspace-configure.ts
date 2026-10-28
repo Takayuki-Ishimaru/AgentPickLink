@@ -1,7 +1,7 @@
 import path from "node:path";
 import { loadRegistry } from "../../config/registry.js";
 import { loadGlobalConfig } from "../../config/global-config.js";
-import { atomicWrite } from "../../config/storage.js";
+import { atomicWriteWorkspaceFile } from "../../config/storage.js";
 import { DomainError } from "../../domain/errors.js";
 import { SUPPORTED_BROWSER_ADAPTER_IDS } from "../../domain/agent.js";
 import { WorkspaceConfigSchema } from "../../domain/workspace.js";
@@ -55,13 +55,13 @@ export async function runWorkspaceConfigure(deps: CommandDeps): Promise<Record<s
       .sort()
       .map((alias) => ({ alias, bindingFingerprint: byAlias.get(alias)!.verification.bindingFingerprint }))
   });
-  await atomicWrite(
+  await atomicWriteWorkspaceFile(
     path.join(deps.root(), ".m365-agents.json"),
     `${JSON.stringify(workspaceConfig, null, 2)}\n`
   );
   return {
     configured: true,
     agents: workspaceConfig.agents,
-    note: "This repository file is a request, not authorization. Run m365-agent workspace approve."
+    note: "This repository file is a request, not authorization. Run apl workspace approve."
   };
 }

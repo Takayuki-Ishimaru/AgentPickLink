@@ -296,39 +296,49 @@ export async function runIntegrationsRemove(
 /** The vendor one-liner for a client that prefers its own CLI over a direct file edit
  * (docs/extension-less-onboarding.md §4.3/§5): `claude mcp add-json` / `codex mcp add`. VS Code has
  * no equivalent single-line form, so its snippet is the `.vscode/mcp.json` entry itself. */
-export function snippetFor(client: IntegrationsClientId, definition: IntegrationDefinition): string {
+function powershellQuote(value: string): string {
+  return /[\s'"`$;&|()<>^%]/.test(value) ? `'${value.replace(/'/g, "''")}'` : value;
+}
+
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")}"`;
+}
+
+export function snippetFor(
+  client: IntegrationsClientId,
+  definition: IntegrationDefinition,
+  platform: NodeJS.Platform = process.platform
+): string {
   if (client === "codex") {
-    const args = definition.args.map((value) => JSON.stringify(value)).join(" ");
-    return `codex mcp add m365-agents -- ${definition.command} ${args}`;
+    const lines = [
+      "# Add to ~/.codex/config.toml",
+      "[mcp_servers.m365-agents]",
+      `command = ${tomlString(definition.command)}`,
+      `args = [${definition.args.map(tomlString).join(", ")}]`,
+      "startup_timeout_sec = 60",
+      "tool_timeout_sec = 900"
+    ];
+    if (definition.env && Object.keys(definition.env).length) {
+      lines.push("", "[mcp_servers.m365-agents.env]");
+      for (const [key, value] of Object.entries(definition.env)) lines.push(`${key} = ${tomlString(value)}`);
+    }
+    return lines.join("\n");
   }
   if (client === "claude" || client === "claude-user") {
-    // §4.4: the vendor CLI's own blessed form -- the JSON is one argv element, not something typed
-    // interactively. P2: a single-quoted JSON argument is a POSIX-shell-only construct -- it is not
-    // valid cmd.exe or PowerShell syntax, and PowerShell's own quoting rules would mangle the
-    // embedded double quotes differently again -- so the JSON block below is offered as a fallback
-    // for `claude mcp add-json m365-agents --scope user` (typed with no JSON argument, which
-    // prompts for it) on Windows.
+    if (platform === "win32") {
+      const env = Object.entries(definition.env ?? {})
+        .map(([key, value]) => `-e ${powershellQuote(`${key}=${value}`)}`)
+        .join(" ");
+      const command = [definition.command, ...definition.args].map(powershellQuote).join(" ");
+      return `# PowerShell\nclaude mcp add m365-agents --scope user ${env} -- ${command}`;
+    }
     const json = JSON.stringify({
       command: definition.command,
       args: definition.args,
       ...(definition.env ? { env: definition.env } : {})
     });
-    const pretty = JSON.stringify(
-      {
-        command: definition.command,
-        args: definition.args,
-        ...(definition.env ? { env: definition.env } : {})
-      },
-      undefined,
-      2
-    );
-    return [
-      `claude mcp add-json m365-agents '${json}' --scope user`,
-      "",
-      "(POSIX shells only. On Windows, run `claude mcp add-json m365-agents --scope user` and paste",
-      "the JSON below when prompted:)",
-      pretty
-    ].join("\n");
+    const posixQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+    return `claude mcp add-json m365-agents ${posixQuote(json)} --scope user`;
   }
   const entry = {
     ...(client === "claude-project" ? {} : { type: "stdio" }),
@@ -347,5 +357,5 @@ export async function runIntegrationsSnippet(
 ): Promise<Record<string, unknown>> {
   const clients = parseClientList(options.client);
   const definition = await resolveStandaloneDefinition(deps, options.home);
-  return Object.fromEntries(clients.map((client) => [client, snippetFor(client, definition)]));
+  return Object.fromEntries(clients.map((client) => [client, snippetFor(client, definition, deps.platform)]));
 }

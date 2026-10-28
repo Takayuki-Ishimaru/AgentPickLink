@@ -20,6 +20,16 @@ export function slug(value: string): string {
   return result || "agent";
 }
 
+/** Public selection accepts an alias or an exact display name; authorization resolves it later. */
+export function isAgentSelection(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    [...value].length <= 256 &&
+    ![...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  );
+}
+
 /** Escapes every regex metacharacter in `value` so it can be embedded literally inside a larger
  * pattern (see pathPattern below). */
 export function escapeRegex(value: string): string {

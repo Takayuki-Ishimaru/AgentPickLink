@@ -128,6 +128,24 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     await post(state);
   });
 
+  it("shows the workspace and lets a new candidate's alias be edited", async () => {
+    state.candidates = [
+      candidate({ key: "japanese", displayName: "営業", suggestedAlias: "agent-12345678" })
+    ];
+    state.selectedKeys = ["japanese"];
+    await post(state);
+    expect(await page.locator(".status-section").innerText()).toContain(state.status!.workspace.root);
+    await page.getByRole("button", { name: /詳細: 営業/ }).click();
+    const alias = page.locator('[id="alias-japanese"]');
+    expect(await alias.inputValue()).toBe("agent-12345678");
+    await alias.fill("sales");
+    await page.getByRole("button", { name: /保存/ }).first().click();
+    const sent = await page.evaluate(
+      () => (window as unknown as { sent: Array<{ type: string; plan?: SavePlanInput }> }).sent
+    );
+    expect(sent.find((message) => message.type === "save")?.plan?.agents[0].alias).toBe("sales");
+  });
+
   it.each(["ja", "en"] as const)(
     "toggles automatic updates accessibly in %s and reflects saved settings",
     async (locale) => {

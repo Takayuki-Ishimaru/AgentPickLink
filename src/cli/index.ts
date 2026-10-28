@@ -18,7 +18,7 @@ function collect(value: string, previous: string[]): string[] {
 
 export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   const program = new Command().exitOverride();
-  program.name("m365-agent").description("AgentPickLink for M365").version(PACKAGE_VERSION);
+  program.name("apl").description("AgentPickLink for M365").version(PACKAGE_VERSION);
   program
     .option("--json", "emit machine-readable JSON")
     .option("--yes", "confirm explicitly requested operations")
@@ -41,10 +41,20 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   const leaf = (command: Command, action: () => Promise<unknown>) =>
     command.action(() => runCommand(context(), action));
 
-  leaf(program.command("init"), () => api.init());
-  leaf(program.command("login"), () => api.login());
-  leaf(program.command("logout"), () => api.logout({ yes: context().yes }));
-  const doctor = program.command("doctor").option("--agent <alias>").option("--auth");
+  leaf(program.command("init").description("Create the global configuration and local state files."), () =>
+    api.init()
+  );
+  leaf(program.command("login").description("Sign in to Microsoft 365 using the managed browser."), () =>
+    api.login()
+  );
+  leaf(program.command("logout").description("Sign out and close the managed browser session."), () =>
+    api.logout({ yes: context().yes })
+  );
+  const doctor = program
+    .command("doctor")
+    .description("Check local setup, workspace approval, integrations, and broker health.")
+    .option("--agent <alias>", "validate one configured agent without sending a message")
+    .option("--auth", "check the current browser sign-in state");
   doctor.action(async (opts: { agent?: string; auth?: boolean }) => {
     const ctx = context();
     try {
@@ -57,13 +67,20 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
     }
   });
 
-  const broker = program.command("broker");
-  leaf(broker.command("status"), () => api.broker("status"));
-  leaf(broker.command("restart"), () => api.broker("restart"));
-  leaf(broker.command("stop"), () => api.broker("stop"));
+  const broker = program.command("broker").description("Inspect and control the local background broker.");
+  leaf(broker.command("status").description("Show whether the broker is running and its health."), () =>
+    api.broker("status")
+  );
+  leaf(broker.command("restart").description("Restart the local broker."), () => api.broker("restart"));
+  leaf(broker.command("stop").description("Stop the local broker."), () => api.broker("stop"));
 
-  const agent = program.command("agent");
-  const add = agent.command("add").option("--capture").option("--url <url>").option("--force");
+  const agent = program.command("agent").description("Discover, register, and validate agents.");
+  const add = agent
+    .command("add")
+    .description("Register an agent from a browser page or direct URL.")
+    .option("--capture", "capture the current agent page in a dedicated Edge window")
+    .option("--url <url>", "register the specified direct agent URL")
+    .option("--force", "replace an existing agent with the same alias");
   add.action((opts: { capture?: boolean; url?: string; force?: boolean }) =>
     runCommand(context(), async () => {
       if (opts.capture && opts.url)
@@ -77,25 +94,47 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
       return api.agentAdd(opts);
     })
   );
-  const remove = agent.command("remove <alias>");
+  const remove = agent.command("remove <alias>").description("Remove a registered agent by alias.");
   remove.action((alias: string) => runCommand(context(), () => api.agentRemove(alias)));
-  leaf(agent.command("list"), () => api.agentList());
-  const discover = agent.command("discover").option("--login", "open the sign-in window if needed");
+  leaf(agent.command("list").description("List registered agents and their readiness."), () =>
+    api.agentList()
+  );
+  const discover = agent
+    .command("discover")
+    .description("Find available agents in Microsoft 365.")
+    .option("--login", "open the sign-in window if needed");
   discover.action((opts: { login?: boolean }) =>
     runCommand(context(), () => api.agentDiscover({ ...opts, json: context().json }))
   );
-  const test = agent.command("test <alias>").option("--send-test-message");
+  const test = agent
+    .command("test <alias>")
+    .description("Validate an agent; optionally send a test message.")
+    .option("--send-test-message", "send a test message (requires --yes to confirm)");
   test.action((alias: string, opts: { sendTestMessage?: boolean }) =>
     runCommand(context(), () => api.agentTest(alias, { ...opts, yes: context().yes }))
   );
 
-  const workspace = program.command("workspace");
-  leaf(workspace.command("configure"), () => api.workspaceConfigure());
-  leaf(workspace.command("list"), () => api.workspaceList());
-  leaf(workspace.command("validate"), () => api.workspaceValidate());
-  leaf(workspace.command("approve"), () => api.workspaceApprove({ yes: context().yes }));
-  leaf(workspace.command("approval-status"), () => api.workspaceApprovalStatus());
-  leaf(workspace.command("revoke"), () => api.workspaceRevoke());
+  const workspace = program
+    .command("workspace")
+    .description("Manage this repository's agent assignments and approvals.");
+  leaf(workspace.command("configure").description("Select verified agents for this workspace."), () =>
+    api.workspaceConfigure()
+  );
+  leaf(workspace.command("list").description("List agents assigned to this workspace."), () =>
+    api.workspaceList()
+  );
+  leaf(workspace.command("validate").description("Check workspace assignments and approvals."), () =>
+    api.workspaceValidate()
+  );
+  leaf(workspace.command("approve").description("Review and approve the assigned agents."), () =>
+    api.workspaceApprove({ yes: context().yes })
+  );
+  leaf(workspace.command("approval-status").description("Show the current approval state."), () =>
+    api.workspaceApprovalStatus()
+  );
+  leaf(workspace.command("revoke").description("Revoke this workspace's agent approvals."), () =>
+    api.workspaceRevoke()
+  );
 
   // `install` (the command behind the portable archive's `apl-setup` launcher) has its own exit
   // codes (0/1/2/3, docs/extension-less-onboarding.md §3.1) and its own plain-text report, so it
@@ -121,24 +160,18 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
       "auto (default: vscode/vscode-user + claude/claude-user user-scope + codex) | none | " +
         "vscode,vscode-user,vscode-workspace,claude,claude-user,claude-project,codex"
     )
-    .option("--agents <list>", "comma-separated agent aliases/keys; skips the interactive prompt")
+    .option("--agents <list>", "comma-separated aliases/keys (or key=alias); skips the interactive prompt")
     .option("--home <dir>", "install location, overriding the platform default")
     .option(
       "--approve-agents",
-      "confirm the agent-roster approval non-interactively (§3.1's Consent rule -- distinct from --yes)"
+      "confirm the agent-roster approval in a non-interactive run (separate from --yes)"
     )
     .option(
       "--allow-actions-possible",
       "confirm the capability-widening consent non-interactively, for a plan with an actions-possible agent"
     )
-    .option(
-      "--force",
-      "install this package even though install.json records a newer version (§4.7 C4 downgrade)"
-    )
-    .option(
-      "--dev",
-      "register this running checkout as the machine install (§4.7 C2), instead of staging a copy"
-    );
+    .option("--force", "allow installing an older version than the one currently installed")
+    .option("--dev", "register this checkout as the machine install instead of staging a copy");
   install.action(
     async (
       positionalWorkspaces: string[],
@@ -195,25 +228,36 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
 
   const self = program
     .command("self")
+    .description("Manage the portable CLI installation.")
     .option(
       "--verbose",
       "echo metadata-only diagnostic lines (broker-release waits, restart-and-retry outcomes) to stderr, prefixed [log]"
     );
-  const selfStatus = self.command("status").option(homeOption, homeOptionDescription);
+  const selfStatus = self
+    .command("status")
+    .description("Show the installed CLI version, runtime, and launcher path.")
+    .option(homeOption, homeOptionDescription);
   selfStatus.action((opts: { home?: string }) => runCommand(context(), () => api.self("status", opts)));
-  const use = self.command("use <version>").option(homeOption, homeOptionDescription);
+  const use = self
+    .command("use <version>")
+    .description("Switch the active CLI installation to a staged version.")
+    .option(homeOption, homeOptionDescription);
   use.action((version: string, opts: { home?: string }) => {
     const ctx = context();
     return runCommand(ctx, () =>
       api.self("use", { version, yes: ctx.yes, home: opts.home, verbose: ctx.verbose })
     );
   });
-  const prune = self.command("prune").option(homeOption, homeOptionDescription);
+  const prune = self
+    .command("prune")
+    .description("Remove unused staged versions.")
+    .option(homeOption, homeOptionDescription);
   prune.action((opts: { home?: string }) =>
     runCommand(context(), () => api.self("prune", { yes: context().yes, home: opts.home }))
   );
   const uninstall = self
     .command("uninstall")
+    .description("Remove the portable CLI installation.")
     .option("--purge-data", "also remove agents.yaml, approvals.json and the browser profile")
     .option(homeOption, homeOptionDescription);
   uninstall.action((opts: { purgeData?: boolean; home?: string }) =>
@@ -224,15 +268,17 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
 
   const integrations = program
     .command("integrations")
+    .description("Write, inspect, remove, or print AI client configuration.")
     .option(
       "--verbose",
       "echo metadata-only diagnostic lines (broker-release waits, restart-and-retry outcomes) to stderr, prefixed [log]"
     );
   const write = integrations
     .command("write")
+    .description("Register AgentPickLink with the selected AI clients.")
     .option(
       "--client <list>",
-      "comma-separated vscode,vscode-user,vscode-workspace,claude,claude-user,claude-project,codex (default: vscode,claude,codex)"
+      "client list: vscode, vscode-user, vscode-workspace, claude, claude-user, claude-project, codex (default: vscode,claude,codex)"
     )
     .option("--workspace <path>", "workspace folder (default: the current directory)")
     .option("--force", "overwrite a foreign (not AgentPickLink-owned) entry too, after backing it up")
@@ -254,16 +300,18 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   );
   const status = integrations
     .command("status")
-    .option("--client <list>")
-    .option("--workspace <path>")
+    .description("Show whether each selected client has a current AgentPickLink entry.")
+    .option("--client <list>", "comma-separated client names (default: vscode,claude,codex)")
+    .option("--workspace <path>", "workspace folder (default: the current directory)")
     .option(homeOption, homeOptionDescription);
   status.action((opts: { client?: string; workspace?: string; home?: string }) =>
     runCommand(context(), () => api.integrations("status", opts))
   );
   const integrationsRemove = integrations
     .command("remove")
-    .option("--client <list>")
-    .option("--workspace <path>")
+    .description("Remove AgentPickLink entries from the selected clients.")
+    .option("--client <list>", "comma-separated client names (default: vscode,claude,codex)")
+    .option("--workspace <path>", "workspace folder (default: the current directory)")
     .option("--force", "remove a foreign (not AgentPickLink-owned) entry too, after backing it up")
     .option(homeOption, homeOptionDescription);
   integrationsRemove.action((opts: { client?: string; workspace?: string; force?: boolean; home?: string }) =>
@@ -275,24 +323,46 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
   );
   const snippet = integrations
     .command("snippet")
-    .option("--client <list>")
+    .description("Print ready-to-paste configuration for selected clients.")
+    .option("--client <list>", "comma-separated client names (default: vscode,claude,codex)")
     .option(homeOption, homeOptionDescription);
-  snippet.action((opts: { client?: string; home?: string }) =>
-    runCommand(context(), () => api.integrations("snippet", opts))
-  );
+  snippet.action(async (opts: { client?: string; home?: string }) => {
+    const ctx = context();
+    try {
+      const result = await api.integrations("snippet", opts);
+      if (isCliError(result)) {
+        printResult(ctx, result);
+        process.exitCode = 1;
+      } else if (ctx.json) ctx.out(JSON.stringify(result, null, 2));
+      else {
+        const snippets = Object.entries(result as Record<string, string>);
+        ctx.out(
+          snippets.length === 1
+            ? snippets[0][1]
+            : snippets.map(([client, text]) => `=== ${client} ===\n${text}`).join("\n\n")
+        );
+      }
+    } catch (error) {
+      printResult(ctx, toToolError(error));
+      process.exitCode = 1;
+    }
+  });
 
   // serve owns the MCP stdio transport: stdout carries only protocol traffic, so
   // this bypasses runCommand/printResult entirely rather than relying solely on
   // printResult's undefined-skip to keep the stream clean.
-  program.command("serve").action(async () => {
-    const ctx = context();
-    try {
-      await ctx.api.serve();
-    } catch (error) {
-      ctx.error(error instanceof Error ? error.message : "Command failed.");
-      process.exitCode = 1;
-    }
-  });
+  program
+    .command("serve")
+    .description("Run the MCP server over standard input and output.")
+    .action(async () => {
+      const ctx = context();
+      try {
+        await ctx.api.serve();
+      } catch (error) {
+        ctx.error(error instanceof Error ? error.message : "Command failed.");
+        process.exitCode = 1;
+      }
+    });
   return program;
 }
 

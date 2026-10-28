@@ -862,7 +862,17 @@ export class SetupController {
   async save(input: SavePlanInput): Promise<void> {
     const t = translator(this.host.locale);
     if (!this.requireTrustedWorkspace()) return;
-    const { plan, unknownKeys, invalidDownloadHosts } = buildApplyPlan(input, this.state.candidates);
+    let built: ReturnType<typeof buildApplyPlan>;
+    try {
+      built = buildApplyPlan(input, this.state.candidates);
+    } catch (error) {
+      const panelError = toPanelError(error, this.host.locale);
+      this.lastErrorCode = panelError.code;
+      this.host.log(`save: failed (${panelError.code}) ${panelError.message}`);
+      this.patch({ phase: "error", error: panelError, progress: undefined });
+      return;
+    }
+    const { plan, unknownKeys, invalidDownloadHosts } = built;
     if (unknownKeys.length > 0) this.host.log(`save: ignored ${unknownKeys.length} unknown key(s)`);
     if (plan.agents.length === 0) {
       this.host.notify("warning", t("noAgentsSelected"));
@@ -893,7 +903,7 @@ export class SetupController {
       plan.agents.some((agent) => agent.capabilityClass === "actions-possible");
     const detail = [
       ...plan.agents.map((agent) => {
-        const alias = agent.alias ?? previewAlias(agent.displayName);
+        const alias = agent.alias ?? previewAlias(agent.displayName, agent.url);
         const capability =
           agent.capabilityClass === "actions-possible" ? t("actionsPossible") : t("knowledgeOnly");
         return `- ${alias} / ${agent.displayName} / ${capability}`;

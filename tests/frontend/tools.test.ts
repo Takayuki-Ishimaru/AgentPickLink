@@ -92,6 +92,26 @@ describe("frontend tool contract", () => {
     expect(result.isError).toBe(true);
     expect(result.structuredContent.error.code).toBe("INVALID_ARGUMENT");
   });
+  it.each([0, 1, 15000, 300000])("accepts an explicit read wait of %s milliseconds", async (waitMs) => {
+    const result = await tools.m365_agent_session({
+      action: "read",
+      conversationHandle: "conv_test",
+      waitMs
+    });
+    expect(result.isError ?? false).toBe(false);
+  });
+  it.each([-1, 300001, 1.5, "1000", null])("refuses an invalid read wait %s", async (waitMs) => {
+    const result = await tools.m365_agent_session({
+      action: "read",
+      conversationHandle: "conv_test",
+      waitMs
+    });
+    expect(result.structuredContent.error?.code).toBe("INVALID_ARGUMENT");
+  });
+  it("does not silently accept waitMs on a different session action", async () => {
+    const result = await tools.m365_agent_session({ action: "list", waitMs: 0 });
+    expect(result.structuredContent.error?.code).toBe("INVALID_ARGUMENT");
+  });
   // v0.2.8 review 03: a field of another action was dropped silently, so close with an agent read
   // as a filter that was never applied.
   it.each([
@@ -134,8 +154,8 @@ describe("frontend tool contract", () => {
     const result = await tools.m365_agent_session(input);
     expect(result.isError ?? false).toBe(false);
   });
-  it("rejects malformed aliases and handles", async () => {
-    const badAlias = await tools.m365_agent_ask({ agent: "Bad", message: "hello" });
+  it("rejects empty agent selections and malformed handles", async () => {
+    const badAlias = await tools.m365_agent_ask({ agent: " ", message: "hello" });
     const badHandle = await tools.m365_agent_ask({
       agent: "ok",
       message: "hello",
@@ -143,6 +163,11 @@ describe("frontend tool contract", () => {
     });
     expect(badAlias.structuredContent.error.code).toBe("INVALID_ARGUMENT");
     expect(badHandle.structuredContent.error.code).toBe("INVALID_ARGUMENT");
+  });
+  it("accepts an exact Unicode display name for broker-side authorized resolution", async () => {
+    const result = await tools.m365_agent_ask({ agent: "営業資料アシスタント", message: "hello" });
+    expect(result.isError ?? false).toBe(false);
+    expect(result.structuredContent.agent).toBe("営業資料アシスタント");
   });
   it("propagates MCP cancellation to the broker port", async () => {
     let received: AbortSignal | undefined;

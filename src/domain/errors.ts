@@ -83,24 +83,25 @@ export type ApplicationErrorResult = { ok: false; requestId: string; error: Appl
 
 const remediation: Partial<Record<ErrorCode, string>> = {
   WORKSPACE_APPROVAL_REQUIRED:
-    "This repository requests Microsoft 365 agents that have not been approved locally. Open the AgentPickLink panel in VS Code and press Save to approve them. (Or run: m365-agent workspace approve)",
-  AUTH_REQUIRED: "Sign in from the AgentPickLink panel in VS Code. (Or run: m365-agent login)",
+    "Review and approve the selected agents in AgentPickLink setup. For a portable installation, rerun apl-setup with the workspace path; in VS Code, open the AgentPickLink panel and press Save.",
+  AUTH_REQUIRED:
+    "Sign in through AgentPickLink setup. For a portable installation, rerun apl-setup with the workspace path; in VS Code, use the AgentPickLink panel's Sign in action.",
   AGENT_BINDING_MISMATCH:
-    "The workspace alias resolves to a different local Microsoft 365 agent binding. Review the registry and run: m365-agent workspace approve",
+    "The workspace alias resolves to a different local Microsoft 365 agent binding. Review and approve it again in AgentPickLink setup (rerun apl-setup with the workspace path for a portable installation).",
   SUBMIT_STATE_UNKNOWN:
     "The message might have been submitted. It was not retried automatically. Do not send it again blindly: if this error includes a conversationHandle, call m365_agent_session with action=read and that handle to learn whether the message arrived and to collect the reply; otherwise check the conversation in Microsoft 365 first.",
   UI_CHANGED:
-    "The Microsoft 365 page structure differs from what this version expects. Open the AgentPickLink panel, copy the diagnostic, and report it to the developer. Do not retry blindly.",
+    "The Microsoft 365 page structure may have changed. Copy diagnostics in AgentPickLink setup or run the installed apl launcher with doctor, and report the metadata to the developer. Do not resend the question blindly.",
   WORKSPACE_NOT_CONFIGURED:
-    "Open the AgentPickLink panel in VS Code and press Save to create .m365-agents.json. (Or run: m365-agent workspace configure)",
-  AGENT_UNVERIFIED: "Re-register and verify the agent with: m365-agent agent add --capture",
+    "Run apl-setup with the workspace path and approve the selected agents to create .m365-agents.json. In VS Code, use the AgentPickLink panel's Save action.",
+  AGENT_UNVERIFIED: "Re-register and verify the agent in AgentPickLink setup.",
   NEW_CONVERSATION_UNVERIFIED:
     "The prompt was not sent. Verify the configured UI adapter and direct-chat entry point.",
-  BROKER_VERSION_MISMATCH: "Run: m365-agent broker restart",
+  BROKER_VERSION_MISMATCH: "Restart the broker using the installed apl launcher: apl broker restart",
   BROWSER_PROFILE_INVALID:
-    "Move the dedicated profile to protected local application data and run m365-agent init.",
+    "Move the dedicated profile to protected local application data and rerun AgentPickLink setup.",
   BROWSER_PROFILE_LOCKED:
-    "Another browser process is using the dedicated profile. Close the AgentPickLink sign-in window, then run: m365-agent broker restart",
+    "Another browser process is using the dedicated profile. Close the AgentPickLink sign-in window, then restart the broker with the installed apl launcher: apl broker restart",
   CONCURRENT_REQUEST:
     "Wait for the operation that is already using this conversation or the dedicated browser profile (an interactive sign-in window, for example) to finish, then retry.",
   // The automation browser is hidden, so remediation must never tell anyone to look at it.

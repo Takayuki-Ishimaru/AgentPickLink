@@ -408,7 +408,7 @@ function handoffFailure(
   return new BrowserTransportError(
     "AUTH_FAILED",
     `The sign-in completed in the window, but the hidden browser could not confirm the signed-in Microsoft 365 page within ${Math.round(timeoutMs / 1000)} s (last state: ${outcome.state}).`,
-    "Retry the sign-in. If this keeps happening, set browser.headless to false in the AgentPickLink panel's Advanced settings to check whether the page renders only in a visible browser, then copy the diagnostics and report them.",
+    "Retry AgentPickLink setup. If this keeps happening, copy the diagnostics from setup and report that background verification did not complete; do not change browser.headless, as the broker manages the automation window.",
     { verification }
   );
 }

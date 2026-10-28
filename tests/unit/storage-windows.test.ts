@@ -45,7 +45,7 @@ describe("Windows private storage batching", () => {
       expect(script).toContain("GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])");
       expect(script).toContain("New-Object -TypeName Security.AccessControl.FileSystemAccessRule");
       expect(script).not.toContain(".Translate(");
-      expect(script).toContain("Get-Acl");
+      expect(script).not.toContain("Get-Acl");
       expect(script).toContain(
         "[IO.Directory]::GetAccessControl($p,[Security.AccessControl.AccessControlSections]::Access)"
       );

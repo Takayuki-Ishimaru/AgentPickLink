@@ -593,7 +593,8 @@ export class BrokerServer {
           params.conversationHandle as string,
           requestId,
           notify,
-          signal
+          signal,
+          params.waitMs as number | undefined
         );
       case "conversation.list":
         return this.invocationService().list(params.root as string);

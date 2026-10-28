@@ -146,6 +146,71 @@ const read = (
   );
 
 describe("reading: what counts as not shown", () => {
+  it("does not wait for a missing identity name during a snapshot", async () => {
+    const directPage = { ...page, url: () => "https://m365.example.test/chat/agent/agent-alpha" };
+    const directAgent = {
+      ...agent,
+      verification: {
+        ...agent.verification,
+        expectedStableAgentId: "agent-alpha",
+        validatedUrlPattern: "^/chat/agent/agent-alpha$"
+      }
+    };
+    const chat = adapter(looks({ userCount: 0 }), {
+      assertAgentIdentity: vi.fn(async () => ({ valid: false }))
+    });
+    await expect(
+      driver({ responseStartTimeoutMs: 90000 }).read(directPage, conversation as never, directAgent, chat, {
+        entered: entry("unknown", 0),
+        waitMs: 0
+      })
+    ).rejects.toMatchObject({ code: "AGENT_CONTEXT_CHANGED" });
+    expect(chat.assertAgentIdentity).toHaveBeenCalledTimes(1);
+  });
+  it("snapshots an unconfirmed message without acknowledgement polls or resending", async () => {
+    const capture = looks({ userCount: 0, composerText: QUESTION });
+    const chat = adapter(capture);
+    const complete = vi.spyOn(chat, "waitForResponseComplete");
+    await expect(
+      driver({ ackTimeoutMs: 90000 }).read(page, conversation as never, agent, chat, {
+        entered: entry("unknown", 0, { settledLongAgo: false }),
+        waitMs: 0
+      })
+    ).resolves.toEqual({ message: "unconfirmed", reply: "none" });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("snapshots an acknowledged question without the response-start wait", async () => {
+    const capture = looks({ userCount: 1, latestUserText: QUESTION, replyStarted: false });
+    const chat = adapter(capture);
+    const complete = vi.spyOn(chat, "waitForResponseComplete");
+    await expect(
+      driver({ responseStartTimeoutMs: 90000 }).read(page, conversation as never, agent, chat, {
+        entered: entry("sent", 0),
+        waitMs: 0
+      })
+    ).resolves.toEqual({ message: "shown", reply: "none" });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("returns correlated snapshot text without waiting for stability or claiming completion", async () => {
+    const capture = looks({ userCount: 1, latestUserText: QUESTION, replyStarted: true });
+    const chat = adapter(capture);
+    const complete = vi.spyOn(chat, "waitForResponseComplete");
+    await expect(
+      driver().read(page, conversation as never, agent, chat, {
+        entered: entry("sent", 0),
+        waitMs: 0
+      })
+    ).resolves.toEqual({
+      message: "shown",
+      reply: "incomplete",
+      partialResponse: { text: "Use route B.", citations: [] }
+    });
+    expect(complete).not.toHaveBeenCalled();
+  });
   it("remains unconfirmed when the page kept the message in its composer and shows no new user message", async () => {
     const capture = looks({ userCount: 2, latestUserText: "an earlier question", composerText: QUESTION });
     await expect(read(capture, entry("unknown", 2))).resolves.toEqual({

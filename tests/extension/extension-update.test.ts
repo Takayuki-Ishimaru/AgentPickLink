@@ -4,7 +4,24 @@ import { commands } from "vscode";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installExtensionRelease } from "../../src/extension/extension-update.js";
+// These tests exercise installation/receipt behavior; cryptographic trust is covered by the
+// attestation service's real signed-bundle tests.
+vi.mock("../../src/services/extension-attestation.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/services/extension-attestation.js")>();
+  return {
+    ...actual,
+    verifyExtensionAttestation: vi.fn(async (release: { tag: string; sha256: string }) => ({
+      version: 1 as const,
+      tag: release.tag,
+      sha256: release.sha256,
+      sourceCommit: "c".repeat(40),
+      workflow: actual.ATTESTATION_WORKFLOW,
+      verifiedAt: new Date().toISOString()
+    }))
+  };
+});
 import type { ExtensionRelease } from "../../src/services/extension-update.js";
+import { verifyExtensionAttestation } from "../../src/services/extension-attestation.js";
 import { createRuntimeHarness, type RuntimeHarness } from "./harness.js";
 import { resetVscodeMock, vscodeMock } from "./vscode-mock.js";
 
@@ -22,6 +39,7 @@ const bytes = Buffer.from("vsix");
 let installed = "0.1.0";
 const installedVersion = async () => installed;
 beforeEach(async () => {
+  vi.mocked(verifyExtensionAttestation).mockClear();
   resetVscodeMock();
   harness = await createRuntimeHarness();
   installed = "0.1.0";
@@ -50,6 +68,83 @@ const install = (
 const storage = () => harness.context.globalStorageUri.fsPath;
 
 describe("VS Code VSIX installation", () => {
+  it.each(["missing", "invalid signature", "wrong workflow", "wrong tag", "wrong commit", "offline"])(
+    "refuses installation and leaves no success receipt when attestation verification rejects %s",
+    async (reason) => {
+      vi.mocked(verifyExtensionAttestation).mockRejectedValueOnce(new Error(reason));
+      await expect(install()).rejects.toThrow(reason);
+      expect(vscodeMock.executedCommands).toHaveLength(0);
+      expect(await readdir(storage())).toEqual([]);
+      // A failed attempt must release the inter-window lock so a later valid proof can succeed.
+      expect(await install()).toBe(true);
+    }
+  );
+
+  it("checks cancellation after attestation verification and does not install", async () => {
+    const controller = new AbortController();
+    const verified = await vi.mocked(verifyExtensionAttestation).getMockImplementation()!(
+      release,
+      bytes,
+      controller.signal
+    );
+    vi.mocked(verifyExtensionAttestation).mockImplementationOnce(async () => {
+      controller.abort();
+      return verified;
+    });
+    expect(await install(undefined, () => true, controller.signal)).toBe(false);
+    expect(vscodeMock.executedCommands).toHaveLength(0);
+    expect(await readdir(storage())).toEqual([]);
+  });
+
+  it.each([
+    { tag: "v9.9.9" },
+    { sha256: "b".repeat(64) },
+    { workflow: ".github/workflows/other.yml" },
+    { sourceCommit: "missing" },
+    { version: 0 }
+  ])("refuses inconsistent verification receipts instead of installing: %j", async (change) => {
+    const original = await vi.mocked(verifyExtensionAttestation).getMockImplementation()!(
+      release,
+      bytes,
+      new AbortController().signal
+    );
+    vi.mocked(verifyExtensionAttestation).mockResolvedValueOnce({
+      ...original,
+      ...change
+    } as typeof original);
+    await expect(install()).rejects.toThrow("update-attestation-invalid-proof");
+    expect(vscodeMock.executedCommands).toHaveLength(0);
+    expect(await readdir(storage())).toEqual([]);
+  });
+
+  it("does not reuse an older digest-only success receipt without verifying provenance", async () => {
+    installed = "0.1.1";
+    await mkdir(storage(), { recursive: true });
+    const legacy = JSON.stringify({ tag: release.tag, sha256: release.sha256 });
+    await writeFile(path.join(storage(), "installed-release.json"), legacy);
+    vi.mocked(verifyExtensionAttestation).mockRejectedValueOnce(new Error("no proof"));
+    await expect(install()).rejects.toThrow("no proof");
+    expect(verifyExtensionAttestation).toHaveBeenCalledOnce();
+    expect(vscodeMock.executedCommands).toHaveLength(0);
+    expect(await readFile(path.join(storage(), "installed-release.json"), "utf8")).toBe(legacy);
+  });
+
+  it("passes the exact downloaded bytes and caller cancellation to mandatory verification", async () => {
+    const controller = new AbortController();
+    expect(await install(undefined, () => true, controller.signal)).toBe(true);
+    expect(verifyExtensionAttestation).toHaveBeenCalledExactlyOnceWith(release, bytes, controller.signal);
+    const receipt = JSON.parse(await readFile(path.join(storage(), "installed-release.json"), "utf8"));
+    expect(receipt).toMatchObject({
+      version: 2,
+      tag: release.tag,
+      sha256: release.sha256,
+      attestation: {
+        version: 1,
+        sourceCommit: "c".repeat(40),
+        workflow: ".github/workflows/release-build.yml"
+      }
+    });
+  });
   it("honors cancellation independently of the preference callback", async () => {
     const controller = new AbortController();
     const download = vi.fn(async () => {
@@ -129,6 +224,7 @@ describe("VS Code VSIX installation", () => {
     expect(await install(download)).toBe(true);
     expect(await install(download)).toBe(true);
     expect(download).toHaveBeenCalledOnce();
+    expect(verifyExtensionAttestation).toHaveBeenCalledOnce();
     expect(vscodeMock.executedCommands).toHaveLength(1);
     expect(JSON.parse(await readFile(path.join(storage(), "installed-release.json"), "utf8"))).toMatchObject({
       tag: release.tag,

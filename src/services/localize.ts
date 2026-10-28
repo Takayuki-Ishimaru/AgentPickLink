@@ -319,6 +319,7 @@ const MESSAGES = {
     ja: "アンインストールするには次を実行してください:",
     en: "To uninstall, run:"
   },
+  cliCommandLabel: { ja: "CLI コマンド", en: "CLI command" },
   // APL-REVIEW-02: header above the per-client failure lines (`InstallReport.clientErrors`), for a
   // selected client whose write actually failed -- distinct from `installReportNoClients` (nothing
   // was selected/detected at all) and from a plain `vscode-user`/`claude-user` skip line above it.
@@ -337,8 +338,8 @@ const MESSAGES = {
   },
   installNextStepsCodex: { ja: "Codex を再起動してください。", en: "Restart Codex." },
   installNextStepsIncident: {
-    ja: "Microsoft 365 の画面構成が変わった場合は m365-agent doctor を実行し、その出力を報告してください。",
-    en: "If Microsoft 365 changes its layout, run m365-agent doctor and send its output."
+    ja: "Microsoft 365 の画面構成が変わった場合は apl doctor を実行し、その出力を報告してください。",
+    en: "If Microsoft 365 changes its layout, run apl doctor and send its output."
   },
   installElevatedRefused: {
     ja: "管理者/root 権限では実行できません。通常の権限で実行し直してください。",
@@ -387,15 +388,16 @@ export function translator(locale: Locale): (key: MessageKey) => string {
  * `failedCountKnown === false` (ISSUE-2026-09-14-01) means `failedCount` is only a floor for an
  * unknown number of losses, not a real tally: showing it as a count would misstate what is known,
  * so this renders `cliDiscoveryPartialUnknown` instead -- never a literal "(0)". A caller that
- * omits `failedCountKnown` (older callers that predate it) keeps the original count-bearing
- * wording, `failedCount` defaulting to `0` exactly as before.
+ * omits a positive `failedCount` uses the count-free wording too, so no caller can render a
+ * contradictory warning that zero candidates failed.
  */
 export function describeDiscoverySummary(
   summary: { partial: boolean; failedCount?: number; failedCountKnown?: boolean },
   locale: Locale
 ): string | undefined {
   if (!summary.partial) return undefined;
-  if (summary.failedCountKnown === false) return translate(locale, "cliDiscoveryPartialUnknown");
+  if (summary.failedCountKnown === false || !summary.failedCount || summary.failedCount < 0)
+    return translate(locale, "cliDiscoveryPartialUnknown");
   return translate(locale, "cliDiscoveryPartialCount").replace("{count}", String(summary.failedCount ?? 0));
 }
 
@@ -425,8 +427,8 @@ const ERROR_CODE_TEXT = {
     ja: "このワークスペースのエージェントは、この PC でまだ承認されていません。",
     en: "The agents this workspace requests have not been approved on this machine.",
     remediation: {
-      ja: "AgentPickLink パネルを開き、「承認して保存」でこのワークスペースのエージェントを承認してください。",
-      en: "Open the AgentPickLink panel and press Save to approve these agents for this workspace."
+      ja: "AgentPickLink のセットアップで対象を確認し、「承認して保存」を押してください。ポータブル版は apl-setup に対象フォルダーのパスを渡して再実行してください。",
+      en: "Review the agents and approve them in AgentPickLink setup. For a portable installation, rerun apl-setup with the workspace path."
     }
   },
   WORKSPACE_APPROVAL_REVOKED: {
@@ -523,7 +525,11 @@ const ERROR_CODE_TEXT = {
   },
   BROWSER_START_FAILED: {
     ja: "自動操作用のブラウザーを起動できませんでした。",
-    en: "The automation browser could not be started."
+    en: "The automation browser could not be started.",
+    remediation: {
+      ja: "Edge または Chrome が起動できるか確認し、AgentPickLink のセットアップをやり直してください。解決しない場合は診断情報をコピーして報告してください。",
+      en: "Check that Edge or Chrome starts, then rerun AgentPickLink setup. Copy diagnostics and report the failure if it persists."
+    }
   },
   BROWSER_PROFILE_INVALID: {
     ja: "専用ブラウザープロファイルの場所が正しくありません。",
@@ -545,8 +551,8 @@ const ERROR_CODE_TEXT = {
     ja: "Microsoft 365 のサインインが必要です。",
     en: "Microsoft 365 sign-in is required.",
     remediation: {
-      ja: "AgentPickLink パネルの「サインイン」からサインインしてください。",
-      en: "Sign in from the AgentPickLink panel in VS Code."
+      ja: "AgentPickLink のセットアップからサインインしてください。ポータブル版は apl-setup に対象フォルダーのパスを渡して再実行してください。",
+      en: "Sign in through AgentPickLink setup. For a portable installation, rerun apl-setup with the workspace path."
     }
   },
   AUTH_FAILED: {
@@ -565,8 +571,8 @@ const ERROR_CODE_TEXT = {
     ja: "Microsoft 365 の画面構成がこのバージョンの想定と異なります。",
     en: "The Microsoft 365 page structure differs from what this version expects.",
     remediation: {
-      ja: "パネルの「診断をコピー」で診断情報を取得し、開発者に報告してください。そのまま再試行しないでください。",
-      en: "Copy the diagnostic from the AgentPickLink panel and report it to the developer. Do not retry blindly."
+      ja: "Microsoft 365 の画面構成が変わった可能性があります。セットアップの「診断をコピー」、またはインストール先の apl から doctor を実行し、診断情報を開発者に報告してください。質問の再送は避けてください。",
+      en: "Microsoft 365's page structure may have changed. Copy diagnostics in setup or run doctor with the installed apl launcher, and report the metadata to the developer. Avoid resending the question."
     }
   },
   CHAT_INPUT_NOT_FOUND: {

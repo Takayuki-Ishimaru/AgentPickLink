@@ -86,7 +86,7 @@ export async function connectOrStartBroker(
                 "BROKER_UNAVAILABLE",
                 "The existing AgentPickLink broker process is alive but its IPC endpoint is not accepting connections.",
                 true,
-                { remediation: "Wait briefly and retry, or run: m365-agent broker restart" }
+                { remediation: "Wait briefly and retry, or run: apl broker restart" }
               );
             // The descriptor may have been replaced by another election winner. Re-read and
             // handshake before spawning anything, preserving the single-broker invariant.

@@ -66,7 +66,7 @@ export class IpcServer {
         "BROKER_START_FAILED",
         "Another process is already listening on this named pipe.",
         false,
-        { remediation: "Run: m365-agent broker restart" }
+        { remediation: "Run: apl broker restart" }
       );
   }
   async close(): Promise<void> {

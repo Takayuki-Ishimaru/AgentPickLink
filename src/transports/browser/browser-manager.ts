@@ -294,7 +294,7 @@ export class BrowserManager {
       throw new BrowserTransportError(
         "BROWSER_START_FAILED",
         "The hidden automation browser context is not running.",
-        "Retry the operation, or run: m365-agent broker restart"
+        "Retry the operation, or run: apl broker restart"
       );
     return this.context;
   }
@@ -313,7 +313,7 @@ export class BrowserManager {
       throw new BrowserTransportError(
         "BROWSER_PROFILE_LOCKED",
         "The dedicated browser profile is still owned by a browser context that did not close.",
-        "Retry closing the AgentPickLink browser, then run: m365-agent broker restart"
+        "Retry closing the AgentPickLink browser, then run: apl broker restart"
       );
     if (this.context && !this.isContextAlive(this.context)) {
       // Self-heal: the retained automation context's browser process died without this manager
@@ -337,7 +337,7 @@ export class BrowserManager {
       throw new BrowserTransportError(
         "BROWSER_PROFILE_LOCKED",
         "The dedicated browser profile is still owned by the AgentPickLink sign-in window.",
-        "Close the sign-in window, then run: m365-agent broker restart"
+        "Close the sign-in window, then run: apl broker restart"
       );
     if (this.starting) return this.starting;
     this.starting = this.launch();
@@ -402,7 +402,7 @@ export class BrowserManager {
       throw new BrowserTransportError(
         "AGENT_PAGE_UNAVAILABLE",
         "The automation browser did not provide a usable page for this conversation.",
-        "Run: m365-agent broker restart"
+        "Run: apl broker restart"
       );
     // The context can be closed while newPage() is pending. Never retain a page from that old
     // context: it would be unreachable by closePage() after the next launch.
@@ -830,7 +830,7 @@ export class BrowserManager {
       throw new BrowserTransportError(
         "BROWSER_START_FAILED",
         "No browser launcher is available to this broker.",
-        "Reinstall AgentPickLink and run: m365-agent broker restart"
+        "Reinstall AgentPickLink and run: apl broker restart"
       );
     // Round 6 root cause of the first-launch timeout: see `ensureWindowsLocalAppData`.
     if (await ensureWindowsLocalAppData())
@@ -1063,7 +1063,7 @@ export class BrowserManager {
         new BrowserTransportError(
           "BROWSER_START_FAILED",
           `The ${this.options.channel} browser did not start: another instance already owns the dedicated profile.`,
-          `Another AgentPickLink browser instance owns the profile. Run: m365-agent broker restart. If it persists, close the remaining ${this.options.channel} processes started by AgentPickLink.`
+          `Another AgentPickLink browser instance owns the profile. Run: apl broker restart. If it persists, close the remaining ${this.options.channel} processes started by AgentPickLink.`
         )
       );
     if (isProfileLockError(message))
@@ -1071,7 +1071,7 @@ export class BrowserManager {
         new BrowserTransportError(
           "BROWSER_PROFILE_LOCKED",
           "The dedicated browser profile is already in use by another browser process.",
-          "Another browser process is using the dedicated profile. Close the sign-in window or run: m365-agent broker restart"
+          "Another browser process is using the dedicated profile. Close the sign-in window or run: apl broker restart"
         )
       );
     if (competingProfileProcesses && error instanceof BrowserStartTimeout)
@@ -1079,7 +1079,7 @@ export class BrowserManager {
         new BrowserTransportError(
           "BROWSER_START_FAILED",
           `The ${this.options.channel} browser did not start: ${message}`,
-          "Another AgentPickLink browser for this profile is still running/shutting down; wait or run: m365-agent broker restart"
+          "Another AgentPickLink browser for this profile is still running/shutting down; wait or run: apl broker restart"
         )
       );
     if (
@@ -1091,14 +1091,14 @@ export class BrowserManager {
         new BrowserTransportError(
           "BROWSER_START_FAILED",
           `The ${this.options.channel} browser could not be started: its executable was not found.`,
-          `Install the ${this.options.channel} browser, or switch browser.channel to an installed browser (msedge, chrome, chromium) in the AgentPickLink panel's Advanced settings or config.yaml, then restart the broker (m365-agent broker restart).`
+          `Install the ${this.options.channel} browser, or switch browser.channel to an installed browser (msedge, chrome, chromium) in the AgentPickLink panel's Advanced settings or config.yaml, then restart the broker (apl broker restart).`
         )
       );
     return withDetails(
       new BrowserTransportError(
         "BROWSER_START_FAILED",
         `The ${this.options.channel} browser did not start: ${message}`,
-        "Run: m365-agent broker restart"
+        "Run: apl broker restart"
       )
     );
   }

@@ -139,6 +139,7 @@ export class AttachmentSaver {
         safeSegment(context.workspaceKey, "workspace"),
         safeSegment(context.requestId, "request")
       );
+      if (context.workspaceRoot) await ensureDownloadIgnore(baseDirectory);
     } catch {
       return withOverflow(
         limited.map((item) => notSaved(item, "download-failed", page.url(), "destination-unavailable"))
@@ -297,6 +298,19 @@ export class AttachmentSaver {
       }
     }
     return withOverflow(attachments);
+  }
+}
+
+/** Keep response files out of Git without changing the user's workspace ignore rules. */
+async function ensureDownloadIgnore(base: string): Promise<void> {
+  const ignore = path.join(base, ".gitignore");
+  try {
+    await writeFile(ignore, "*\n", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const info = await lstat(ignore);
+    if (!info.isFile() || info.isSymbolicLink())
+      throw new Error("download ignore is not a regular file", { cause: error });
   }
 }
 

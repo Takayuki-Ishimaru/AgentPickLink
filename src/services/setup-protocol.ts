@@ -131,6 +131,7 @@ export type HostMessage = { type: "state"; state: PanelState };
 export type PlanAgentInput = {
   key: string;
   displayName?: string;
+  alias?: string;
   usageHint?: string;
   /** The "ファイル生成・アクションあり" toggle. */
   actionsPossible?: boolean;

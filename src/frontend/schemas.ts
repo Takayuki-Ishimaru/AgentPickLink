@@ -194,8 +194,11 @@ export const askInputSchema = strict(
   {
     agent: {
       type: "string",
-      pattern: ALIAS_PATTERN,
-      description: "The lowercase alias of the workspace-assigned Microsoft 365 agent to consult."
+      minLength: 1,
+      maxLength: 256,
+      pattern: "^[^\\u0000-\\u001f\\u007f]*\\S[^\\u0000-\\u001f\\u007f]*$",
+      description:
+        "An assigned lowercase alias, or an exact display name unique among this workspace's approved agents. Prefer an alias from m365_agent_list."
     },
     message: {
       type: "string",
@@ -226,7 +229,7 @@ export const sessionInputSchema = {
         type: "string",
         enum: ["new", "list", "close", "close_all", "read"],
         description:
-          "new starts a conversation (requires agent); list lists open conversations for this workspace; close closes one conversation (requires conversationHandle); close_all closes every conversation for this workspace; read reads a conversation without sending anything (requires conversationHandle): whether the last message is shown there, and the reply to it, waiting for the reply to finish. Use read after m365_agent_ask returns SUBMIT_STATE_UNKNOWN or RESPONSE_TIMEOUT with a conversationHandle, instead of sending the message again."
+          "new starts a conversation (requires agent); list lists open conversations for this workspace; close closes one conversation (requires conversationHandle); close_all closes every conversation for this workspace; read reads a conversation without sending anything (requires conversationHandle): whether the last message is shown there, and the reply to it. Default waitMs=0 returns an immediate snapshot; set waitMs (up to 300000) explicitly to wait for completion and collect files. Use read after m365_agent_ask returns SUBMIT_STATE_UNKNOWN or RESPONSE_TIMEOUT with a conversationHandle, instead of sending the message again."
       },
       agent: {
         type: "string",
@@ -239,6 +242,13 @@ export const sessionInputSchema = {
         pattern: HANDLE_PATTERN,
         description:
           "The conversation handle to close or read. Required for action=close and action=read; not accepted otherwise."
+      },
+      waitMs: {
+        type: "integer",
+        minimum: 0,
+        maximum: 300000,
+        description:
+          "action=read only. Default 0: return the current snapshot without waiting. Set 1-300000 to wait for completion and collect files. A snapshot may return incomplete even when the displayed text has stopped changing."
       }
     },
     ["action"]
@@ -446,4 +456,9 @@ export const sessionOutputSchema = {
 };
 
 export type AskInput = { agent: string; message: string; conversationHandle?: string; expectFiles?: boolean };
-export type SessionInput = { action: SessionAction; agent?: string; conversationHandle?: string };
+export type SessionInput = {
+  action: SessionAction;
+  agent?: string;
+  conversationHandle?: string;
+  waitMs?: number;
+};

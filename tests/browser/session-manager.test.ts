@@ -331,7 +331,7 @@ describe("SessionManager", () => {
     await expect(sessions.interactiveLogin(5_000)).rejects.toMatchObject({
       code: "AUTH_FAILED",
       message: expect.stringContaining("could not confirm the signed-in Microsoft 365 page"),
-      remediation: expect.stringContaining("Retry the sign-in"),
+      remediation: expect.stringContaining("Retry AgentPickLink setup"),
       details: expect.objectContaining({ verification: { state: "unknown", settledOn: "app" } })
     });
   });

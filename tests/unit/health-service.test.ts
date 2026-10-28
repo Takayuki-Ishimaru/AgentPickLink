@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { expectedChromiumExecutable } from "../../src/services/chromium-cache.js";
 import { initializeLocalState } from "../../src/config/init.js";
 import { defaultGlobalConfig, saveGlobalConfig } from "../../src/config/global-config.js";
 import { appPaths } from "../../src/config/paths.js";
@@ -169,7 +170,7 @@ describe("HealthService", () => {
       toFailure: (value) => ({ failed: value instanceof Error ? value.message : String(value) })
     });
     const { checks } = await health.localReport(workspaceRoot);
-    expect(checks.appData).toMatchObject({ failed: expect.stringContaining("Run m365-agent init") });
+    expect(checks.appData).toMatchObject({ failed: expect.stringContaining("Run AgentPickLink setup") });
     expect(checks.globalConfig).toMatchObject({ failed: expect.any(String) });
     expect(checks.profile).toMatchObject({ safe: false, error: { failed: expect.any(String) } });
     expect(checks.registry).toMatchObject({ failed: expect.any(String) });
@@ -224,7 +225,7 @@ describe("HealthService", () => {
 
 describe("HealthService.browser (docs/ux-redesign.md §2.2 item 3)", () => {
   it("reports the requested channel plus every other channel as an alternative", async () => {
-    const { paths } = await fixture();
+    const paths = appPaths(path.join(os.tmpdir(), "apl-health-browser-detection"));
     const health = new HealthService({ paths, preparer: fakePreparer });
     const chrome = await health.browser("chrome");
     expect(chrome.channel).toBe("chrome");
@@ -232,35 +233,55 @@ describe("HealthService.browser (docs/ux-redesign.md §2.2 item 3)", () => {
     expect(chrome.alternatives.every((entry) => typeof entry.installed === "boolean")).toBe(true);
   });
 
-  it("detects the chromium channel from PLAYWRIGHT_BROWSERS_PATH rather than a fixed install path", async () => {
-    const { paths } = await fixture();
+  it("detects only the exact executable required by the bundled Playwright", async () => {
+    const paths = appPaths(path.join(os.tmpdir(), "apl-health-browser-detection"));
     const health = new HealthService({ paths, preparer: fakePreparer });
     const cache = await mkdtemp(path.join(os.tmpdir(), "apl-playwright-cache-"));
-    await mkdir(path.join(cache, "chromium-1234"), { recursive: true });
-    const original = process.env.PLAYWRIGHT_BROWSERS_PATH;
-    process.env.PLAYWRIGHT_BROWSERS_PATH = cache;
+    const executable = (await expectedChromiumExecutable({
+      ...process.env,
+      PLAYWRIGHT_BROWSERS_PATH: cache
+    }))!;
+    await mkdir(path.dirname(executable), { recursive: true });
+    await writeFile(executable, "fixture");
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", cache);
     try {
       await expect(health.browser("chromium")).resolves.toMatchObject({
         channel: "chromium",
         installed: true
       });
     } finally {
-      if (original === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-      else process.env.PLAYWRIGHT_BROWSERS_PATH = original;
+      vi.unstubAllEnvs();
     }
   });
 
-  it("reports chromium as not installed when the cache directory has no chromium* entry", async () => {
-    const { paths } = await fixture();
+  it("rejects a stale chromium cache that lacks the required executable", async () => {
+    const paths = appPaths(path.join(os.tmpdir(), "apl-health-browser-detection"));
     const health = new HealthService({ paths, preparer: fakePreparer });
     const cache = await mkdtemp(path.join(os.tmpdir(), "apl-playwright-empty-"));
-    const original = process.env.PLAYWRIGHT_BROWSERS_PATH;
-    process.env.PLAYWRIGHT_BROWSERS_PATH = cache;
+    await mkdir(path.join(cache, "chromium-old"));
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", cache);
     try {
       await expect(health.browser("chromium")).resolves.toMatchObject({ installed: false });
     } finally {
-      if (original === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-      else process.env.PLAYWRIGHT_BROWSERS_PATH = original;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects a required chromium cache whose executable path is only a directory", async () => {
+    const health = new HealthService({
+      paths: appPaths(path.join(os.tmpdir(), "apl-health-browser-detection"))
+    });
+    const cache = await mkdtemp(path.join(os.tmpdir(), "apl-playwright-directory-"));
+    const executable = (await expectedChromiumExecutable({
+      ...process.env,
+      PLAYWRIGHT_BROWSERS_PATH: cache
+    }))!;
+    await mkdir(executable, { recursive: true });
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", cache);
+    try {
+      await expect(health.browser("chromium")).resolves.toMatchObject({ installed: false });
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 

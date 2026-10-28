@@ -16,7 +16,7 @@ export function signInRequired(): BrowserTransportError {
   return new BrowserTransportError(
     "AUTH_REQUIRED",
     "Microsoft 365 sign-in is required for the dedicated automation profile.",
-    "Sign in from the AgentPickLink panel in VS Code (or run: m365-agent login)."
+    "Sign in through AgentPickLink setup. For a portable installation, rerun apl-setup with the workspace path; in VS Code, use the AgentPickLink panel."
   );
 }
 

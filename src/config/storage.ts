@@ -83,15 +83,28 @@ export async function ensurePrivateFiles(files: string[]): Promise<void> {
 
 export async function atomicWrite(file: string, content: string): Promise<void> {
   await ensurePrivateDirectory(path.dirname(file));
+  await replaceFile(file, content, true);
+}
+
+/** Workspace files inherit the workspace's permissions. Never change its directory mode or ACL. */
+export async function atomicWriteWorkspaceFile(file: string, content: string): Promise<void> {
+  await replaceFile(file, content, false);
+}
+
+async function replaceFile(file: string, content: string, privateFile: boolean): Promise<void> {
   const temporary = path.join(
     path.dirname(file),
     `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`
   );
   try {
-    await fs.writeFile(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    if (process.platform === "win32") await protectWindowsPaths([temporary], false);
+    await fs.writeFile(temporary, content, {
+      encoding: "utf8",
+      mode: privateFile ? 0o600 : 0o666,
+      flag: "wx"
+    });
+    if (privateFile && process.platform === "win32") await protectWindowsPaths([temporary], false);
     await fs.rename(temporary, file);
-    if (process.platform !== "win32") await fs.chmod(file, 0o600);
+    if (privateFile && process.platform !== "win32") await fs.chmod(file, 0o600);
   } finally {
     await fs.unlink(temporary).catch(() => undefined);
   }
@@ -113,7 +126,7 @@ export async function readText(file: string): Promise<string | undefined> {
 export async function verifyPrivatePath(target: string, requireWritable = false): Promise<void> {
   const info = await fs.lstat(target).catch(() => undefined);
   if (!info)
-    throw new DomainError("POLICY_BLOCKED", "Sensitive local state does not exist. Run m365-agent init.");
+    throw new DomainError("POLICY_BLOCKED", "Sensitive local state does not exist. Run AgentPickLink setup.");
   if (info.isSymbolicLink())
     throw new DomainError("POLICY_BLOCKED", "Sensitive local state must not be a symbolic link.");
   if (requireWritable)
@@ -130,7 +143,7 @@ export async function verifyPrivatePath(target: string, requireWritable = false)
     "$ErrorActionPreference='Stop'",
     `$p='${escaped}'`,
     "$stage='identity'",
-    `try{$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;$sidValue=$sid.Value;$stage='read-acl';$acl=Get-Acl -LiteralPath $p;if(!$acl.AreAccessRulesProtected){throw 'APL_ACL_CHECK_UNPROTECTED'};$stage='verify-rules';$rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);$hasCurrent=$false;foreach($entry in @($rules | Where-Object {$_.AccessControlType -eq 'Allow'})){if($entry.IdentityReference.Value -ne $sidValue){throw 'APL_ACL_CHECK_FOREIGN_ALLOW'};$hasCurrent=$true};if(!$hasCurrent){throw 'APL_ACL_CHECK_NO_CURRENT'}}catch{${ACL_FAILURE_REPORT}}`
+    `try{$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;$sidValue=$sid.Value;$stage='read-acl';$acl=[IO.${info.isDirectory() ? "Directory" : "File"}]::GetAccessControl($p,[Security.AccessControl.AccessControlSections]::Access);if(!$acl.AreAccessRulesProtected){throw 'APL_ACL_CHECK_UNPROTECTED'};$stage='verify-rules';$rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);$hasCurrent=$false;foreach($entry in @($rules | Where-Object {$_.AccessControlType -eq 'Allow'})){if($entry.IdentityReference.Value -ne $sidValue){throw 'APL_ACL_CHECK_FOREIGN_ALLOW'};$hasCurrent=$true};if(!$hasCurrent){throw 'APL_ACL_CHECK_NO_CURRENT'}}catch{${ACL_FAILURE_REPORT}}`
   ].join(";");
   await runPowerShell(script, "Sensitive local state is not protected by a current-user-only ACL.");
 }
@@ -185,7 +198,7 @@ async function protectWindowsPaths(targets: string[], directory: boolean): Promi
     "$stage='write-acl'",
     `[${fileSystemType}]::SetAccessControl($p,$acl)`,
     "$stage='verify-acl'",
-    "$check=Get-Acl -LiteralPath $p",
+    `$check=[${fileSystemType}]::GetAccessControl($p,[Security.AccessControl.AccessControlSections]::Access)`,
     "if(!$check.AreAccessRulesProtected){throw 'APL_ACL_CHECK_UNPROTECTED'}",
     "$hasCurrent=$false",
     "foreach($entry in @($check.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'})){if($entry.IdentityReference.Value -ne $sidValue){throw 'APL_ACL_CHECK_FOREIGN_ALLOW'};$hasCurrent=$true}",

@@ -337,9 +337,10 @@ describe("frontend → authenticated IPC → broker", () => {
         actionRequired: false
       }
     };
+    const readTransport = vi.spyOn(fixture.transport, "readConversation");
     const read = await fixture.frontend.session(
       fixture.workspaceRoot,
-      { action: "read", conversationHandle: handle },
+      { action: "read", conversationHandle: handle, waitMs: 1234 },
       "req-read"
     );
     expect(read).toMatchObject({
@@ -352,6 +353,7 @@ describe("frontend → authenticated IPC → broker", () => {
       conversationClosed: true
     });
     expect(fixture.transport.closes).toBe(1);
+    expect(readTransport).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ waitMs: 1234 }));
     fixture.client.close();
   });
 

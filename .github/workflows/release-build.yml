@@ -1,0 +1,93 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'Takayuki-Ishimaru/AgentPickLink'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Select public source
+        id: source
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [[ "${GITHUB_REF_TYPE}" == tag && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo 'Tag must match package version' >&2
+            exit 1
+          fi
+          if [ -f scripts/prepare-release.mjs ]; then
+            node scripts/prepare-release.mjs
+            echo "path=output/release-v${version}/source" >> "$GITHUB_OUTPUT"
+          else
+            echo 'path=.' >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+        working-directory: ${{ steps.source.outputs.path }}
+      - run: npm run typecheck
+        working-directory: ${{ steps.source.outputs.path }}
+      - run: npm run lint
+        working-directory: ${{ steps.source.outputs.path }}
+      - run: npm run test:unit
+        working-directory: ${{ steps.source.outputs.path }}
+      - run: npm run schemas:check
+        working-directory: ${{ steps.source.outputs.path }}
+      - name: Archive source
+        working-directory: ${{ steps.source.outputs.path }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          zip -rqX "$RUNNER_TEMP/release-assets/agent-pick-link-${{ steps.source.outputs.version }}-source.zip" . -x '.git/*' 'node_modules/*' 'output/*' 'dist/*' 'dist-vsix/*' 'coverage/*'
+      - run: npm run package:vsix
+        working-directory: ${{ steps.source.outputs.path }}
+      - name: Smoke-test VSIX
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          python -c 'import glob, zipfile; files = glob.glob("dist-vsix/*.vsix"); assert len(files) == 1; zipfile.ZipFile(files[0]).extractall("output/vsix-smoke")'
+          npm run smoke:package -- output/vsix-smoke/extension
+      - name: Assemble portable archives
+        working-directory: ${{ steps.source.outputs.path }}
+        run: |
+          cp dist-vsix/*.vsix "$RUNNER_TEMP/release-assets/"
+          mkdir -p output/portable-pack
+          npm pack --pack-destination output/portable-pack
+          package=$(find output/portable-pack -maxdepth 1 -name '*.tgz' -print -quit)
+          node scripts/assemble-portable.mjs --package "$package" --platform win-x64 --platform win-arm64 --platform darwin-x64 --platform darwin-arm64 --platform linux-x64 --out "$RUNNER_TEMP/release-assets" --cache output/portable-cache --smoke
+          cd "$RUNNER_TEMP/release-assets"
+          sha256sum -- *.vsix *.zip *.tgz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      # Branch dispatches are useful for rehearsal, but cannot produce an update-eligible proof.
+      - name: Generate build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/*
+      - name: Save release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.source.outputs.version }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error

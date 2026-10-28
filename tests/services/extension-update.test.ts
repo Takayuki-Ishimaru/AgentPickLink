@@ -106,6 +106,11 @@ describe("installable GitHub releases", () => {
     );
     expect(newestExtensionRelease([release("v1.0.0")], "1.0.0")).toBeUndefined();
   });
+  it("applies the same stable-channel filter to installable releases", () => {
+    const feed = [release("v1.0.0"), release("v2.0.0-beta.1"), { ...release("v3.0.0"), prerelease: true }];
+    expect(newestExtensionRelease(feed, "0.1.0", "stable")?.tag).toBe("v1.0.0");
+    expect(newestExtensionRelease(feed, "0.1.0", "beta")?.tag).toBe("v3.0.0");
+  });
   it.each([
     null,
     {},

@@ -13,7 +13,7 @@ import { fakeProcessListing, formatProcessListing } from "../helpers/platform.js
  * `afterEach` as a safety net beyond each test's own cleanup. */
 const spawnedPids: number[] = [];
 function spawnDisposableProcess(): number {
-  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
   spawnedPids.push(child.pid!);
   return child.pid!;
 }
@@ -1537,13 +1537,6 @@ describe("BrowserManager round 4 U2: waits for the browser process (and its prof
   it("waits for the browser's main process to exit on its own after close() settles, without force-killing it", async () => {
     const profilePath = await mkdtemp(path.join(os.tmpdir(), "apl-exit-wait-"));
     const pid = spawnDisposableProcess();
-    setTimeout(() => {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    }, 60);
     const killed: number[] = [];
     const manager = new BrowserManager({
       profilePath,
@@ -1564,6 +1557,14 @@ describe("BrowserManager round 4 U2: waits for the browser process (and its prof
     });
 
     await manager.start();
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    setTimeout(() => {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, 60);
     await expect(manager.close()).resolves.toBeUndefined();
     expect(killed).toEqual([]);
     // Genuinely gone (killed by the test's own timer above, not by this manager) -- proof this
@@ -1596,6 +1597,7 @@ describe("BrowserManager round 4 U2: waits for the browser process (and its prof
     });
 
     await manager.start();
+    expect(() => process.kill(pid, 0)).not.toThrow();
     await expect(manager.close()).resolves.toBeUndefined();
     expect(killed).toEqual([pid]);
     expect(logs.some((line) => line.includes(`main process (pid ${pid}) did not exit within`))).toBe(true);
@@ -1776,7 +1778,7 @@ describe("BrowserManager round 4 U2: classifies a launch timeout as profile cont
 
     await expect(manager.start()).rejects.toMatchObject({
       code: "BROWSER_START_FAILED",
-      remediation: "Run: m365-agent broker restart"
+      remediation: "Run: apl broker restart"
     });
   });
 });

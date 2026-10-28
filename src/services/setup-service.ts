@@ -13,12 +13,12 @@ import {
   type CapabilityClass
 } from "../domain/agent.js";
 import { WorkspaceConfigSchema } from "../domain/workspace.js";
-import { slug } from "../domain/text.js";
 import type { AppPaths } from "../config/paths.js";
 import { loadRegistry, updateRegistry } from "../config/registry.js";
 import { loadGlobalConfig, updateGlobalConfig } from "../config/global-config.js";
 import { loadApprovals, updateApprovals } from "../config/approvals.js";
-import { atomicWrite } from "../config/storage.js";
+import { previewAlias } from "./setup-plan.js";
+import { atomicWriteWorkspaceFile } from "../config/storage.js";
 import { initializeLocalState } from "../config/init.js";
 import { GlobalConfigSchema, type GlobalConfig } from "../config/schema.js";
 import { assertSupportedTopology, WorkspaceService } from "./workspace-service.js";
@@ -145,6 +145,8 @@ export type AgentCandidate = {
   source: DiscoveredAgent["source"] | "registry";
   registered?: {
     alias: string;
+    /** Previously verified URL; retained when discovery finds the same identity at a new URL. */
+    entryPointUrl?: string;
     verified: boolean;
     enabled: boolean;
     kind: AgentKind;
@@ -157,6 +159,7 @@ export type AgentCandidate = {
    * ...; see HealthService.workspaceReport's AssignmentStatus) -- present only when `assigned` is
    * true. Lets the panel show something more useful than a plain "assigned" badge. */
   assignmentStatus?: string;
+  suggestedAlias?: string;
 };
 
 export type SetupStatus = {
@@ -464,8 +467,8 @@ export class SetupService {
      * scan/expansion step failed outright (see `summarizeDiscoveryCompleteness`). The roster may be
      * shorter than the account's real one; re-running discovery can turn up more. Derived only from
      * `warnings`, so it costs nothing extra to compute and never itself becomes a new failure mode.
-     * Omitted (not `false`) on a run that completed cleanly. */
-    partial?: true;
+     * Always present, including `false` on a clean run. */
+    partial: boolean;
     /** How many store candidates this run could not resolve (see `partial`). Omitted along with it. */
     failedCount?: number;
     /** Whether `failedCount` is `summarizeDiscoveryCompleteness`'s exact `none + errors` tally
@@ -516,6 +519,7 @@ export class SetupService {
       const { assignedAliases, assignmentStatusByAlias } = await this.workspaceAssignmentState(root);
 
       const matchedIndexes = new Set<number>();
+      const suggestedAliases = new Set(registry.agents.map((agent) => agent.alias));
       const discoveredCandidates: AgentCandidate[] = result.agents.map((discovered) => {
         const matchIndex = registry.agents.findIndex(
           (entry, index) => !matchedIndexes.has(index) && matchesDiscoveredAgent(entry, discovered)
@@ -523,10 +527,20 @@ export class SetupService {
         const match = matchIndex >= 0 ? registry.agents[matchIndex] : undefined;
         if (match) matchedIndexes.add(matchIndex);
         const assigned = match ? assignedAliases.has(match.alias) : false;
+        const suggestedAlias =
+          match?.alias ??
+          resolveUniqueAlias(
+            undefined,
+            discovered.displayName,
+            discovered.stableAgentId ?? discovered.url,
+            suggestedAliases
+          );
+        suggestedAliases.add(suggestedAlias);
         return {
           key: discovered.stableAgentId ?? discovered.url,
           url: discovered.url,
           displayName: discovered.displayName,
+          suggestedAlias,
           stableAgentId: discovered.stableAgentId,
           surface: discovered.surface,
           description: discovered.description,
@@ -548,9 +562,9 @@ export class SetupService {
         ...(result.suggestedDownloadHosts && result.suggestedDownloadHosts.length > 0
           ? { suggestedDownloadHosts: result.suggestedDownloadHosts }
           : {}),
+        partial: completeness.partial,
         ...(completeness.partial
           ? {
-              partial: true as const,
               failedCount: completeness.failedCount,
               failedCountKnown: completeness.failedCountKnown
             }
@@ -741,7 +755,7 @@ export class SetupService {
           .map((agent) => ({ alias: agent.alias, bindingFingerprint: agent.verification.bindingFingerprint }))
           .sort((a, b) => a.alias.localeCompare(b.alias))
       });
-      await atomicWrite(workspaceFilePath, `${JSON.stringify(workspaceConfig, null, 2)}\n`);
+      await atomicWriteWorkspaceFile(workspaceFilePath, `${JSON.stringify(workspaceConfig, null, 2)}\n`);
       workspaceFileExists = true;
     }
 
@@ -802,7 +816,7 @@ export class SetupService {
           version: 1,
           agents: workspace.config.agents.filter((entry) => entry.alias !== parsedAlias.data)
         });
-        await atomicWrite(workspaceFilePath, `${JSON.stringify(nextConfig, null, 2)}\n`);
+        await atomicWriteWorkspaceFile(workspaceFilePath, `${JSON.stringify(nextConfig, null, 2)}\n`);
         // Re-load so `approve()` sees the just-written (shorter) agent list rather than the
         // in-memory `workspace` captured before the write.
         const reloaded = await this.workspaces.load(root);
@@ -819,7 +833,7 @@ export class SetupService {
   }
 
   /** G3: removes this workspace's local approval only -- `.m365-agents.json` is left untouched, so
-   * the next Save (or `m365-agent workspace approve`) can re-approve the same roster without
+   * the next Save (or `apl workspace approve`) can re-approve the same roster without
    * rediscovering or re-verifying anything. Best-effort closes any open conversations for this
    * workspace on a reachable broker; a broker that is not running has nothing to close. */
   async revokeWorkspace(): Promise<SetupStatus> {
@@ -998,7 +1012,7 @@ export class SetupService {
             "BROKER_UNAVAILABLE",
             "The previous broker process did not release its endpoint before the timeout.",
             true,
-            { remediation: "run: m365-agent broker restart" }
+            { remediation: "run: apl broker restart" }
           );
     const next = await this.deps.connect();
     next.close();
@@ -1183,6 +1197,7 @@ export class SetupService {
   private toRegistered(agent: BrowserAgentDefinition): NonNullable<AgentCandidate["registered"]> {
     return {
       alias: agent.alias,
+      entryPointUrl: agent.entryPoint.url,
       verified: agent.verification.status === "verified",
       enabled: agent.enabled,
       kind: agent.kind,
@@ -1404,7 +1419,12 @@ function buildNewEntry(
 ): BrowserAgentDefinition {
   const kind = planAgent.kind ?? "m365-agent-builder";
   const capabilityClass = planAgent.capabilityClass ?? "knowledge-only";
-  const alias = resolveUniqueAlias(planAgent.alias, planAgent.displayName, takenAliases);
+  const alias = resolveUniqueAlias(
+    planAgent.alias,
+    planAgent.displayName,
+    captured.stableAgentId ?? captured.url,
+    takenAliases
+  );
   const provisional: BrowserAgentDefinition = {
     alias,
     displayName: planAgent.displayName,
@@ -1452,6 +1472,7 @@ function resolveAdapterId(surface: "m365-copilot" | "teams-web", kind: AgentKind
 function resolveUniqueAlias(
   providedAlias: string | undefined,
   displayName: string,
+  identity: string,
   taken: ReadonlySet<string>
 ): string {
   if (providedAlias) {
@@ -1465,7 +1486,7 @@ function resolveUniqueAlias(
       throw new DomainError("INVALID_ARGUMENT", `Alias ${parsed.data} already exists.`);
     return parsed.data;
   }
-  const base = slug(displayName);
+  const base = previewAlias(displayName, identity);
   let candidate = base;
   let suffix = 2;
   while (taken.has(candidate)) {
@@ -1477,7 +1498,7 @@ function resolveUniqueAlias(
 }
 
 function fallbackAlias(planAgent: ApplyPlanAgent): string {
-  return planAgent.alias ?? slug(planAgent.displayName);
+  return planAgent.alias ?? previewAlias(planAgent.displayName, planAgent.url);
 }
 
 // Re-exported so callers can type onProgress handlers without importing domain/progress.js

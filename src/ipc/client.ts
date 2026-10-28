@@ -2,7 +2,13 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { encodeFrame, FrameDecoder } from "./framing.js";
 import type { BrokerDescriptor, BrokerHello, IpcProgressFrame, IpcResponse } from "./protocol.js";
-import { BROKER_CANCEL_MINOR, BROKER_CAPABILITIES, BROKER_PROTOCOL, BROKER_READ_MINOR } from "./protocol.js";
+import {
+  BROKER_CANCEL_MINOR,
+  BROKER_CAPABILITIES,
+  BROKER_PROTOCOL,
+  BROKER_READ_MINOR,
+  BROKER_SNAPSHOT_READ_MINOR
+} from "./protocol.js";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
@@ -42,7 +48,7 @@ export class IpcClient {
         "BROKER_VERSION_MISMATCH",
         "Broker protocol major versions are incompatible.",
         false,
-        { remediation: "Run: m365-agent broker restart" }
+        { remediation: "Run: apl broker restart" }
       );
     const socket = net.createConnection(this.descriptor.pipeName);
     const generation = ++this.connectionGeneration;
@@ -166,6 +172,16 @@ export class IpcClient {
     // What a broker older than protocol minor 5 cannot take: it refuses an unknown method or field.
     // Waiting for files is only an optimisation to give up; reading a conversation is not.
     const minor = this.hello?.protocolMinor ?? 0;
+    if (method === "conversation.read" && minor >= BROKER_READ_MINOR && minor < BROKER_SNAPSHOT_READ_MINOR)
+      throw new DomainError(
+        "BROKER_VERSION_MISMATCH",
+        "The running broker cannot take immediate conversation snapshots or an explicit read wait budget.",
+        false,
+        {
+          remediation:
+            "Check this conversation in Microsoft 365 without resending. An apl broker restart enables snapshot reads but closes the broker's existing conversations; finish checking them first."
+        }
+      );
     if (minor < BROKER_READ_MINOR) {
       if (method === "conversation.read")
         throw new DomainError(
@@ -175,7 +191,7 @@ export class IpcClient {
           {
             // Honest about the cost: a restart enables reading, but ends this broker's conversations.
             remediation:
-              "Restart the broker (reload VS Code, or run: m365-agent broker restart) to enable reading conversations. A restart closes the conversations this broker has open, so check this one in Microsoft 365 instead if you still need it."
+              "Restart the broker (reload VS Code, or run: apl broker restart) to enable reading conversations. A restart closes the conversations this broker has open, so check this one in Microsoft 365 instead if you still need it."
           }
         );
       if (

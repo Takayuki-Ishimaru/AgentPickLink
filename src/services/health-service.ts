@@ -1,6 +1,6 @@
-import { access, readdir } from "node:fs/promises";
-import os from "node:os";
+import { access } from "node:fs/promises";
 import path from "node:path";
+import { chromiumCacheHasBrowser } from "./chromium-cache.js";
 import { loadApprovals } from "../config/approvals.js";
 import { loadGlobalConfig } from "../config/global-config.js";
 import type { AppPaths } from "../config/paths.js";
@@ -366,7 +366,7 @@ async function detectBrowserChannel(
   return { installed: false };
 }
 
-/** Well-known Edge/Chrome install locations on the two supported desktop platforms. */
+/** Well-known desktop install locations, including Linux development environments. */
 function executableCandidates(channel: "msedge" | "chrome"): string[] {
   if (process.platform === "win32") {
     const bases = [
@@ -387,17 +387,10 @@ function executableCandidates(channel: "msedge" | "chrome"): string[] {
         : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     ];
   }
-  return [];
-}
-
-/** The `chromium` channel has no fixed application path; it is Playwright's own downloaded
- * browser, so installation is inferred from Playwright's browser cache directory instead. */
-async function chromiumCacheHasBrowser(): Promise<boolean> {
-  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(os.homedir(), ".cache", "ms-playwright");
-  try {
-    const entries = await readdir(base);
-    return entries.some((entry) => /^chromium/i.test(entry));
-  } catch {
-    return false;
+  if (process.platform === "linux") {
+    return channel === "msedge"
+      ? ["/opt/microsoft/msedge/msedge", "/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable"]
+      : ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
   }
+  return [];
 }

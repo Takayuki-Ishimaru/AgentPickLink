@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as brokerLifecycle from "../../src/broker/broker-lifecycle.js";
-import { formatInstallReport, runInstall } from "../../src/cli/commands/install.js";
+import { formatInstallReport, runInstall, uninstallCommandFor } from "../../src/cli/commands/install.js";
 import { DomainError } from "../../src/domain/errors.js";
 import { vscodeUserDir } from "../../src/services/client-detection.js";
 import {
@@ -114,6 +114,17 @@ const failingHandshake = async () => {
   throw new Error("no server responded");
 };
 
+describe("portable CLI command paths", () => {
+  it("quotes the absolute uninstall launcher path for PowerShell and POSIX shells", () => {
+    expect(uninstallCommandFor("C:\\Program Files\\Agent Pick Link\\bin\\apl.cmd", "win32")).toBe(
+      "& 'C:\\Program Files\\Agent Pick Link\\bin\\apl.cmd' self uninstall"
+    );
+    expect(uninstallCommandFor("/Users/test user/Agent Pick Link/bin/apl", "darwin")).toBe(
+      "'/Users/test user/Agent Pick Link/bin/apl' self uninstall"
+    );
+  });
+});
+
 function fakeService(): FakeSetupService {
   const service = new FakeSetupService();
   service.discovery = {
@@ -148,6 +159,7 @@ describe("install --dry-run", () => {
 
     expect(report.exitCode).toBe(0);
     expect(report.dryRun).toBe(true);
+    expect(formatInstallReport(report)).not.toContain("uninstall");
     expect(await hashTree(home)).toBe(beforeHome);
     expect(await hashTree(workspace)).toBe(beforeWorkspace);
   });
@@ -173,6 +185,7 @@ describe("install confirmation", () => {
 
     expect(report.exitCode).toBe(1);
     expect(report.confirmed).toBe(false);
+    expect(formatInstallReport(report)).not.toContain("uninstall");
     expect(await hashTree(home)).toBe(beforeHome);
   });
 });
@@ -200,6 +213,36 @@ describe("install staging failure", () => {
 });
 
 describe("install --agents", () => {
+  it("accepts key=alias and passes the requested alias into the approval plan", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));
+    const packageRoot = await makePackageRoot();
+    const workspace = await makeWorkspace();
+    const paths = await makeTempPaths();
+    const service = fakeService();
+    const { deps } = makeCommandDeps({
+      paths,
+      root: () => workspace,
+      packageRoot: async () => packageRoot,
+      createSetupService: () => service,
+      mcpHandshake: okHandshake
+    });
+
+    const report = await runInstall(deps, {
+      workspaces: [workspace],
+      yes: true,
+      approveAgents: true,
+      home,
+      clients: "vscode-workspace",
+      agents: "agent-requirements=sales-helper"
+    });
+
+    expect(report.exitCode).toBe(0);
+    expect(service.appliedPlans[0]?.agents[0]).toMatchObject({
+      alias: "sales-helper",
+      displayName: "Requirements Agent"
+    });
+  });
+
   it("fails with an unknown alias without writing any client file", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));
     const packageRoot = await makePackageRoot();
@@ -419,6 +462,9 @@ describe("install --clients auto (default, §4.4)", () => {
     expect(report.exitCode).toBe(0);
     expect(report.vscodeUser?.written).toEqual([path.join(userDir, "mcp.json")]);
     expect(report.claudeUser?.written).toEqual([path.join(fakeHome, ".claude.json")]);
+    expect(report.cliPath).toBe(path.join(home, "bin", process.platform === "win32" ? "apl.cmd" : "apl"));
+    expect(report.uninstallCommand).toContain(report.cliPath);
+    expect(formatInstallReport(report)).not.toContain("No client configuration was written.");
     await expect(readFile(path.join(workspace, ".vscode", "mcp.json"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(workspace, ".mcp.json"), "utf8")).rejects.toThrow();
     const installJson = JSON.parse(await readFile(path.join(home, "install.json"), "utf8"));
@@ -1714,7 +1760,7 @@ describe("install ISSUE-03: staging/verification failure reason in the text repo
     const service = new FakeSetupService();
     // Force `runSetup()`'s interactive sign-in path (skipped when already "authenticated"), then
     // fail it -- the same shape a real `BROWSER_START_FAILED` from browser-manager.ts carries
-    // (an explicit English `remediation`, no localized one in localize.ts's dictionary).
+    // (an explicit English `remediation`, more specific than the generic localized hint).
     service.status_ = setupStatus({
       broker: { live: true, authState: { state: "unauthenticated" }, incidents: [] }
     });
@@ -1722,7 +1768,7 @@ describe("install ISSUE-03: staging/verification failure reason in the text repo
       "BROWSER_START_FAILED",
       "The msedge browser did not start: spawn ENOENT",
       true,
-      { remediation: "Install Microsoft Edge, then run the setup again." }
+      { remediation: "Install Microsoft Edge (or Google Chrome), then run the setup again." }
     );
     const { deps } = makeCommandDeps({
       paths,
@@ -1751,7 +1797,7 @@ describe("install ISSUE-03: staging/verification failure reason in the text repo
 
     const text = formatInstallReport(report, "en");
     expect(text).toContain("Failed: BROWSER_START_FAILED");
-    expect(text).toContain("Install Microsoft Edge, then run the setup again.");
+    expect(text).toContain("Install Microsoft Edge (or Google Chrome), then run the setup again.");
     const textJa = formatInstallReport(report, "ja");
     expect(textJa).toContain("失敗: BROWSER_START_FAILED");
 
@@ -1822,7 +1868,7 @@ describe("install ISSUE-03: staging/verification failure reason in the text repo
 describe("install: restart-and-retry against a pre-existing broker (docs/validation-log-2026-09-14-windows-round2.md R4)", () => {
   const startFailed = () =>
     new DomainError("BROWSER_START_FAILED", "The msedge browser did not start: spawn ENOENT", true, {
-      remediation: "Run: m365-agent broker restart"
+      remediation: "Run: apl broker restart"
     });
 
   it("restarts a broker that predates this run once and retries, succeeding the second time", async () => {
@@ -2057,7 +2103,7 @@ describe("install ISSUE-10: notify() is also persisted to cli.log (docs/validati
     });
     const startFailed = () =>
       new DomainError("BROWSER_START_FAILED", "The msedge browser did not start: spawn ENOENT", true, {
-        remediation: "Run: m365-agent broker restart"
+        remediation: "Run: apl broker restart"
       });
     const signIn = failFirstSignIn(service, startFailed());
     const brokerClient = makeFakeBrokerClient();

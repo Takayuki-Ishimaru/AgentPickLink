@@ -447,6 +447,30 @@ describe("SetupService.discover", () => {
     expect(transitions.slice(0, 3).every((event) => event.elapsedMs !== undefined)).toBe(true);
   });
 
+  it("reports a clean verdict and proposes an identity-based alias for Japanese names", async () => {
+    const paths = await makeTempPaths();
+    const client = makeFakeIpcClient({
+      "agent.discover": {
+        agents: [
+          {
+            url: "https://m365.cloud.microsoft/chat/a",
+            stableAgentId: "stable-a",
+            displayName: "営業",
+            surface: "m365-copilot",
+            source: "store"
+          }
+        ],
+        warnings: ["store-unavailable"]
+      }
+    });
+    const service = new SetupService(
+      baseDeps(paths, { connect: async () => client as unknown as IpcClient })
+    );
+    const result = await service.discover();
+    expect(result.partial).toBe(false);
+    expect(result.candidates[0].suggestedAlias).toMatch(/^agent-[0-9a-f]{8}$/);
+  });
+
   it("refreshes the registered description without changing the verified binding or approving a workspace", async () => {
     const paths = await makeTempPaths();
     const url = "https://m365.cloud.microsoft/chat/agent/agent-a";
@@ -767,6 +791,59 @@ describe("SetupService.apply", () => {
     const written = JSON.parse(await readFile(workspaceFile, "utf8"));
     expect(written.agents.map((a: { alias: string }) => a.alias)).toEqual(["kept"]);
   });
+
+  it("keeps the verified binding and workspace assignment when discovery finds a new URL for the same ID", async () => {
+    const paths = await makeTempPaths();
+    const root = await makeWorkspaceRoot();
+    const oldUrl = "https://m365.cloud.microsoft/chat/old";
+    const existing = verifiedAgent("kept", oldUrl, { displayName: "Kept" });
+    existing.verification.expectedStableAgentId = "stable-kept";
+    existing.verification.bindingFingerprint = deriveBindingFingerprint(existing);
+    await saveRegistry(paths, { version: 1, agents: [existing] });
+    await writeFile(
+      path.join(root, ".m365-agents.json"),
+      JSON.stringify({
+        version: 1,
+        agents: [{ alias: "kept", bindingFingerprint: existing.verification.bindingFingerprint }]
+      })
+    );
+    const client = makeFakeIpcClient({
+      "agent.discover": {
+        agents: [
+          {
+            stableAgentId: "stable-kept",
+            url: "https://m365.cloud.microsoft/chat/new",
+            displayName: "Kept",
+            surface: "m365-copilot",
+            source: "store"
+          }
+        ],
+        warnings: []
+      }
+    });
+    const service = new SetupService(
+      baseDeps(paths, { root: () => root, connect: async () => client as unknown as IpcClient })
+    );
+    const found = (await service.discover()).candidates[0];
+    const { plan } = buildApplyPlan(
+      {
+        agents: [{ key: found.key }],
+        downloadHosts: [],
+        acceptDownloads: false,
+        integrations: { codex: false, claudeCode: false, vscodeMcpJson: false }
+      },
+      [found]
+    );
+    await service.apply(plan);
+    const registry = await loadRegistry(paths);
+    expect(registry.agents[0].entryPoint.url).toBe(oldUrl);
+    expect(registry.agents[0].verification.bindingFingerprint).toBe(existing.verification.bindingFingerprint);
+    const workspace = JSON.parse(await readFile(path.join(root, ".m365-agents.json"), "utf8"));
+    expect(workspace.agents).toEqual([
+      { alias: "kept", bindingFingerprint: existing.verification.bindingFingerprint }
+    ]);
+    expect(client.calls.map((call) => call.method)).toEqual(["agent.discover"]);
+  }, 180_000);
 
   it("reports restartRequired=false and an empty changedKeys when nothing broker-scoped changed", async () => {
     const paths = await makeTempPaths();
@@ -1093,7 +1170,7 @@ describe("SetupService.restartBroker", () => {
       // shrunk to 300ms instead, which still runs several of the loop's 50ms retries.
       await expect(service.restartBroker()).rejects.toMatchObject({
         code: "BROKER_UNAVAILABLE",
-        options: { remediation: "run: m365-agent broker restart" }
+        options: { remediation: "run: apl broker restart" }
       });
       expect(existingCalls).toBeGreaterThan(2);
     },

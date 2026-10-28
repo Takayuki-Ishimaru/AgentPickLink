@@ -1,10 +1,10 @@
 # 開発者向けガイド
 
-v0.2.14 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
+v0.2.15 Beta のソースを取得して、テストと VSIX ビルドを行う手順です。
 
 ## 準備
 
-Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.14-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
+Node.js 22 以降と npm をインストールし、`agent-pick-link-0.2.15-source.zip` を展開します。以降のコマンドは、展開先の `package.json` があるフォルダで実行してください。
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-生成物は `dist-vsix/agent-pick-link-0.2.14.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
+生成物は `dist-vsix/agent-pick-link-0.2.15.vsix` です。`npm run package:vsix` は既存の `dist/` と `dist-vsix/` を削除してからビルドします。インストール手順は [README](README.md) を参照してください。
 
 ビルドだけを行う場合は `npm run build`、開発中にテストを再実行する場合は `npm run test:watch` を使用します。`npm test` は実ブラウザーを使うテストを最後に 1 ファイルずつ実行します。実ブラウザーを使わないテストだけを実行する場合は `npm run test:unit`、実ブラウザーのテストだけを実行する場合は `npm run test:browser` を使用します。
 
@@ -68,7 +68,7 @@ npm run smoke:package -- /absolute/path/to/extracted/extension
 ```sh
 mkdir -p output/portable-pack
 npm pack --pack-destination output/portable-pack
-node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.14.tgz --platform host --out output/portable --smoke
+node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-link-0.2.15.tgz --platform host --out output/portable --smoke
 ```
 
 `--platform` には `win-x64`、`win-arm64`、`darwin-arm64`、`darwin-x64`、`linux-x64` を複数指定できます。Node.js は `scripts/assemble-portable.mjs` の `PINNED_NODE_VERSION`（24.22.1）を nodejs.org から取得し、公式の `SHASUMS256.txt` と照合します。`--cache <dir>` で取得済みのランタイムを再利用し、`--node-version` で版を上書きできます。出力先には `AgentPickLink-<版>-<platform>.zip` / `.tgz` と、各アーカイブの SHA-256 を記録した `SHA256SUMS` が作成されます。`--smoke` は実行中の OS と一致するアーカイブを展開し、同梱 Node.js で CLI と MCP 接続、ローカル接続プロセスの起動・停止を確認します。他の OS 向けアーカイブは、それぞれの OS で `npm run smoke:package -- <展開先> --node <展開先>/runtime/node` を実行して確認してください。
@@ -89,7 +89,11 @@ node scripts/assemble-portable.mjs --package output/portable-pack/agent-pick-lin
 | 展開したCLI・MCPの接続、brokerの起動・終了              | 実行    | 実行     | 実行   |
 | ポータブルアーカイブの組み立てと同梱Node.jsでの起動確認 | x64     | arm64    | x64    |
 
-ポータブルアーカイブは各ランナーの OS 向けだけを組み立て、`portable-<os>` の名前で Actions の artifact に保存します。他の CPU アーキテクチャ向けのアーカイブは CI では作成・確認しません。
+`Quality checks` のポータブルアーカイブは各ランナーの OS 向けだけを組み立て、`portable-<os>` の名前で Actions の artifact に保存します。このワークフローでは、他の CPU アーキテクチャの実機動作は確認しません。
+
+`.github/workflows/release-build.yml` の `Build release artifacts` は、タグ push または手動実行で VSIX、Windows x64 / ARM64、macOS Apple Silicon / Intel、Linux x64 の各アーカイブ、ソース、`SHA256SUMS` を作成します。タグを対象にした実行だけがビルド証明を生成します。ブランチでの手動実行は事前確認用で、自動更新に使える証明を生成しません。このワークフローはリリースの公開やファイルの添付を行いません。異なる OS・CPU 向けにアーカイブを作成しても、その環境で実行できたことを意味しません。
+
+自動更新用の VSIX は、公式リポジトリの対象タグでこのワークフローを実行し、その成果物を変更せず使用します。ローカルで再ビルドした VSIX にはこの証明が引き継がれません。
 
 UbuntuはOSのサンドボックス設定に対応する公式Chromeを使用します（[Chromiumの説明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)）。ブラウザーの存在とサンドボックス付き起動を先に確認し、未導入によるDOMテストのスキップを防ぎます。各OSの実行ログにOS・CPUアーキテクチャ・Node.js・ブラウザーバージョンを出力し、テスト結果をActionsのartifactに保存します。
 

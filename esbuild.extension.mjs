@@ -30,7 +30,9 @@ const result = await build({
   platform: "node",
   format: "cjs",
   target: "node22",
-  external: ["vscode"],
+  // Sigstore's TUF client ships bootstrap metadata as package data. Preserve the package's
+  // own resolution and load it lazily only during update verification, never at host startup.
+  external: ["vscode", "@sigstore/verify", "@sigstore/tuf", "@sigstore/bundle"],
   alias: { "jsonc-parser": jsoncParserEsm },
   sourcemap,
   logLevel: "info",

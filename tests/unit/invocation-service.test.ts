@@ -234,6 +234,58 @@ async function harness(
 }
 
 describe("InvocationService", () => {
+  it("resolves a unique approved display name and keeps the canonical alias in conversations", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);
+    const result = await fixture.service.invoke(
+      fixture.workspaceRoot,
+      agent.displayName,
+      "hello",
+      conversation.handle,
+      "req-display-name"
+    );
+    expect(result.agent).toBe(agent.alias);
+    expect(fixture.transport.invokes).toBe(1);
+    expect(fixture.conversations.get(conversation.handle).agentAlias).toBe(agent.alias);
+  });
+
+  it("does not resolve unapproved display names or disclose their registry metadata", async () => {
+    const fixture = await harness({ approved: false });
+    const error = await fixture.service
+      .invoke(fixture.workspaceRoot, agent.displayName, "hello", undefined, "req-private-name")
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: "AGENT_NOT_ASSIGNED" });
+    expect(JSON.stringify((error as DomainError).toResult("req"))).not.toContain(agent.displayName);
+    expect(fixture.transport.creates).toBe(0);
+  });
+
+  it("refuses ambiguous approved display names and offers assigned aliases", async () => {
+    const fixture = await harness();
+    const other = { ...agent, alias: "second", verification: { ...agent.verification } };
+    other.verification.bindingFingerprint = deriveBindingFingerprint(other);
+    fixture.registry.agents.push(other);
+    const config = WorkspaceConfigSchema.parse({
+      version: 1,
+      agents: [{ alias: agent.alias }, { alias: other.alias }]
+    });
+    await writeFile(path.join(fixture.workspaceRoot, ".m365-agents.json"), JSON.stringify(config));
+    const approval = fixture.approvals.approvals[0]!;
+    approval.approvedConfigDigest = configDigest(config);
+    approval.approvedBindings.push({
+      alias: other.alias,
+      bindingFingerprint: other.verification.bindingFingerprint,
+      capabilityClass: "knowledge-only"
+    });
+    const error = await fixture.service
+      .invoke(fixture.workspaceRoot, agent.displayName, "hello", undefined, "req-ambiguous-name")
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      code: "INVALID_ARGUMENT",
+      options: { remediation: expect.stringContaining("requirements, second") }
+    });
+    expect(fixture.transport.creates).toBe(0);
+  });
+
   it("reports every successfully closed conversation without expiring newly created ones", async () => {
     const fixture = await harness();
     const first = await fixture.service.create(fixture.workspaceRoot, agent.alias);
@@ -665,13 +717,13 @@ describe("InvocationService", () => {
     expect(fixture.transport.invokes).toBe(0);
   });
 
-  it("rejects an unassigned alias before the local registry is even read", async () => {
+  it("rejects an unassigned selection after checking approved names without opening a browser", async () => {
     const fixture = await harness({ assignedAlias: "other" });
     await expect(
       fixture.service.invoke(fixture.workspaceRoot, agent.alias, "hello", undefined, "req-1")
     ).rejects.toMatchObject({ code: "AGENT_NOT_ASSIGNED" });
-    expect(fixture.loads.registry).toBe(0);
-    expect(fixture.loads.approvals).toBe(0);
+    expect(fixture.loads.registry).toBe(1);
+    expect(fixture.loads.approvals).toBe(1);
     expect(fixture.transport.creates).toBe(0);
     expect(fixture.transport.invokes).toBe(0);
   });
@@ -1128,7 +1180,8 @@ describe("InvocationService: a failed ask whose message was or may have been sen
     ["SUBMIT_STATE_UNKNOWN", "sent", false],
     ["RESPONSE_TIMEOUT", "sent", true],
     ["RESPONSE_TIMEOUT", "unknown", true],
-    ["RESPONSE_EXTRACTION_FAILED", "sent", false]
+    ["RESPONSE_EXTRACTION_FAILED", "sent", false],
+    ["UI_CHANGED", "sent", false]
   ] as const)(
     "keeps a one-shot conversation to be read after %s (%s) and returns its handle",
     async (code, submissionState, retryable) => {

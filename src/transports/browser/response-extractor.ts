@@ -58,9 +58,17 @@ export class ResponseExtractor {
             // generated-file card as its sibling. Keep `node` for response text isolation while
             // using the enclosing assistant article for attachment controls.
             const attachmentRoot = node.closest('[role="article"].fai-CopilotMessage') || node;
-            const citations = Array.from(node.querySelectorAll("a[href]")).map((el, i) => {
+            const citations = Array.from(node.querySelectorAll("a[href]")).map((el) => {
               const a = el as HTMLAnchorElement;
-              return { index: i + 1, title: a.textContent?.trim() || undefined, url: a.href };
+              const title = a.textContent?.trim() || undefined;
+              const number = title?.match(/^\[?(\d+)\]?$/)?.[1];
+              return {
+                ...(number && Number.isSafeInteger(Number(number)) && Number(number) > 0
+                  ? { index: Number(number), marker: title }
+                  : {}),
+                title,
+                url: a.href
+              };
             });
             const downloadControls = Array.from(attachmentRoot.querySelectorAll('button, [role="button"], a'))
               .filter((element) => {
@@ -416,9 +424,26 @@ export function normalizeCitations(
         continue;
       }
     }
-    if (url && seen.has(url)) continue;
+    if (url && seen.has(url)) {
+      // A descriptive link often precedes the numbered citation link for the same source.
+      // Keep its title, but associate the source with the number the answer actually displays.
+      const existing = out.find((item) => item.url === url);
+      if (existing && !existing.marker && citation.marker && citation.index !== undefined) {
+        existing.index = citation.index;
+        existing.marker = citation.marker;
+      }
+      continue;
+    }
     if (url) seen.add(url);
     out.push({ ...citation, url });
+  }
+  const used = new Set(out.flatMap((item) => (item.index === undefined ? [] : [item.index])));
+  let next = 1;
+  for (const item of out) {
+    if (item.index !== undefined) continue;
+    while (used.has(next)) next++;
+    item.index = next;
+    used.add(next++);
   }
   return out;
 }

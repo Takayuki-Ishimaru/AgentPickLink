@@ -3,6 +3,22 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readInstalledExtensionVersion } from "../../src/extension/installed-extension.js";
 import { installExtensionRelease } from "../../src/extension/extension-update.js";
+// These tests exercise installation/receipt behavior; cryptographic trust is covered by the
+// attestation service's real signed-bundle tests.
+vi.mock("../../src/services/extension-attestation.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/services/extension-attestation.js")>();
+  return {
+    ...actual,
+    verifyExtensionAttestation: vi.fn(async (release: { tag: string; sha256: string }) => ({
+      version: 1 as const,
+      tag: release.tag,
+      sha256: release.sha256,
+      sourceCommit: "c".repeat(40),
+      workflow: actual.ATTESTATION_WORKFLOW,
+      verifiedAt: new Date().toISOString()
+    }))
+  };
+});
 import { createRuntimeHarness, type RuntimeHarness } from "./harness.js";
 import { resetVscodeMock, vscodeMock, Uri } from "./vscode-mock.js";
 

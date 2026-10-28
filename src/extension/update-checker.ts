@@ -36,6 +36,8 @@ export function startUpdateCheck(
   let generation = 0;
   const checksEnabled = () => runtime.configuration().get<boolean>("checkForUpdates", true);
   const autoUpdate = () => runtime.configuration().get<boolean>("autoUpdate", true);
+  const updateChannel = () =>
+    runtime.configuration().get<string>("updateChannel", "beta") === "stable" ? "stable" : "beta";
 
   const schedule = (delay: number): void => {
     if (timer) clearTimeout(timer);
@@ -61,19 +63,26 @@ export function startUpdateCheck(
     const abort = new AbortController();
     inFlight = abort;
     const automatic = autoUpdate();
+    const channel = updateChannel();
     const current = generation;
     const active = () =>
       !stopped &&
       current === generation &&
       !abort.signal.aborted &&
       checksEnabled() &&
-      autoUpdate() === automatic;
+      autoUpdate() === automatic &&
+      updateChannel() === channel;
     // Outlives this run on purpose: only disposal, the opt-out or a preference change end the action.
-    const live = () => !stopped && current === generation && checksEnabled() && autoUpdate() === automatic;
+    const live = () =>
+      !stopped &&
+      current === generation &&
+      checksEnabled() &&
+      autoUpdate() === automatic &&
+      updateChannel() === channel;
     try {
       const feed = await deps.fetch(abort.signal);
       if (!active()) return;
-      const release = automatic ? newestExtensionRelease(feed, runtime.version) : undefined;
+      const release = automatic ? newestExtensionRelease(feed, runtime.version, channel) : undefined;
       if (release) {
         if (!(await deps.install(context, release, abort.signal, active))) return;
         // Do not reinstall while this window still runs the old extension awaiting reload.
@@ -92,6 +101,7 @@ export function startUpdateCheck(
         // A release without a verifiable VSIX can still be opened for a manual update.
         await checkGithubUpdate({
           installed: runtime.version,
+          channel,
           state: context.globalState,
           fetchReleases: async () => feed,
           active,
@@ -108,8 +118,19 @@ export function startUpdateCheck(
           open: (url) => vscode.env.openExternal(vscode.Uri.parse(url))
         });
       }
-    } catch {
-      if (!abort.signal.aborted && !stopped) runtime.log("update-check: unavailable; will retry later");
+    } catch (error) {
+      if (!abort.signal.aborted && !stopped) {
+        // Only stable, metadata-only codes enter logs, never certificate contents or HTTP bodies.
+        if (error instanceof Error && /^update-attestation-[a-z-]+$/.test(error.message))
+          runtime.log(
+            `update-check: installation refused (${error.message})${
+              error.message === "update-attestation-node-version"
+                ? "; update VS Code's runtime or manually install a verified VSIX"
+                : ""
+            }`
+          );
+        runtime.log("update-check: unavailable; will retry later");
+      }
     } finally {
       abort.abort();
       inFlight = undefined;
@@ -122,7 +143,8 @@ export function startUpdateCheck(
   const settings = vscode.workspace.onDidChangeConfiguration((event) => {
     if (
       !event.affectsConfiguration("agentpicklink.autoUpdate") &&
-      !event.affectsConfiguration("agentpicklink.checkForUpdates")
+      !event.affectsConfiguration("agentpicklink.checkForUpdates") &&
+      !event.affectsConfiguration("agentpicklink.updateChannel")
     )
       return;
     generation += 1;

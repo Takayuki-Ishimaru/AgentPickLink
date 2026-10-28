@@ -58,6 +58,41 @@ describe("automatic extension updates", () => {
     expect(options.install).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])("uses the stable channel for automatic=%s", async (automatic) => {
+    vscodeMock.configuration.set("agentpicklink.updateChannel", "stable");
+    vscodeMock.configuration.set("agentpicklink.autoUpdate", automatic);
+    const options = deps();
+    options.fetch.mockResolvedValue([
+      { ...feed[0], tag_name: "v0.2.0-beta.1", prerelease: true, assets: [] }
+    ]);
+    start(options);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_DELAY_MS);
+    expect(options.install).not.toHaveBeenCalled();
+    expect(vscodeMock.messages).toHaveLength(0);
+  });
+
+  it("aborts an in-flight check when the update channel changes", async () => {
+    let resolve!: (value: unknown) => void;
+    const options = deps();
+    options.fetch.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
+    );
+    start(options);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_DELAY_MS);
+    const signal = options.fetch.mock.calls[0][0];
+    vscodeMock.configuration.set("agentpicklink.updateChannel", "stable");
+    vscodeMock.changeConfiguration("agentpicklink.updateChannel");
+    expect(signal.aborted).toBe(true);
+    resolve([{ ...feed[0], tag_name: "v0.2.0-beta.1", prerelease: true }]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(options.fetch).toHaveBeenCalledTimes(2);
+    expect(options.install).toHaveBeenCalledTimes(1);
+    expect(options.install.mock.calls[0][1].tag).toBe("v0.1.1");
+  });
+
   it("reloads only when the completion notification action is selected", async () => {
     answerWith("再読み込み");
     start();
@@ -131,6 +166,19 @@ describe("automatic extension updates", () => {
     await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
     expect(options.install).toHaveBeenCalledTimes(2);
     expect(vscodeMock.messages[0].message).toContain("に更新しました");
+  });
+
+  it("reports an attestation refusal in metadata-only logs without announcing an installation", async () => {
+    const options = deps();
+    options.install.mockRejectedValueOnce(new Error("update-attestation-verification-failed"));
+    start(options);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_DELAY_MS);
+    expect(logText()).toContain("installation refused (update-attestation-verification-failed)");
+    expect(vscodeMock.messages).toHaveLength(0);
+    expect(vscodeMock.executedCommands).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+    expect(options.install).toHaveBeenCalledTimes(2);
+    expect(vscodeMock.messages).toHaveLength(1);
   });
 
   it("keeps checks single-flight across rapid configuration changes", async () => {

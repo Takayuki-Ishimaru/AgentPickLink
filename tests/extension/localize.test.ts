@@ -13,6 +13,7 @@ const LOCALIZED_REMEDIATION_CODES = [
   "WORKSPACE_APPROVAL_REQUIRED",
   "UI_CHANGED",
   "RESPONSE_TIMEOUT",
+  "BROWSER_START_FAILED",
   "BROWSER_PROFILE_LOCKED"
 ] as const;
 
@@ -35,7 +36,7 @@ describe("describeErrorCode", () => {
     }
   });
 
-  it("localizes the remediation for exactly the five most common codes", () => {
+  it("localizes remediation for common setup and browser failures", () => {
     const withRemediation = ERROR_CODES.filter((code) => describeErrorCode("ja", code)?.remediation);
     expect([...withRemediation].sort()).toEqual([...LOCALIZED_REMEDIATION_CODES].sort());
     expect(describeErrorCode("ja", "AUTH_REQUIRED")?.remediation).toContain("サインイン");
@@ -72,8 +73,11 @@ describe("describeDiscoverySummary (WP-D)", () => {
     );
   });
 
-  it("defaults the count to 0 when the summary carries none, and renders nothing when not partial", () => {
-    expect(describeDiscoverySummary({ partial: true }, "en")).toContain("(0)");
+  it("uses count-free wording for missing or zero failures and renders nothing when not partial", () => {
+    expect(describeDiscoverySummary({ partial: true }, "en")).not.toContain("(0)");
+    expect(
+      describeDiscoverySummary({ partial: true, failedCount: 0, failedCountKnown: true }, "ja")
+    ).not.toContain("0 件");
     expect(describeDiscoverySummary({ partial: false }, "en")).toBeUndefined();
   });
 });

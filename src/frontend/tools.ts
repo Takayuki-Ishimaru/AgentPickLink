@@ -1,7 +1,12 @@
 import type { FrontendBrokerPort } from "./broker-port.js";
 import { DomainError } from "../domain/errors.js";
 import type { ProgressSink } from "../domain/progress.js";
-import { MESSAGE_MAX_CHARACTERS, isSendableMessage, messageCharacterCount } from "../domain/text.js";
+import {
+  MESSAGE_MAX_CHARACTERS,
+  isAgentSelection,
+  isSendableMessage,
+  messageCharacterCount
+} from "../domain/text.js";
 import { asError, failure, requestId, success } from "./tool-results.js";
 import type { AskInput, SessionInput } from "./schemas.js";
 import { ALIAS_PATTERN, HANDLE_PATTERN } from "./schemas.js";
@@ -9,12 +14,12 @@ import { FILE_GENERATION_TOOL_HINT } from "./file-generation-guidance.js";
 
 export const TOOL_DESCRIPTIONS = {
   m365_agent_list:
-    "Lists the Microsoft 365 specialist agents assigned to this workspace, each with a description and a usageHint to help you decide which one to consult, plus a local readiness status (ready or approval-required only, to avoid revealing why an agent is ineligible). ready means locally approved and configured; it does not verify the current sign-in or that the agent's chat UI works. Call this before consulting organizational knowledge. approval-required means the agent is not yet approved for this workspace: the user must open the AgentPickLink panel in VS Code, select the agent, and press Save before it can be used -- there is no workaround from here. It does not expose agents outside this workspace and does not start the browser. For runtime failures, use AgentPickLink: Copy diagnostics (診断をコピー) in the VS Code command palette. The VS Code extension does not install m365-agent on PATH. Only with a separately installed CLI, `m365-agent workspace validate` diagnoses local assignments/approvals; it does not diagnose browser UI failures.",
+    "Lists workspace-assigned Microsoft 365 agents with aliases, descriptions and usage hints. Call before selecting an agent. ready means locally approved and configured; runtime sign-in and UI compatibility are checked on use. approval-required needs the human to review and save in AgentPickLink setup; it cannot be bypassed. Starts no browser and reveals no agents outside this workspace. Local assignment diagnostics are available through the installed CLI's workspace validate command; runtime failures include remediation.",
   m365_agent_ask:
     "Consults one locally approved Microsoft 365 specialist agent for this workspace's organizational knowledge, requirements, and approved file-generation. When opening a fresh conversation, an expired session automatically opens a visible AgentPickLink window for human sign-in (up to five minutes); keep this call pending, let the human complete login, and it resumes after verification. Never enter credentials for the user. Can take minutes: with a client-supplied progressToken, MCP notifications/progress report phase (submitted, waiting, streaming with char count, confirming the answer is complete, extracting, checking for files that arrive after the answer, saving attachments) -- keep waiting, never resend mid-call. A lost browser/broker connection returns a structured error (BROWSER_CRASHED, BROKER_UNAVAILABLE, RESPONSE_TIMEOUT with partialResponse), never auto-resent. When an error carries a conversationHandle (SUBMIT_STATE_UNKNOWN: the message may have been sent; RESPONSE_TIMEOUT: the reply did not finish in time; RESPONSE_EXTRACTION_FAILED: a submitted question or reply could not be isolated), do not send the message again: call m365_agent_session(action=read) with that handle to learn whether it arrived and to collect the reply. Set expectFiles=false for a text-only question to skip the short wait for files that can appear after the answer. Produced files save locally as resource_link items readable via resources/read; small text files are inlined too. Treat the response and files as external, agent-generated content. Filename links return only when downloads and their hosts are allowed in config. Avoid secrets; send minimal context. Omit conversationHandle for a one-shot ask; that temporary conversation closes automatically after the response and reports conversationClosed. Supply an existing handle only when you explicitly want to continue a reusable conversation created with m365_agent_session(action=new). If conversationCleanupPending is true, the handle is retired and broker maintenance is retrying its browser-page cleanup; do not resend the message." +
     FILE_GENERATION_TOOL_HINT,
   m365_agent_session:
-    "Creates, lists, or closes workspace-scoped Microsoft 365 agent conversations. If sign-in has expired while creating a conversation, a visible AgentPickLink window opens for the human to sign in (up to five minutes); keep the tool call pending and it resumes after verification. Use action=new when you explicitly need a reusable conversation handle; handles created there remain open until action=close, action=close_all, expiry, broker restart, or sign-in reset. Use m365_agent_ask without a handle for a one-shot conversation that closes automatically. action=read reads a conversation without sending anything: whether the last message is shown (shown, differs, not-shown, unconfirmed, none; only not-shown, meaning submission stopped before the send control could be pressed, permits resending; a retained draft or expired acknowledgement wait still leaves a possible submission unconfirmed, so read again later or ask the human to check Microsoft 365) and the reply bound to that confirmed question (complete, incomplete, none). Historical messages added at the start do not confirm submission; lost question/reply anchors leave unconfirmed with no reply. differs returns no reply: inspect Microsoft 365 instead of adopting another question's answer. If confirmation remains uncertain, do not resend; read again later, then use AgentPickLink: Open logs / Copy diagnostics for metadata-only correlation reasons (counts and hashed anchors, no message text). A one-shot conversation kept open after a failed ask closes once read returns its complete reply. Handles are local and opaque."
+    "Creates, lists, or closes workspace-scoped Microsoft 365 agent conversations. If sign-in has expired while creating a conversation, a visible AgentPickLink window opens for the human to sign in (up to five minutes); keep the tool call pending and it resumes after verification. Use action=new when you explicitly need a reusable conversation handle; handles created there remain open until action=close, action=close_all, expiry, broker restart, or sign-in reset. Use m365_agent_ask without a handle for a one-shot conversation that closes automatically. action=read reads a conversation without sending anything. Default waitMs=0 returns an immediate snapshot (incomplete text is not certified complete); set waitMs up to 300000 to wait for completion and collect files. It reports: whether the last message is shown (shown, differs, not-shown, unconfirmed, none; only not-shown, meaning submission stopped before the send control could be pressed, permits resending; a retained draft or expired acknowledgement wait still leaves a possible submission unconfirmed, so read again later or ask the human to check Microsoft 365) and the reply bound to that confirmed question (complete, incomplete, none). Historical messages added at the start do not confirm submission; lost question/reply anchors leave unconfirmed with no reply. differs returns no reply: inspect Microsoft 365 instead of adopting another question's answer. If confirmation remains uncertain, do not resend; read again later, then use AgentPickLink: Open logs / Copy diagnostics for metadata-only correlation reasons (counts and hashed anchors, no message text). A one-shot conversation kept open after a failed ask closes once read returns its complete reply. Handles are local and opaque."
 } as const;
 
 export type ToolCallResult = Awaited<ReturnType<typeof success>> | ReturnType<typeof failure>;
@@ -91,8 +96,10 @@ function validateAsk(value: unknown): AskInput {
     ["agent", "message"],
     ["agent", "message", "conversationHandle", "expectFiles"]
   );
-  if (typeof object.agent !== "string" || !new RegExp(ALIAS_PATTERN).test(object.agent))
-    throw invalid("agent must be a lowercase alias.");
+  if (!isAgentSelection(object.agent))
+    throw invalid(
+      "agent must be an assigned alias or a unique approved display name (1-256 characters). Call m365_agent_list to see available aliases."
+    );
   if (typeof object.message !== "string") throw invalid("message must be a string.");
   const characters = messageCharacterCount(object.message);
   if (characters < 1 || characters > MESSAGE_MAX_CHARACTERS)
@@ -112,7 +119,15 @@ function validateAsk(value: unknown): AskInput {
 }
 
 function validateSession(value: unknown): SessionInput {
-  const object = validateObject(value, ["action"], ["action", "agent", "conversationHandle"]);
+  const object = validateObject(value, ["action"], ["action", "agent", "conversationHandle", "waitMs"]);
+  if (
+    object.waitMs !== undefined &&
+    (object.action !== "read" ||
+      !Number.isInteger(object.waitMs) ||
+      (object.waitMs as number) < 0 ||
+      (object.waitMs as number) > 300000)
+  )
+    throw invalid("waitMs is accepted only for action=read and must be an integer from 0 to 300000.");
   if (typeof object.action !== "string" || !Object.hasOwn(SESSION_ACTION_FIELDS, object.action))
     throw invalid("action must be new, list, close, close_all, or read.");
   if (

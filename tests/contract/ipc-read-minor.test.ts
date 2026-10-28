@@ -120,7 +120,7 @@ const failureOf = (pending: Promise<unknown>) =>
   );
 
 describe("conversation.read against a broker older than protocol minor 5", () => {
-  it.each([0, 3, 4])(
+  it.each([0, 3, 4, 5])(
     "is refused as BROKER_VERSION_MISMATCH without sending anything to a broker of minor %s",
     async (minor) => {
       const { client, received } = await startBrokerOfMinor(minor, () => ({

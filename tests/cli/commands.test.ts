@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/cli/index.js";
 import type { CliApi } from "../../src/cli/api.js";
 
@@ -31,7 +31,7 @@ const api = (): CliApi => {
         runtime: { path: "/home/bin/node", source: "bundled" },
         clients: [],
         workspaces: [],
-        uninstallCommand: "m365-agent self uninstall",
+        uninstallCommand: "apl self uninstall",
         verified: false,
         instructions: [],
         exitCode: 0
@@ -126,5 +126,50 @@ describe("CLI command surface", () => {
     expect(self.helpInformation()).toContain("--verbose");
     expect(integrationsCommand.options.map((option) => option.long)).toContain("--verbose");
     expect(integrationsCommand.helpInformation()).toContain("--verbose");
+  });
+
+  it("prints a single integration snippet as raw text, and JSON only with --json", async () => {
+    const cli = api();
+    cli.integrations = async () => ({ codex: "[mcp_servers.m365-agents]\ntool_timeout_sec = 900" });
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      await buildProgram(cli).parseAsync(["node", "apl", "integrations", "snippet", "--client", "codex"]);
+      expect(output.join("")).toBe("[mcp_servers.m365-agents]\ntool_timeout_sec = 900\n");
+      output.length = 0;
+      await buildProgram(cli).parseAsync([
+        "node",
+        "apl",
+        "--json",
+        "integrations",
+        "snippet",
+        "--client",
+        "codex"
+      ]);
+      expect(JSON.parse(output.join("").trim())).toEqual({
+        codex: "[mcp_servers.m365-agents]\ntool_timeout_sec = 900"
+      });
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("adds a visible client heading only when multiple raw snippets are printed", async () => {
+    const cli = api();
+    cli.integrations = async () => ({ codex: "[codex]", vscode: '{\n  "servers": {}\n}' });
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      await buildProgram(cli).parseAsync(["node", "apl", "integrations", "snippet"]);
+      expect(output.join("")).toBe('=== codex ===\n[codex]\n\n=== vscode ===\n{\n  "servers": {}\n}\n');
+    } finally {
+      write.mockRestore();
+    }
   });
 });

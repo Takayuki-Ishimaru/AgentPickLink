@@ -287,6 +287,7 @@ export interface BrowserInvokeRequest {
 /** What ConversationDriver.read consumes: the same budget and context as an invocation, and the
  * transport's record of the last message entered in the conversation, if any. */
 export interface BrowserReadRequest {
+  waitMs?: number;
   requestId?: string;
   workspaceKey?: string;
   workspaceRoot?: string;

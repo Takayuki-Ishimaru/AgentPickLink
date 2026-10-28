@@ -1,6 +1,7 @@
 // Generate the public dependency inventory from the lockfile and installed package notices.
 // Run npm ci first. Does not fetch data or change third-party license files.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +54,20 @@ for (const entry of entries.filter((entry) => !entry.dev)) {
     `Run npm ci: ${entry.location} version differs from lockfile`
   );
   const files = await noticeFiles(directory);
-  assert.ok(files.length > 0, `Missing runtime license text: ${entry.name}`);
+  // verify@4.1.2's npm archive omits LICENSE. The upstream monorepo at its published
+  // gitHead 769a53d8713248a8bf49edfc2a5d1955b0dcc24d ships exactly this shared Apache text,
+  // already included by core. Pin both the affected version and verified bytes; do not infer
+  // a license or relax the missing-notice check for any other package/version.
+  if (files.length === 0 && entry.name === "@sigstore/verify" && entry.version === "4.1.2") {
+    const shared = await readFile(path.join(root, "node_modules/@sigstore/core/LICENSE"), "utf8");
+    assert.equal(
+      createHash("sha256").update(shared).digest("hex"),
+      "364a130d2ca340bd56eb1e6d045fc6929bb0f9d0aa018f2c1949b29517e1cdd0"
+    );
+    notices.push(
+      `\n${"=".repeat(80)}\n${entry.name}@${entry.version} — upstream LICENSE (shared with @sigstore/core)\nSource: https://github.com/sigstore/sigstore-js/blob/769a53d8713248a8bf49edfc2a5d1955b0dcc24d/LICENSE\nLicense declaration: ${entry.license}\n${"=".repeat(80)}\n\n${shared}`
+    );
+  } else assert.ok(files.length > 0, `Missing runtime license text: ${entry.name}`);
   for (const file of files) {
     const content = await readFile(path.join(directory, file), "utf8");
     notices.push(

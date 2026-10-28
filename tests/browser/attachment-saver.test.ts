@@ -383,6 +383,7 @@ describe("response attachment saving", () => {
       path.join(workspaceRoot, "APL_downloads", "workspace-key", "request", "result.txt")
     );
     expect(await readFile(attachment!.localPath!)).toEqual(body);
+    expect(await readFile(path.join(workspaceRoot, "APL_downloads", ".gitignore"), "utf8")).toBe("*\n");
   });
 
   it("does not follow a workspace-root symlink", async () => {

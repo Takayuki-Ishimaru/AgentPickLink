@@ -1,5 +1,6 @@
 version: 1
 downloadDefaultsVersion: 1
+headlessDefaultsVersion: 1
 runtime:
   brokerProtocolMajor: 1
 browser:
@@ -12,8 +13,10 @@ browser:
   responseTimeoutMs: 300000
   ackTimeoutMs: 30000
   responseStartTimeoutMs: 90000
-  typingDelayMs: 20
+  typingDelayMs: 0
+  composerStabilityMs: 500
   attachmentSettleMs: 2000
+  attachmentPhaseTimeoutMs: 45000
   stabilityWindowMs: 1800
   pollIntervalMs: 250
   idleShutdownMinutes: 30

@@ -48,6 +48,8 @@ export type AgentInvokeRequest = {
 };
 /** Reading a conversation (m365_agent_session action=read) sends nothing. */
 export type AgentReadRequest = {
+  /** Zero (default) takes a snapshot; positive values explicitly wait for completion. */
+  waitMs?: number;
   requestId?: string;
   signal?: AbortSignal;
   onProgress?: ProgressSink;
@@ -101,7 +103,7 @@ export interface AgentTransport {
   createConversation(agent: AgentDefinition, context: InvocationContext): Promise<TransportConversation>;
   invoke(conversation: TransportConversation, request: AgentInvokeRequest): Promise<AgentResponse>;
   /** Reads the conversation without sending anything: whether the last message entered in it is
-   * shown, and the reply to the latest user message, waiting for it to finish. Optional: a
+   * shown, and a snapshot of its reply. A positive waitMs explicitly waits for completion. Optional: a
    * transport without it cannot serve m365_agent_session action=read. */
   readConversation?(
     conversation: TransportConversation,

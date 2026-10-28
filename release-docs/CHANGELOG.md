@@ -1,5 +1,60 @@
 # リリースノート
 
+## v0.2.15 Beta
+
+### 主な変更
+
+- **設定保存時にワークスペースのアクセス権を変更する問題を修正しました。** 保存先のルートフォルダーのアクセス権を保持します。以前の版で変更された権限は自動復元しないため、該当する場合は[復旧手順](TROUBLESHOOTING.md#ワークスペースのアクセス権が変わった場合)を確認してください。
+- **エージェントの登録とセットアップ表示を改善しました。** 探索完了時の誤警告と、保存完了後の通信切断表示を修正しました。新規登録するエージェントの別名を承認前に編集でき、一意に一致する承認済みの表示名でも質問できます。同名のエージェントが複数ある場合は別名を指定してください。
+- **会話を読み直すときの待機方法を変更しました。** `m365_agent_session` の `action: "read"` は、既定では待機せず現在の状態と途中の回答を返します。完了を待って回答やファイルを回収する場合は `waitMs`（最大 `300000` ミリ秒）を指定してください。画面構成の変更が疑われる場合の検出も追加しました。質問の自動再送は行いません。
+- **拡張機能の更新チャネルとビルド証明の確認を追加しました。** `agentpicklink.updateChannel` で `stable`（安定版のみ）と `beta`（ベータ版を含む、既定）を選べます。自動インストールには VSIX の SHA-256 と公式リリースのビルド証明の検証が必要です。証明のない版や検証できない場合は自動インストールしません。
+- **ポータブル版と CLI の案内を改善しました。** 実行コマンド、クライアント連携の設定例、診断メッセージを見直しました。セットアップが表示するランチャーの絶対パスを使って実行してください。PATH への自動追加は行いません。
+- **生成ファイルと引用の扱いを改善しました。** 初回のファイル保存時に `APL_downloads/.gitignore` を作成し、通常の Git 追加から除外します。追跡済みのファイルや強制追加、クラウド同期は防げません。回答に表示された引用番号の対応も改善しました。
+
+### 更新方法
+
+v0.2.12 以降で自動更新が有効な場合は、インストール後に VS Code を再読み込みしてください。手動更新や自動更新が進まない場合は、`agent-pick-link-0.2.15.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、再読み込みします。このリリースはベータ版のため、`stable` チャネルでは更新対象になりません。`beta` を選択するか、VSIX で手動更新してください。
+
+ビルド証明の検証には GitHub と Sigstore への接続、および Node.js 22.22.2 以降の22系、24.15.0 以降の24系、または26以降が必要です。対応しないランタイムや証明を取得・検証できない環境では、配布元を確認して VSIX で手動更新してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。機械インストールの更新は引き続き手動です。既存の設定・ワークスペース承認・専用ブラウザープロファイルは利用を継続できます。外部 AI クライアントの MCP 接続とローカルプロセスも再起動してください。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の元の会話で確認してください。
+
+会話の読み取りで完了を待つクライアントは、`read` に `waitMs` を明示してください。設定ファイルの形式に変更はありません。
+
+### 配布物
+
+- `agent-pick-link-0.2.15.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.15-win-x64.zip` / `AgentPickLink-0.2.15-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.15-darwin-arm64.tgz` / `AgentPickLink-0.2.15-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.15-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.15-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+ポータブル版の同梱 Node.js は、引き続き 24.22.1 です。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向け、Linux は開発・CI 専用です。Linux の標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。
+
+実 Microsoft 365 テナントと実際の VS Code 画面での確認、実際の AI クライアントの停止操作によるキャンセル、および最終配布物のすべての OS・CPU での実機動作は未確認です。自動検証は模擬画面と API モックを使用します。利用する環境で質問・回答・ファイル取得・設定保存・更新動作を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)を参照してください。
+
+### English
+
+- **Preserved workspace directory permissions when saving settings.** Previous permission changes are not restored automatically; see the [recovery instructions](TROUBLESHOOTING.md#ワークスペースのアクセス権が変わった場合) if affected.
+- **Improved agent registration and setup messages.** Fixed misleading discovery warnings and disconnect messages after a successful save. New agents' aliases can be edited before approval. A uniquely matching approved display name can be used for questions; use an alias when names are ambiguous.
+- **Changed conversation reads to return a snapshot by default.** `m365_agent_session` with `action: "read"` returns the current state and partial reply without waiting. Specify `waitMs`, up to `300000`, to wait for completion and retrieve the reply and files. Added detection of possible interface changes. Questions are never automatically resent.
+- **Added update channels and build-attestation verification.** Choose `stable` or `beta` with `agentpicklink.updateChannel`; the default is `beta`. Automatic installation requires a matching SHA-256 digest and verified build attestation for the official release. Releases without proof, or whose proof cannot be verified, are not automatically installed.
+- **Improved portable setup and CLI guidance.** Use the absolute launcher path printed by setup; setup does not add it to PATH.
+- **Improved generated-file handling and citation numbering.** New downloads create `APL_downloads/.gitignore` for ordinary Git exclusion. Already tracked files, forced additions, and cloud synchronization still require user management.
+
+Reload VS Code after an automatic update, or install `agent-pick-link-0.2.15.vsix` manually and reload. This beta is not offered on the `stable` channel; select `beta` or update manually. Attestation verification requires access to GitHub and Sigstore and Node.js 22.22.2 or later in the 22 line, 24.15.0 or later in the 24 line, or version 26 or later. Use a verified release source for manual installation when automatic verification is unavailable.
+
+For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Machine installation updates remain manual. Existing settings, approvals, and the dedicated browser profile can be reused. Restart external MCP connections and local processes. Conversation handles issued before a restart cannot be reused; inspect existing questions in the original Microsoft 365 conversation. Clients that need a completed reply from `read` must specify `waitMs`. Configuration formats are unchanged.
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`. Portable archives continue to bundle Node.js 24.22.1.
+
+Windows 11 with Microsoft Edge remains the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Live Microsoft 365 tenant and actual VS Code interface checks, cancellation through actual AI clients' stop controls, and native execution of the final distribution on every OS/CPU remain unverified. Automated checks use mock pages and API mocks. Validate questions, replies, file retrieval, settings, and updates in your environment. See [supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.14 Beta
 
 ### 主な変更

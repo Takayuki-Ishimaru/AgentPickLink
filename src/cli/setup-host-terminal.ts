@@ -137,11 +137,58 @@ export async function appendCliLog(paths: Pick<AppPaths, "logs">, line: string):
 
 /** The phase/message text here is already whatever the domain layer produced (English, metadata
  * only); there is nothing left to localize beyond the surrounding lines `post()` adds. */
-function progressLine(progress: PanelProgress): string {
+const PROGRESS_PHASE_LABELS: Record<PanelProgress["phase"], { ja: string; en: string }> = {
+  connecting: { ja: "接続中", en: "Connecting" },
+  navigating: { ja: "ページを開いています", en: "Opening page" },
+  "asserting-identity": { ja: "サインインを確認中", en: "Checking sign-in" },
+  filling: { ja: "入力中", en: "Entering information" },
+  submitting: { ja: "送信中", en: "Submitting" },
+  submitted: { ja: "送信しました", en: "Submitted" },
+  "checking-message": { ja: "メッセージを確認中", en: "Checking message" },
+  "waiting-response": { ja: "応答を待っています", en: "Waiting for response" },
+  streaming: { ja: "応答を受信中", en: "Receiving response" },
+  "confirming-response": { ja: "応答の完了を確認中", en: "Confirming response" },
+  extracting: { ja: "応答を読み取り中", en: "Reading response" },
+  "checking-attachments": { ja: "添付ファイルを確認中", en: "Checking attachments" },
+  "saving-attachments": { ja: "添付ファイルを保存中", en: "Saving attachments" },
+  "login-waiting": { ja: "サインインを待っています", en: "Waiting for sign-in" },
+  "login-closing": { ja: "サインインを確認しました", en: "Sign-in confirmed" },
+  discovering: { ja: "エージェントを探索中", en: "Discovering agents" },
+  verifying: { ja: "確認中", en: "Verifying" },
+  done: { ja: "完了", en: "Done" },
+  "restarting-broker": { ja: "バックグラウンド処理を再起動中", en: "Restarting background service" }
+};
+
+const PROGRESS_MESSAGES_JA: Record<string, string> = {
+  Working: "処理中",
+  "Preparing local state": "ローカルの設定を準備しています",
+  "Connecting to broker": "バックグラウンド処理に接続しています",
+  "Checking sign-in status": "サインインの状態を確認しています",
+  "Waiting for sign-in confirmation": "サインインの確認を待っています",
+  "Starting agent discovery": "エージェントの探索を開始しています",
+  "Opening the Microsoft 365 landing page": "Microsoft 365 のホームページを開いています",
+  "Waiting for sign-in in the AgentPickLink window": "AgentPickLink のウィンドウでサインインしてください",
+  "Sign-in completed; closing the sign-in window": "サインインを確認しました。ウィンドウを閉じています",
+  "Verifying the session in the hidden browser": "バックグラウンドのブラウザーでサインインを確認しています",
+  "The dedicated automation profile is signed in": "自動操作用のプロファイルでサインインしました"
+};
+
+function localizedProgressMessage(message: string, locale: Locale): string {
+  if (locale !== "ja") return message;
+  const found = /^Found (\d+) agent candidate\(s\)$/.exec(message);
+  return PROGRESS_MESSAGES_JA[message] ?? (found ? `${found[1]} 件の候補が見つかりました` : message);
+}
+
+function progressLine(progress: PanelProgress, locale: Locale, verbose: boolean): string {
+  if (progress.message?.startsWith("login-reason:") && !verbose) return "";
   const seconds = progress.elapsedMs !== undefined ? Math.round(progress.elapsedMs / 1000) : undefined;
   const parts = [
-    progress.phase,
-    progress.message,
+    PROGRESS_PHASE_LABELS[progress.phase][locale],
+    progress.message && locale === "ja"
+      ? progress.message.startsWith("login-reason:")
+        ? progress.message
+        : localizedProgressMessage(progress.message, locale)
+      : progress.message,
     seconds !== undefined ? `${seconds}s` : undefined,
     progress.current !== undefined && progress.total !== undefined
       ? `${progress.current}/${progress.total}`
@@ -217,7 +264,9 @@ export class TerminalSetupHost implements SetupHost {
       this.options.out(`> ${describePanelPhase(this.locale, state.phase)}`);
 
     if (state.progress && !sameJson(state.progress, previous?.progress)) {
-      const line = progressLine(state.progress);
+      if (state.progress.message?.startsWith("login-reason:"))
+        void appendCliLog(this.paths, state.progress.message).catch(() => undefined);
+      const line = progressLine(state.progress, this.locale, !!this.options.verboseOut);
       if (line.length > 0) this.options.out(`  ${line}`);
     }
 

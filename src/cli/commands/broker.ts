@@ -27,7 +27,17 @@ async function status(deps: CommandDeps): Promise<Record<string, unknown>> {
   }
   if (!client) return { live: false };
   try {
-    return { live: true, ...((await client.call("broker.health", {})) as Record<string, unknown>) };
+    const health = (await client.call("broker.health", {})) as Record<string, unknown>;
+    const transport = health.transport;
+    if (!transport || typeof transport !== "object" || Array.isArray(transport))
+      return { ...health, live: true };
+    const {
+      browser: _browser,
+      correlations: _correlations,
+      devMode: _devMode,
+      ...transportSummary
+    } = transport as Record<string, unknown>;
+    return { ...health, transport: transportSummary, live: true };
   } finally {
     client.close();
   }
@@ -95,7 +105,7 @@ async function restart(deps: CommandDeps): Promise<Record<string, unknown>> {
           "BROKER_UNAVAILABLE",
           "The previous broker did not finish stopping before the timeout.",
           true,
-          { remediation: "run: m365-agent broker restart" }
+          { remediation: "run: apl broker restart" }
         );
     } else await deps.terminateDescriptorBroker(deps.paths);
   }

@@ -47,6 +47,6 @@ function unavailable(): ToolError {
     code: "BROKER_UNAVAILABLE",
     message: "The local Microsoft 365 broker is unavailable.",
     retryable: true,
-    remediation: "Run: m365-agent broker status"
+    remediation: "Run: apl broker status"
   };
 }

@@ -153,6 +153,7 @@ export type InstallWorkspaceReport = {
    * this report is built. */
   partial?: true;
   failedCount?: number;
+  failedCountKnown?: boolean;
 };
 
 export type InstallReport = {
@@ -168,7 +169,9 @@ export type InstallReport = {
   vscodeUser?: { written: string[]; skipped: string[]; warnings?: string[] };
   claudeUser?: { written: string[]; skipped: string[] };
   workspaces: InstallWorkspaceReport[];
-  uninstallCommand: string;
+  /** Absolute human launcher path; portable installs do not add themselves to PATH. */
+  cliPath?: string;
+  uninstallCommand?: string;
   verified: boolean;
   doctor?: Array<{ workspace: string; ok: boolean; findings: string[] }>;
   verifyError?: string;
@@ -504,7 +507,7 @@ function domainErrorMeta(error: unknown): { code?: string; remediation?: string 
 async function resolveWorkspaces(raw: string[]): Promise<string[]> {
   if (raw.length === 0)
     throw new DomainError("INVALID_ARGUMENT", "At least one workspace is required.", false, {
-      remediation: "Pass one or more workspace folders: m365-agent install <workspace> [more...]"
+      remediation: "Pass one or more workspace folders: apl install <workspace> [more...]"
     });
   const resolved: string[] = [];
   const seen = new Set<string>();
@@ -621,7 +624,7 @@ async function selectAgents(
   if (agentsOption !== undefined) {
     const requested = agentsOption
       .split(",")
-      .map((token) => token.trim())
+      .map((token) => token.trim().split("=", 1)[0])
       .filter(Boolean);
     const unknown: string[] = [];
     const keys: string[] = [];
@@ -767,7 +770,7 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       false,
       {
         remediation:
-          "Switch versions with `m365-agent self use <version>`, or re-run with --force to install this older version."
+          "Switch versions with `apl self use <version>`, or re-run with --force to install this older version."
       }
     );
   const rawWorkspaces =
@@ -911,7 +914,6 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         files: []
       })),
       workspaces: workspaces.map((root) => ({ root, agentsRegistered: 0, agentsFailed: 0, files: [] })),
-      uninstallCommand: "m365-agent self uninstall",
       verified: false,
       migrations: plannedRemovals.map(({ workspace, file }) => ({ workspace, file })),
       instructions: [],
@@ -940,7 +942,6 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         files: []
       })),
       workspaces: [],
-      uninstallCommand: "m365-agent self uninstall",
       verified: false,
       migrations: [],
       instructions: [],
@@ -1126,7 +1127,6 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         runtime: { path: identity.command, source: runtimeSource },
         clients: [],
         workspaces: [],
-        uninstallCommand: "m365-agent self uninstall",
         verified: false,
         verifyError: partial ? `${message} (partial install left: ${partial})` : message,
         ...(verifyErrorCode ? { verifyErrorCode } : {}),
@@ -1224,6 +1224,7 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       // runs, not from the workspace report's own later `host.lastPanelState()` calls.
       let discoveryPartial: true | undefined;
       let discoveryFailedCount: number | undefined;
+      let discoveryFailedCountKnown: boolean | undefined;
       if (!options.browser) {
         const controller = new SetupController(host, () => service);
         if (discoverySnapshot) await controller.reuseDiscovery(discoverySnapshot);
@@ -1233,6 +1234,7 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         if (state?.discoverySummary?.partial) {
           discoveryPartial = true;
           discoveryFailedCount = state.discoverySummary.failedCount;
+          discoveryFailedCountKnown = state.discoverySummary.failedCountKnown;
         }
         if (state?.phase === "error" && state.error) {
           // ISSUE-03/ISSUE-06: `runSetup`/`reuseDiscovery` already failed (sign-in, discovery, a stale
@@ -1257,12 +1259,35 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
             !!options.yes
           );
 
+          const requestedAliases = new Map<string, string>();
+          for (const item of (options.agents ?? "")
+            .split(",")
+            .map((token) => token.trim())
+            .filter(Boolean)) {
+            const separator = item.indexOf("=");
+            if (separator < 0) continue;
+            const requestedKey = item.slice(0, separator).trim();
+            const alias = item.slice(separator + 1).trim();
+            const candidate = candidates.find(
+              (entry) => entry.key === requestedKey || entry.registered?.alias === requestedKey
+            );
+            if (!candidate || !alias)
+              throw new DomainError("INVALID_ARGUMENT", `Invalid --agents key=alias entry: ${item}`);
+            if (candidate.registered?.alias && candidate.registered.alias !== alias)
+              throw new DomainError(
+                "INVALID_ARGUMENT",
+                `Cannot change the alias of an already registered agent (${candidate.registered.alias}).`
+              );
+            requestedAliases.set(candidate.key, alias);
+          }
+
           // P0-1: mirror media/setup.js's own default (~334-335) -- an already-registered agent keeps
           // its registered capability class unless something explicitly says otherwise. Sending `{ key }`
           // alone would make buildApplyPlan() default to "knowledge-only" and silently downgrade a
           // registered actions-possible agent on every later re-run.
           let agentInputs = selectedKeys.map((key) => ({
             key,
+            ...(requestedAliases.has(key) ? { alias: requestedAliases.get(key)! } : {}),
             actionsPossible: candidatesByKey.get(key)?.registered?.capabilityClass === "actions-possible"
           }));
 
@@ -1353,7 +1378,15 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
         ...(workspaceError ? { error: workspaceError } : {}),
         ...(workspaceErrorCode ? { errorCode: workspaceErrorCode } : {}),
         ...(workspaceErrorRemediation ? { errorRemediation: workspaceErrorRemediation } : {}),
-        ...(discoveryPartial ? { partial: discoveryPartial, failedCount: discoveryFailedCount } : {})
+        ...(discoveryPartial
+          ? {
+              partial: discoveryPartial,
+              failedCount: discoveryFailedCount,
+              ...(discoveryFailedCountKnown !== undefined
+                ? { failedCountKnown: discoveryFailedCountKnown }
+                : {})
+            }
+          : {})
       });
     }
 
@@ -1558,7 +1591,11 @@ export async function runInstall(deps: CommandDeps, options: InstallCommandOptio
       ...(vscodeUserSummary ? { vscodeUser: vscodeUserSummary } : {}),
       ...(claudeUserSummary ? { claudeUser: claudeUserSummary } : {}),
       workspaces: workspaceReports,
-      uninstallCommand: "m365-agent self uninstall",
+      cliPath: path.join(home, "bin", deps.platform === "win32" ? "apl.cmd" : "apl"),
+      uninstallCommand: uninstallCommandFor(
+        path.join(home, "bin", deps.platform === "win32" ? "apl.cmd" : "apl"),
+        deps.platform
+      ),
       verified,
       doctor: doctorReports,
       ...(verifyError ? { verifyError } : {}),
@@ -1634,7 +1671,12 @@ function formatFailureLine(
   const label = locale === "ja" ? "失敗" : "Failed";
   if (!code) return message ? `${label}: ${message}` : undefined;
   const described = describeErrorCode(locale, code);
-  const detail = described?.remediation ?? remediation ?? message ?? described?.summary;
+  // Preserve the failure's concrete recovery action in English; a generic localized hint
+  // must not hide, for example, that no supported browser is installed.
+  const detail =
+    (locale === "en" ? (remediation ?? described?.remediation) : (described?.remediation ?? remediation)) ??
+    message ??
+    described?.summary;
   return `${label}: ${code}${detail ? ` — ${detail}` : ""}`;
 }
 
@@ -1659,7 +1701,12 @@ export function formatInstallReport(report: InstallReport, locale: Locale = "en"
     if (client.files.length > 0) for (const file of client.files) lines.push(`${client.id}: ${file}`);
     else if (client.snippet) lines.push(`${client.id}: ${t("installClientSnippetLabel")}\n${client.snippet}`);
   }
-  if (!report.clients.some((client) => client.files.length > 0)) lines.push(t("installReportNoClients"));
+  if (
+    !report.clients.some((client) => client.files.length > 0) &&
+    !report.vscodeUser?.written.length &&
+    !report.claudeUser?.written.length
+  )
+    lines.push(t("installReportNoClients"));
   if (report.vscodeUser) {
     for (const file of report.vscodeUser.written) lines.push(`vscode-user: ${file}`);
     for (const reason of [...report.vscodeUser.skipped, ...(report.vscodeUser.warnings ?? [])])
@@ -1673,7 +1720,10 @@ export function formatInstallReport(report: InstallReport, locale: Locale = "en"
     lines.push(`${t("cliWorkspaceLabel")}: ${workspace.root}`);
     for (const file of workspace.files) lines.push(`  ${file}`);
     const partialNotice = workspace.partial
-      ? describeDiscoverySummary({ partial: true, failedCount: workspace.failedCount }, locale)
+      ? describeDiscoverySummary(
+          { partial: true, failedCount: workspace.failedCount, failedCountKnown: workspace.failedCountKnown },
+          locale
+        )
       : undefined;
     if (partialNotice) lines.push(`  ${partialNotice}`);
     // ISSUE-03: same treatment as `verifyError` above, for a per-workspace failure (a declined/
@@ -1703,7 +1753,9 @@ export function formatInstallReport(report: InstallReport, locale: Locale = "en"
     lines.push(`broker.log: ${report.brokerLog.path}`);
     for (const line of report.brokerLog.tail) lines.push(`  ${line}`);
   }
-  lines.push(`${t("installUninstallHint")} ${report.uninstallCommand}`);
+  if (report.cliPath)
+    lines.push(`${t("cliCommandLabel")}: ${shellCommandPrefix(report.cliPath, process.platform)} <command>`);
+  if (report.uninstallCommand) lines.push(`${t("installUninstallHint")} ${report.uninstallCommand}`);
   lines.push(...report.instructions);
   if (report.doctor)
     for (const item of report.doctor)
@@ -1711,4 +1763,12 @@ export function formatInstallReport(report: InstallReport, locale: Locale = "en"
         `${t("installDoctorResult")}: ${item.ok ? "OK" : item.findings.join(", ") || t("cliFailed")}`
       );
   return lines.join("\n");
+}
+
+export function uninstallCommandFor(cliPath: string, platform: NodeJS.Platform): string {
+  return `${shellCommandPrefix(cliPath, platform)} self uninstall`;
+}
+
+function shellCommandPrefix(cliPath: string, platform: NodeJS.Platform): string {
+  return platform === "win32" ? `& '${cliPath.replace(/'/g, "''")}'` : `'${cliPath.replace(/'/g, "'\\''")}'`;
 }

@@ -765,11 +765,11 @@ describe("errors", () => {
     expect(state.phase).toBe("error");
     expect(state.error?.code).toBe("UI_CHANGED");
     expect(state.error?.message).toBe("The stop-generating control was not found.");
-    expect(state.error?.remediation).toContain("report it to the developer");
+    expect(state.error?.remediation).toContain("report the metadata to the developer");
     expect(state.error?.summary).toBe(
       "The Microsoft 365 page structure differs from what this version expects."
     );
-    expect(state.error?.localizedRemediation).toContain("Copy the diagnostic");
+    expect(state.error?.localizedRemediation).toContain("Copy diagnostics");
     expect(panel.provider.statusKind()).toBe("ui-changed");
   });
 

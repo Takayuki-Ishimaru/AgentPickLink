@@ -14,7 +14,7 @@ const readParams = { root: "/workspace", conversationHandle: "conv_kept-1_A" };
 
 describe("broker protocol minor 5", () => {
   it("is the minor that adds conversation.read, ahead of the minor that added broker.cancel", () => {
-    expect(BROKER_PROTOCOL).toEqual({ major: 1, minor: 5 });
+    expect(BROKER_PROTOCOL).toEqual({ major: 1, minor: 6 });
     expect(BROKER_READ_MINOR).toBe(5);
     expect(BROKER_CANCEL_MINOR).toBe(4);
     expect(BROKER_READ_MINOR).toBeLessThanOrEqual(BROKER_PROTOCOL.minor);

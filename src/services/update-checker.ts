@@ -45,14 +45,29 @@ export function compareVersions(left: string, right: string): number | undefined
   return 0;
 }
 
-export function newestRelease(value: unknown, installed: string): { tag: string; url: string } | undefined {
+export type UpdateChannel = "stable" | "beta";
+
+/** Stable releases must be stable both in GitHub metadata and SemVer. */
+export function releaseInChannel(
+  release: { tag_name: string; prerelease?: unknown },
+  channel: UpdateChannel
+): boolean {
+  const version = parseVersion(release.tag_name);
+  return !!version && (channel === "beta" || (release.prerelease !== true && version.pre.length === 0));
+}
+
+export function newestRelease(
+  value: unknown,
+  installed: string,
+  channel: UpdateChannel = "beta"
+): { tag: string; url: string } | undefined {
   if (!Array.isArray(value) || !parseVersion(installed)) return undefined;
   let newest = installed;
   let tag: string | undefined;
   for (const item of value.slice(0, 100)) {
     if (!item || typeof item !== "object" || item.draft !== false || typeof item.tag_name !== "string")
       continue;
-    if (compareVersions(item.tag_name, newest) === 1) {
+    if (releaseInChannel(item, channel) && compareVersions(item.tag_name, newest) === 1) {
       newest = item.tag_name;
       tag = item.tag_name;
     }
@@ -67,6 +82,7 @@ export function newestRelease(value: unknown, installed: string): { tag: string;
 
 export async function checkGithubUpdate(options: {
   installed: string;
+  channel?: UpdateChannel;
   state: { get(key: string): unknown; update(key: string, value: string): PromiseLike<void> };
   fetchReleases: () => Promise<unknown>;
   active: () => boolean;
@@ -78,7 +94,7 @@ export async function checkGithubUpdate(options: {
   awaitNotification?: boolean;
 }): Promise<void> {
   if (!options.active()) return;
-  const release = newestRelease(await options.fetchReleases(), options.installed);
+  const release = newestRelease(await options.fetchReleases(), options.installed, options.channel);
   if (!options.active() || !release || options.state.get(NOTICE_KEY) === release.tag) return;
   await options.state.update(NOTICE_KEY, release.tag);
   if (!options.active()) return;

@@ -5,7 +5,7 @@
 AgentPickLink 本体は [MIT ライセンス](../LICENSE) の OSS です。依存ソフトウェアのライセンスは変更しません。
 The AgentPickLink project is MIT licensed. Third-party software retains its original license terms.
 
-この一覧は v0.2.14 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
+この一覧は v0.2.15 の [package-lock.json](../package-lock.json) に固定されたパッケージ名・バージョン・ライセンス宣言から生成しています。Runtime は実行時依存、Development はビルド・テスト・パッケージ作成用です。間接依存と OS 別の任意依存も含むため、全項目が同時にインストールされたり VSIX に含まれたりするわけではありません。同じパッケージの異なる依存位置は別行です。
 This inventory uses the names, pinned versions and license declarations in the lockfile. It includes direct, transitive and platform-specific optional dependencies. Not every entry is installed on every platform or shipped in the VSIX; separate installation paths have separate rows.
 
 実行時に配布するソフトウェアの著作権表示・ライセンス全文・同梱コンポーネントの通知は [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) に収録しています。VSIX 内の各パッケージの LICENSE / NOTICE も保持しています。
@@ -22,6 +22,11 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 | [@modelcontextprotocol/client](https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.3.1) | 2.3.1   | Apache-2.0 | Development | Direct     |
 | [@modelcontextprotocol/core](https://www.npmjs.com/package/@modelcontextprotocol/core/v/2.3.1)     | 2.3.1   | Apache-2.0 | Runtime     | Direct     |
 | [@modelcontextprotocol/server](https://www.npmjs.com/package/@modelcontextprotocol/server/v/2.3.1) | 2.3.1   | Apache-2.0 | Runtime     | Direct     |
+| [@sigstore/bundle](https://www.npmjs.com/package/@sigstore/bundle/v/5.0.0)                         | 5.0.0   | Apache-2.0 | Runtime     | Direct     |
+| [@sigstore/core](https://www.npmjs.com/package/@sigstore/core/v/4.0.1)                             | 4.0.1   | Apache-2.0 | Runtime     | Direct     |
+| [@sigstore/mock](https://www.npmjs.com/package/@sigstore/mock/v/0.13.0)                            | 0.13.0  | Apache-2.0 | Development | Direct     |
+| [@sigstore/tuf](https://www.npmjs.com/package/@sigstore/tuf/v/5.0.0)                               | 5.0.0   | Apache-2.0 | Runtime     | Direct     |
+| [@sigstore/verify](https://www.npmjs.com/package/@sigstore/verify/v/4.1.2)                         | 4.1.2   | Apache-2.0 | Runtime     | Direct     |
 | [@types/node](https://www.npmjs.com/package/@types/node/v/22.20.1)                                 | 22.20.1 | MIT        | Development | Direct     |
 | [@types/proper-lockfile](https://www.npmjs.com/package/@types/proper-lockfile/v/4.1.4)             | 4.1.4   | MIT        | Development | Direct     |
 | [@types/vscode](https://www.npmjs.com/package/@types/vscode/v/1.101.0)                             | 1.101.0 | MIT        | Development | Direct     |
@@ -42,12 +47,22 @@ The MCP SDK provides protocol integration; Playwright controls the browser; Comm
 
 ## 実行時の間接依存 / Transitive runtime dependencies
 
-| Package                                                                          | Version | License    | Scope   | Dependency |
-| -------------------------------------------------------------------------------- | ------- | ---------- | ------- | ---------- |
-| [graceful-fs](https://www.npmjs.com/package/graceful-fs/v/4.2.11)                | 4.2.11  | ISC        | Runtime | Transitive |
-| [retry](https://www.npmjs.com/package/retry/v/0.12.0)                            | 0.12.0  | MIT        | Runtime | Transitive |
-| [signal-exit](https://www.npmjs.com/package/signal-exit/v/3.0.7)                 | 3.0.7   | ISC        | Runtime | Transitive |
-| [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/3.4.3) | 3.4.3   | Apache-2.0 | Runtime | Transitive |
+| Package                                                                                    | Version | License       | Scope   | Dependency |
+| ------------------------------------------------------------------------------------------ | ------- | ------------- | ------- | ---------- |
+| [@gar/promise-retry](https://www.npmjs.com/package/@gar/promise-retry/v/1.0.3)             | 1.0.3   | MIT           | Runtime | Transitive |
+| [@sigstore/protobuf-specs](https://www.npmjs.com/package/@sigstore/protobuf-specs/v/0.5.2) | 0.5.2   | Apache-2.0    | Runtime | Transitive |
+| [@tufjs/canonical-json](https://www.npmjs.com/package/@tufjs/canonical-json/v/2.0.0)       | 2.0.0   | MIT           | Runtime | Transitive |
+| [@tufjs/models](https://www.npmjs.com/package/@tufjs/models/v/5.0.0)                       | 5.0.0   | MIT           | Runtime | Transitive |
+| [balanced-match](https://www.npmjs.com/package/balanced-match/v/4.0.4)                     | 4.0.4   | MIT           | Runtime | Transitive |
+| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.12)                  | 5.0.12  | MIT           | Runtime | Transitive |
+| [debug](https://www.npmjs.com/package/debug/v/4.4.3)                                       | 4.4.3   | MIT           | Runtime | Transitive |
+| [graceful-fs](https://www.npmjs.com/package/graceful-fs/v/4.2.11)                          | 4.2.11  | ISC           | Runtime | Transitive |
+| [minimatch](https://www.npmjs.com/package/minimatch/v/10.2.6)                              | 10.2.6  | BlueOak-1.0.0 | Runtime | Transitive |
+| [ms](https://www.npmjs.com/package/ms/v/2.1.3)                                             | 2.1.3   | MIT           | Runtime | Transitive |
+| [retry](https://www.npmjs.com/package/retry/v/0.12.0)                                      | 0.12.0  | MIT           | Runtime | Transitive |
+| [signal-exit](https://www.npmjs.com/package/signal-exit/v/3.0.7)                           | 3.0.7   | ISC           | Runtime | Transitive |
+| [eslint-visitor-keys](https://www.npmjs.com/package/eslint-visitor-keys/v/3.4.3)           | 3.4.3   | Apache-2.0    | Runtime | Transitive |
+| [tuf-js](https://www.npmjs.com/package/tuf-js/v/6.0.0)                                     | 6.0.0   | MIT           | Runtime | Transitive |
 
 ## Playwright 同梱 OSS / OSS bundled inside Playwright
 
@@ -220,7 +235,24 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [@napi-rs/keyring-win32-arm64-msvc](https://www.npmjs.com/package/@napi-rs/keyring-win32-arm64-msvc/v/1.3.0)                        | 1.3.0   | MIT           | Development | Transitive |
 | [@napi-rs/keyring-win32-ia32-msvc](https://www.npmjs.com/package/@napi-rs/keyring-win32-ia32-msvc/v/1.3.0)                          | 1.3.0   | MIT           | Development | Transitive |
 | [@napi-rs/keyring-win32-x64-msvc](https://www.npmjs.com/package/@napi-rs/keyring-win32-x64-msvc/v/1.3.0)                            | 1.3.0   | MIT           | Development | Transitive |
+| [@noble/hashes](https://www.npmjs.com/package/@noble/hashes/v/1.8.0)                                                                | 1.8.0   | MIT           | Development | Transitive |
 | [@oxc-project/types](https://www.npmjs.com/package/@oxc-project/types/v/0.153.0)                                                    | 0.153.0 | MIT           | Development | Transitive |
+| [@peculiar/asn1-asym-key](https://www.npmjs.com/package/@peculiar/asn1-asym-key/v/2.11.1)                                           | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-cms](https://www.npmjs.com/package/@peculiar/asn1-cms/v/2.11.1)                                                     | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-csr](https://www.npmjs.com/package/@peculiar/asn1-csr/v/2.11.1)                                                     | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-ecc](https://www.npmjs.com/package/@peculiar/asn1-ecc/v/2.11.1)                                                     | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-pfx](https://www.npmjs.com/package/@peculiar/asn1-pfx/v/2.11.1)                                                     | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-pkcs8](https://www.npmjs.com/package/@peculiar/asn1-pkcs8/v/2.11.1)                                                 | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-pkcs9](https://www.npmjs.com/package/@peculiar/asn1-pkcs9/v/2.11.1)                                                 | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-rsa](https://www.npmjs.com/package/@peculiar/asn1-rsa/v/2.11.1)                                                     | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-schema](https://www.npmjs.com/package/@peculiar/asn1-schema/v/2.11.1)                                               | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-x509](https://www.npmjs.com/package/@peculiar/asn1-x509/v/2.11.1)                                                   | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-x509-attr](https://www.npmjs.com/package/@peculiar/asn1-x509-attr/v/2.11.1)                                         | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/asn1-x509-post-quantum](https://www.npmjs.com/package/@peculiar/asn1-x509-post-quantum/v/2.11.1)                         | 2.11.1  | MIT           | Development | Transitive |
+| [@peculiar/json-schema](https://www.npmjs.com/package/@peculiar/json-schema/v/1.1.12)                                               | 1.1.12  | MIT           | Development | Transitive |
+| [@peculiar/utils](https://www.npmjs.com/package/@peculiar/utils/v/2.0.3)                                                            | 2.0.3   | MIT           | Development | Transitive |
+| [@peculiar/webcrypto](https://www.npmjs.com/package/@peculiar/webcrypto/v/1.7.2)                                                    | 1.7.2   | MIT           | Development | Transitive |
+| [@peculiar/x509](https://www.npmjs.com/package/@peculiar/x509/v/2.2.0)                                                              | 2.2.0   | MIT           | Development | Transitive |
 | [@rolldown/binding-android-arm-eabi](https://www.npmjs.com/package/@rolldown/binding-android-arm-eabi/v/1.2.13)                     | 1.2.13  | MIT           | Development | Transitive |
 | [@rolldown/binding-android-arm64](https://www.npmjs.com/package/@rolldown/binding-android-arm64/v/1.2.13)                           | 1.2.13  | MIT           | Development | Transitive |
 | [@rolldown/binding-darwin-arm64](https://www.npmjs.com/package/@rolldown/binding-darwin-arm64/v/1.2.13)                             | 1.2.13  | MIT           | Development | Transitive |
@@ -243,6 +275,7 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [@secretlint/secretlint-rule-preset-recommend](https://www.npmjs.com/package/@secretlint/secretlint-rule-preset-recommend/v/10.2.2) | 10.2.2  | MIT           | Development | Transitive |
 | [@secretlint/source-creator](https://www.npmjs.com/package/@secretlint/source-creator/v/10.2.2)                                     | 10.2.2  | MIT           | Development | Transitive |
 | [@secretlint/types](https://www.npmjs.com/package/@secretlint/types/v/10.2.2)                                                       | 10.2.2  | MIT           | Development | Transitive |
+| [jose](https://www.npmjs.com/package/jose/v/5.10.0)                                                                                 | 5.10.0  | MIT           | Development | Transitive |
 | [@standard-schema/spec](https://www.npmjs.com/package/@standard-schema/spec/v/1.1.0)                                                | 1.1.0   | MIT           | Development | Transitive |
 | [@types/chai](https://www.npmjs.com/package/@types/chai/v/5.2.3)                                                                    | 5.2.3   | MIT           | Development | Transitive |
 | [@types/deep-eql](https://www.npmjs.com/package/@types/deep-eql/v/4.0.2)                                                            | 4.0.2   | MIT           | Development | Transitive |
@@ -274,22 +307,22 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [acorn-jsx](https://www.npmjs.com/package/acorn-jsx/v/5.3.2)                                                                        | 5.3.2   | MIT           | Development | Transitive |
 | [agent-base](https://www.npmjs.com/package/agent-base/v/7.1.4)                                                                      | 7.1.4   | MIT           | Development | Transitive |
 | [ajv](https://www.npmjs.com/package/ajv/v/6.15.0)                                                                                   | 6.15.0  | MIT           | Development | Transitive |
+| [asn1js](https://www.npmjs.com/package/asn1js/v/3.1.0)                                                                              | 3.1.0   | BSD-3-Clause  | Development | Transitive |
 | [assertion-error](https://www.npmjs.com/package/assertion-error/v/2.0.1)                                                            | 2.0.1   | MIT           | Development | Transitive |
 | [azure-devops-node-api](https://www.npmjs.com/package/azure-devops-node-api/v/12.5.0)                                               | 12.5.0  | MIT           | Development | Transitive |
-| [balanced-match](https://www.npmjs.com/package/balanced-match/v/4.0.4)                                                              | 4.0.4   | MIT           | Development | Transitive |
 | [binaryextensions](https://www.npmjs.com/package/binaryextensions/v/6.11.0)                                                         | 6.11.0  | Artistic-2.0  | Development | Transitive |
 | [boundary](https://www.npmjs.com/package/boundary/v/2.0.0)                                                                          | 2.0.0   | BSD-2-Clause  | Development | Transitive |
-| [brace-expansion](https://www.npmjs.com/package/brace-expansion/v/5.0.12)                                                           | 5.0.12  | MIT           | Development | Transitive |
 | [buffer-crc32](https://www.npmjs.com/package/buffer-crc32/v/0.2.13)                                                                 | 0.2.13  | MIT           | Development | Transitive |
 | [buffer-equal-constant-time](https://www.npmjs.com/package/buffer-equal-constant-time/v/1.0.1)                                      | 1.0.1   | BSD-3-Clause  | Development | Transitive |
 | [bundle-name](https://www.npmjs.com/package/bundle-name/v/4.1.0)                                                                    | 4.1.0   | MIT           | Development | Transitive |
+| [bytestreamjs](https://www.npmjs.com/package/bytestreamjs/v/2.0.1)                                                                  | 2.0.1   | BSD-3-Clause  | Development | Transitive |
 | [call-bind-apply-helpers](https://www.npmjs.com/package/call-bind-apply-helpers/v/1.0.2)                                            | 1.0.2   | MIT           | Development | Transitive |
 | [call-bound](https://www.npmjs.com/package/call-bound/v/1.0.4)                                                                      | 1.0.4   | MIT           | Development | Transitive |
+| [canonicalize](https://www.npmjs.com/package/canonicalize/v/2.1.0)                                                                  | 2.1.0   | Apache-2.0    | Development | Transitive |
 | [chai](https://www.npmjs.com/package/chai/v/6.3.0)                                                                                  | 6.3.0   | MIT           | Development | Transitive |
 | [cockatiel](https://www.npmjs.com/package/cockatiel/v/3.2.1)                                                                        | 3.2.1   | MIT           | Development | Transitive |
 | [convert-source-map](https://www.npmjs.com/package/convert-source-map/v/2.0.0)                                                      | 2.0.0   | MIT           | Development | Transitive |
 | [cross-spawn](https://www.npmjs.com/package/cross-spawn/v/7.0.6)                                                                    | 7.0.6   | MIT           | Development | Transitive |
-| [debug](https://www.npmjs.com/package/debug/v/4.4.3)                                                                                | 4.4.3   | MIT           | Development | Transitive |
 | [deep-is](https://www.npmjs.com/package/deep-is/v/0.1.4)                                                                            | 0.1.4   | MIT           | Development | Transitive |
 | [default-browser](https://www.npmjs.com/package/default-browser/v/5.5.1)                                                            | 5.5.1   | MIT           | Development | Transitive |
 | [default-browser-id](https://www.npmjs.com/package/default-browser-id/v/5.0.1)                                                      | 5.0.1   | MIT           | Development | Transitive |
@@ -347,6 +380,7 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [json-buffer](https://www.npmjs.com/package/json-buffer/v/3.0.1)                                                                    | 3.0.1   | MIT           | Development | Transitive |
 | [json-schema-traverse](https://www.npmjs.com/package/json-schema-traverse/v/0.4.1)                                                  | 0.4.1   | MIT           | Development | Transitive |
 | [json-stable-stringify-without-jsonify](https://www.npmjs.com/package/json-stable-stringify-without-jsonify/v/1.0.1)                | 1.0.1   | MIT           | Development | Transitive |
+| [json-stringify-safe](https://www.npmjs.com/package/json-stringify-safe/v/5.0.1)                                                    | 5.0.1   | ISC           | Development | Transitive |
 | [jsonwebtoken](https://www.npmjs.com/package/jsonwebtoken/v/9.0.3)                                                                  | 9.0.3   | MIT           | Development | Transitive |
 | [jwa](https://www.npmjs.com/package/jwa/v/2.0.1)                                                                                    | 2.0.1   | MIT           | Development | Transitive |
 | [jws](https://www.npmjs.com/package/jws/v/4.0.1)                                                                                    | 4.0.1   | MIT           | Development | Transitive |
@@ -377,11 +411,10 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [marked](https://www.npmjs.com/package/marked/v/18.1.0)                                                                             | 18.1.0  | MIT           | Development | Transitive |
 | [math-intrinsics](https://www.npmjs.com/package/math-intrinsics/v/1.1.0)                                                            | 1.1.0   | MIT           | Development | Transitive |
 | [mime](https://www.npmjs.com/package/mime/v/1.6.0)                                                                                  | 1.6.0   | MIT           | Development | Transitive |
-| [minimatch](https://www.npmjs.com/package/minimatch/v/10.2.6)                                                                       | 10.2.6  | BlueOak-1.0.0 | Development | Transitive |
-| [ms](https://www.npmjs.com/package/ms/v/2.1.3)                                                                                      | 2.1.3   | MIT           | Development | Transitive |
 | [mute-stream](https://www.npmjs.com/package/mute-stream/v/0.0.8)                                                                    | 0.0.8   | ISC           | Development | Transitive |
 | [nanoid](https://www.npmjs.com/package/nanoid/v/3.3.20)                                                                             | 3.3.20  | MIT           | Development | Transitive |
 | [natural-compare](https://www.npmjs.com/package/natural-compare/v/1.4.0)                                                            | 1.4.0   | MIT           | Development | Transitive |
+| [nock](https://www.npmjs.com/package/nock/v/13.5.6)                                                                                 | 13.5.6  | MIT           | Development | Transitive |
 | [object-inspect](https://www.npmjs.com/package/object-inspect/v/1.13.4)                                                             | 1.13.4  | MIT           | Development | Transitive |
 | [obug](https://www.npmjs.com/package/obug/v/2.2.1)                                                                                  | 2.2.1   | MIT           | Development | Transitive |
 | [open](https://www.npmjs.com/package/open/v/10.2.0)                                                                                 | 10.2.0  | MIT           | Development | Transitive |
@@ -396,11 +429,16 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [picocolors](https://www.npmjs.com/package/picocolors/v/1.1.1)                                                                      | 1.1.1   | ISC           | Development | Transitive |
 | [picomatch](https://www.npmjs.com/package/picomatch/v/4.0.7)                                                                        | 4.0.7   | MIT           | Development | Transitive |
 | [pkce-challenge](https://www.npmjs.com/package/pkce-challenge/v/5.0.1)                                                              | 5.0.1   | MIT           | Development | Transitive |
+| [pkijs](https://www.npmjs.com/package/pkijs/v/3.4.3)                                                                                | 3.4.3   | BSD-3-Clause  | Development | Transitive |
 | [postcss](https://www.npmjs.com/package/postcss/v/8.5.29)                                                                           | 8.5.29  | MIT           | Development | Transitive |
 | [prelude-ls](https://www.npmjs.com/package/prelude-ls/v/1.2.1)                                                                      | 1.2.1   | MIT           | Development | Transitive |
+| [propagate](https://www.npmjs.com/package/propagate/v/2.0.1)                                                                        | 2.0.1   | MIT           | Development | Transitive |
 | [punycode](https://www.npmjs.com/package/punycode/v/2.3.1)                                                                          | 2.3.1   | MIT           | Development | Transitive |
+| [pvtsutils](https://www.npmjs.com/package/pvtsutils/v/1.3.6)                                                                        | 1.3.6   | MIT           | Development | Transitive |
+| [pvutils](https://www.npmjs.com/package/pvutils/v/1.2.0)                                                                            | 1.2.0   | MIT           | Development | Transitive |
 | [qs](https://www.npmjs.com/package/qs/v/6.16.0)                                                                                     | 6.16.0  | BSD-3-Clause  | Development | Transitive |
 | [read](https://www.npmjs.com/package/read/v/1.0.7)                                                                                  | 1.0.7   | ISC           | Development | Transitive |
+| [reflect-metadata](https://www.npmjs.com/package/reflect-metadata/v/0.2.2)                                                          | 0.2.2   | Apache-2.0    | Development | Transitive |
 | [rolldown](https://www.npmjs.com/package/rolldown/v/1.2.13)                                                                         | 1.2.13  | MIT           | Development | Transitive |
 | [run-applescript](https://www.npmjs.com/package/run-applescript/v/7.1.0)                                                            | 7.1.0   | MIT           | Development | Transitive |
 | [safe-buffer](https://www.npmjs.com/package/safe-buffer/v/5.2.1)                                                                    | 5.2.1   | MIT           | Development | Transitive |
@@ -424,6 +462,8 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [tinyrainbow](https://www.npmjs.com/package/tinyrainbow/v/3.2.0)                                                                    | 3.2.0   | MIT           | Development | Transitive |
 | [ts-api-utils](https://www.npmjs.com/package/ts-api-utils/v/2.5.0)                                                                  | 2.5.0   | MIT           | Development | Transitive |
 | [tslib](https://www.npmjs.com/package/tslib/v/2.8.1)                                                                                | 2.8.1   | 0BSD          | Development | Transitive |
+| [tsyringe](https://www.npmjs.com/package/tsyringe/v/4.10.0)                                                                         | 4.10.0  | MIT           | Development | Transitive |
+| [tslib](https://www.npmjs.com/package/tslib/v/1.14.1)                                                                               | 1.14.1  | 0BSD          | Development | Transitive |
 | [tunnel](https://www.npmjs.com/package/tunnel/v/0.0.6)                                                                              | 0.0.6   | MIT           | Development | Transitive |
 | [type-check](https://www.npmjs.com/package/type-check/v/0.4.0)                                                                      | 0.4.0   | MIT           | Development | Transitive |
 | [typed-rest-client](https://www.npmjs.com/package/typed-rest-client/v/1.8.11)                                                       | 1.8.11  | MIT           | Development | Transitive |
@@ -433,6 +473,7 @@ These entries come from Playwright's bundled notices and may not appear as stand
 | [url-join](https://www.npmjs.com/package/url-join/v/4.0.1)                                                                          | 4.0.1   | MIT           | Development | Transitive |
 | [version-range](https://www.npmjs.com/package/version-range/v/4.15.0)                                                               | 4.15.0  | Artistic-2.0  | Development | Transitive |
 | [vite](https://www.npmjs.com/package/vite/v/8.3.4)                                                                                  | 8.3.4   | MIT           | Development | Transitive |
+| [webcrypto-core](https://www.npmjs.com/package/webcrypto-core/v/1.9.2)                                                              | 1.9.2   | MIT           | Development | Transitive |
 | [which](https://www.npmjs.com/package/which/v/2.0.2)                                                                                | 2.0.2   | ISC           | Development | Transitive |
 | [why-is-node-running](https://www.npmjs.com/package/why-is-node-running/v/2.3.0)                                                    | 2.3.0   | MIT           | Development | Transitive |
 | [word-wrap](https://www.npmjs.com/package/word-wrap/v/1.2.5)                                                                        | 1.2.5   | MIT           | Development | Transitive |

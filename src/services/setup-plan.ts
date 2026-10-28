@@ -6,6 +6,10 @@
  * Host-agnostic (no `vscode` import) so the CLI can share it; the VS Code extension re-exports
  * this module from `src/extension/plan.ts`.
  */
+import { createHash } from "node:crypto";
+import { slug } from "../domain/text.js";
+import { AliasSchema } from "../domain/agent.js";
+import { DomainError } from "../domain/errors.js";
 import type { AgentCandidate, ApplyPlan } from "./setup-service.js";
 import type { SavePlanInput } from "./setup-protocol.js";
 import { HostAllowlist, isHostPattern } from "../domain/host-pattern.js";
@@ -68,16 +72,11 @@ export function checkDownloadHosts(values: readonly string[]): DownloadHostCheck
  * The alias the panel shows in the approval dialog before `SetupService.apply()` assigns the real
  * one. Display only -- apply() owns uniqueness (and the `-2` suffix on a clash).
  */
-export function previewAlias(displayName: string): string {
-  // Kept in step with `slug()` in src/services/setup-service.ts so the dialog shows the alias the
-  // user will actually get (apply() may still append `-2` to break a collision).
-  const slug = displayName
-    .normalize("NFKC")
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 64);
-  return slug || "agent";
+export function previewAlias(displayName: string, identity = displayName): string {
+  const base = slug(displayName);
+  return base === "agent" && !/[a-z0-9]/i.test(displayName.normalize("NFKC"))
+    ? `agent-${createHash("sha256").update(identity).digest("hex").slice(0, 8)}`
+    : base;
 }
 
 export function buildApplyPlan(input: SavePlanInput, candidates: readonly AgentCandidate[]): BuiltPlan {
@@ -91,6 +90,11 @@ export function buildApplyPlan(input: SavePlanInput, candidates: readonly AgentC
       unknownKeys.push(entry.key);
       continue;
     }
+    if (entry.alias !== undefined && !AliasSchema.safeParse(entry.alias).success)
+      throw new DomainError(
+        "INVALID_ARGUMENT",
+        "Agent alias must be lowercase alphanumeric with optional hyphens and cannot be empty."
+      );
     if (seen.has(candidate.url)) continue;
     seen.add(candidate.url);
     const displayName = entry.displayName?.trim() || candidate.displayName.trim() || candidate.url;
@@ -101,9 +105,10 @@ export function buildApplyPlan(input: SavePlanInput, candidates: readonly AgentC
     // apply() as "" instead of falling back to the registered hint.
     const usageHint =
       entry.usageHint !== undefined ? entry.usageHint.trim() : candidate.registered?.usageHint?.trim();
+    const alias = candidate.registered?.alias ?? entry.alias ?? candidate.suggestedAlias;
     agents.push({
-      url: candidate.url,
-      ...(candidate.registered?.alias ? { alias: candidate.registered.alias } : {}),
+      url: candidate.registered?.entryPointUrl ?? candidate.url,
+      ...(alias ? { alias } : {}),
       displayName,
       description,
       ...(usageHint !== undefined ? { usageHint } : {}),

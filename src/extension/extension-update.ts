@@ -5,14 +5,38 @@ import lockfile from "proper-lockfile";
 import { compareVersions } from "../services/update-checker.js";
 import { downloadExtensionRelease, type ExtensionRelease } from "../services/extension-update.js";
 import { readInstalledExtensionVersion } from "./installed-extension.js";
+import {
+  ATTESTATION_WORKFLOW,
+  verifyExtensionAttestation,
+  type VerifiedExtensionAttestation
+} from "../services/extension-attestation.js";
 
 /** Durable proof, in storage shared by every window, that an exact release finished installing. */
 const RECEIPT_FILE = "installed-release.json";
 
-type Receipt = { tag: string; sha256: string };
+type Receipt = { version: 2; tag: string; sha256: string; attestation: VerifiedExtensionAttestation };
 
 const isReceipt = (value: Receipt | undefined, release: ExtensionRelease): boolean =>
   !!value && value.tag === release.tag && value.sha256 === release.sha256;
+
+function validAttestation(
+  value: unknown,
+  tag: string,
+  sha256: string
+): value is VerifiedExtensionAttestation {
+  if (!value || typeof value !== "object") return false;
+  const proof = value as Record<string, unknown>;
+  return (
+    proof.version === 1 &&
+    proof.tag === tag &&
+    proof.sha256 === sha256 &&
+    proof.workflow === ATTESTATION_WORKFLOW &&
+    typeof proof.sourceCommit === "string" &&
+    /^[a-f0-9]{40}$/.test(proof.sourceCommit) &&
+    typeof proof.verifiedAt === "string" &&
+    Number.isFinite(Date.parse(proof.verifiedAt))
+  );
+}
 
 /** A torn, truncated or hand-edited receipt must never claim that an install happened. */
 function parseReceipt(text: string): Receipt | undefined {
@@ -20,12 +44,14 @@ function parseReceipt(text: string): Receipt | undefined {
     const value = JSON.parse(text) as Record<string, unknown> | null;
     if (
       value &&
+      value.version === 2 &&
       typeof value.tag === "string" &&
       /^[A-Za-z0-9._+-]{1,100}$/.test(value.tag) &&
       typeof value.sha256 === "string" &&
-      /^[a-f0-9]{64}$/.test(value.sha256)
+      /^[a-f0-9]{64}$/.test(value.sha256) &&
+      validAttestation(value.attestation, value.tag, value.sha256)
     )
-      return { tag: value.tag, sha256: value.sha256 };
+      return { version: 2, tag: value.tag, sha256: value.sha256, attestation: value.attestation };
   } catch {
     return undefined;
   }
@@ -68,7 +94,8 @@ export async function installExtensionRelease(
   download = downloadExtensionRelease,
   installedVersionReader: (
     context: vscode.ExtensionContext
-  ) => Promise<string | undefined> = readInstalledExtensionVersion
+  ) => Promise<string | undefined> = readInstalledExtensionVersion,
+  verify: typeof verifyExtensionAttestation = verifyExtensionAttestation
 ): Promise<boolean> {
   const enabled = () => !signal.aborted && active();
   if (!enabled()) return false;
@@ -99,6 +126,12 @@ export async function installExtensionRelease(
     if (receipt && isReceipt(receipt, release) && compareVersions(actual, receipt.tag) === 0) return true;
     const bytes = await download(release, signal);
     if (!enabled()) return false;
+    // SHA-256 transport integrity is insufficient: installation also requires authenticated
+    // provenance for these exact bytes, the official workflow, and this release tag's commit.
+    const attestation = await verify(release, bytes, signal);
+    if (!enabled()) return false;
+    if (!validAttestation(attestation, release.tag, release.sha256))
+      throw new Error("update-attestation-invalid-proof");
     directory = await mkdtemp(path.join(storage, "update-"));
     const file = path.join(directory, release.name);
     await writeFile(file, bytes, { mode: 0o600 });
@@ -109,7 +142,7 @@ export async function installExtensionRelease(
     const againstAfter = compareVersions(after, release.tag);
     if (againstAfter === undefined || againstAfter === 1 || !enabled()) return false;
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(file));
-    await writeReceipt(receiptFile, { tag: release.tag, sha256: release.sha256 });
+    await writeReceipt(receiptFile, { version: 2, tag: release.tag, sha256: release.sha256, attestation });
     return true;
   } finally {
     try {

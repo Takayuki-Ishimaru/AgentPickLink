@@ -27,9 +27,13 @@ export default defineConfig({
     setupFiles: ["tests/setup/isolate-home.ts"],
     globalSetup: ["tests/setup/temp-sweep.ts"],
     environment: "node",
-    maxWorkers: 2,
-    // Windows tests exercise real PowerShell ACL operations; five seconds does not cover setup.
-    testTimeout: process.platform === "win32" ? 60_000 : 5_000,
+    // Native Windows ACL fixtures are I/O/process heavy; one worker also avoids independent
+    // project configs silently multiplying a CLI-level worker limit.
+    maxWorkers: process.platform === "win32" ? 1 : 2,
+    // Windows integration fixtures apply and verify real DACLs in several bounded native
+    // processes. Shared developer machines can need over a minute for that setup alone.
+    // This is the test execution budget; production browser/IPC deadlines remain unchanged.
+    testTimeout: process.platform === "win32" ? 180_000 : 5_000,
     hookTimeout: process.platform === "win32" ? 120_000 : 10_000,
     projects: [
       {

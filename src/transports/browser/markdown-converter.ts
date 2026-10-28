@@ -515,6 +515,13 @@ function renderInline(node: ElementNode, context: Context): string {
       return emphasis(node, context, "~~");
     case "a":
       return link(node, context);
+    case "sup": {
+      const content = renderInlineChildren(node, context);
+      return node.children.some((child) => child.type === "element" && child.name === "a") &&
+        /^\[?\d+\]?$/.test(textContent(node, "").trim())
+        ? ` ${content}`
+        : content;
+    }
     case "math": {
       const tex = texAnnotation(node);
       return tex !== undefined ? `$${tex}$` : textContent(node, " ");

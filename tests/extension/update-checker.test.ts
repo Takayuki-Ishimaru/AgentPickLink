@@ -50,6 +50,16 @@ describe("GitHub release notifications", () => {
     expect(newestRelease({}, "0.1.0")).toBeUndefined();
   });
 
+  it("filters both prerelease metadata and SemVer prereleases in the stable channel", () => {
+    const releases = [
+      { ...release("v1.0.0"), prerelease: false },
+      { ...release("v2.0.0-beta.1"), prerelease: false },
+      release("v3.0.0")
+    ];
+    expect(newestRelease(releases, "0.1.0", "stable")?.tag).toBe("v1.0.0");
+    expect(newestRelease(releases, "0.1.0", "beta")?.tag).toBe("v3.0.0");
+  });
+
   function harness() {
     const store = new Map<string, string>();
     return {

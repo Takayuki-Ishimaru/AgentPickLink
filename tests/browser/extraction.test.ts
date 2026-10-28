@@ -55,6 +55,23 @@ describe("browser response extraction helpers", () => {
     expect(result.truncated).toBe(true);
     expect(result.text).toBe("😀😀😀");
   });
+  it("uses displayed citation numbers when a descriptive link precedes the same numbered source", () => {
+    const result = normalizeCitations([
+      { title: "First source", url: "https://a.example/" },
+      { title: "1", marker: "1", index: 1, url: "https://a.example/" },
+      { title: "Second source", url: "https://b.example/" },
+      { title: "2", marker: "2", index: 2, url: "https://b.example/" }
+    ]);
+    expect(result.map((item) => [item.index, item.title])).toEqual([
+      [1, "First source"],
+      [2, "Second source"]
+    ]);
+    expect(
+      htmlToMarkdown(
+        '<p><a href="https://a.example/">First source</a><sup><a href="https://a.example/">1</a></sup></p>'
+      )
+    ).toBe("[First source](https://a.example/) [1](https://a.example/)");
+  });
 
   it("targets current M365 Copilot replies without accepting generic articles", async () => {
     const extractor = new ResponseExtractor();

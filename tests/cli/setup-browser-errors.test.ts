@@ -71,3 +71,43 @@ it("does not submit again after a 403", async () => {
   await f.window.aplBrowser.postMessage({ type: "save" });
   expect(f.fetch).toHaveBeenCalledTimes(2);
 });
+
+it("keeps the success notice when the save connection closes after the completed state", async () => {
+  const notice = { textContent: "" };
+  let deliver!: (value: { value?: Uint8Array; done: boolean }) => void;
+  let fail!: (reason: Error) => void;
+  const reader = {
+    read: () =>
+      new Promise<{ value?: Uint8Array; done: boolean }>((resolve) => {
+        deliver = resolve;
+      })
+  };
+  const window = { aplSession: "secret" } as unknown as {
+    aplBrowser: {
+      postMessage(message: unknown): Promise<void>;
+      onMessage(fn: (message: unknown) => void): void;
+    };
+  };
+  const fetch = vi.fn((url: string) =>
+    url === "/events"
+      ? Promise.resolve({ ok: true, body: { getReader: () => reader } })
+      : new Promise((_resolve, reject) => {
+          fail = reject;
+        })
+  );
+  vm.runInNewContext(script, { window, document: { getElementById: () => notice }, fetch, TextDecoder });
+  window.aplBrowser.onMessage(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = window.aplBrowser.postMessage({ type: "save" });
+  deliver({
+    value: new TextEncoder().encode('data: {"type":"state","state":{"phase":"done"}}\n\n'),
+    done: false
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  fail(new Error("closed"));
+  await request;
+  expect(notice.textContent).not.toContain("result unknown");
+  deliver({ done: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(notice.textContent).toContain("Setup completed");
+});

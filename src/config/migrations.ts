@@ -23,13 +23,11 @@ const CODE: Record<StoreKind, ErrorCode> = {
 };
 
 const REMEDIATION: Record<StoreKind, string> = {
-  "global-config": "Restore config.yaml from a version-1 backup, or delete it and run: m365-agent init",
+  "global-config": "Restore config.yaml from a version-1 backup, or delete it and run: apl init",
   registry:
-    "Restore agents.yaml from a version-1 backup, or delete it and re-register agents with: m365-agent agent add",
-  approvals:
-    "Restore approvals.json from a version-1 backup, or delete it and re-run: m365-agent workspace approve",
-  "workspace-config":
-    "Restore .m365-agents.json from a version-1 backup, or re-run: m365-agent workspace configure"
+    "Restore agents.yaml from a version-1 backup, or delete it and re-register agents with: apl agent add",
+  approvals: "Restore approvals.json from a version-1 backup, or delete it and re-run: apl workspace approve",
+  "workspace-config": "Restore .m365-agents.json from a version-1 backup, or re-run: apl workspace configure"
 };
 
 /**

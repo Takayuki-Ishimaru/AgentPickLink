@@ -303,12 +303,32 @@ async function createArchive({
   await rm(archivePath, { force: true });
   if (outputExt === "zip") {
     if (!isWindows && (await commandExists("zip"))) {
-      await execFileAsync("zip", ["-rq", archivePath, folderName], { cwd: stageParent });
+      await execFileAsync("zip", ["-rqX", archivePath, folderName], { cwd: stageParent });
     } else {
       await execFileAsync(tarCommand, ["-a", "-cf", archivePath, folderName], { cwd: stageParent });
     }
   } else {
-    await execFileAsync(tarCommand, ["czf", archivePath, folderName], { cwd: stageParent });
+    // Never ship the build user's identity, ACLs, or macOS provenance/AppleDouble metadata.
+    const metadataOptions =
+      process.platform === "linux"
+        ? ["--owner=0", "--group=0", "--numeric-owner", "--no-xattrs", "--no-acls"]
+        : [
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--uname",
+            "root",
+            "--gname",
+            "root",
+            "--no-xattrs",
+            "--no-acls",
+            ...(process.platform === "darwin" ? ["--no-mac-metadata"] : [])
+          ];
+    await execFileAsync(tarCommand, [...metadataOptions, "-czf", archivePath, folderName], {
+      cwd: stageParent,
+      env: { ...process.env, COPYFILE_DISABLE: "1", COPY_EXTENDED_ATTRIBUTES_DISABLE: "1" }
+    });
   }
   return archivePath;
 }

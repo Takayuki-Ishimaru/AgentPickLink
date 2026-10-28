@@ -132,8 +132,7 @@ export function createDefaultCliApi(): CliApi {
           case "status":
             return runSelfStatus(deps, options);
           case "use":
-            if (!options?.version)
-              throw new Error("self use requires a version: m365-agent self use <version>");
+            if (!options?.version) throw new Error("self use requires a version: apl self use <version>");
             return runSelfUse(deps, options.version, options);
           case "prune":
             return runSelfPrune(deps, options);

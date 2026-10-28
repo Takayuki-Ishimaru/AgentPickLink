@@ -8,7 +8,8 @@ import {
 import { DomainError } from "../../domain/errors.js";
 import { updateRegistry } from "../../config/registry.js";
 import { assertSupportedTopology } from "../../services/workspace-service.js";
-import { pathPattern, slug } from "../../domain/text.js";
+import { previewAlias } from "../../services/setup-plan.js";
+import { pathPattern } from "../../domain/text.js";
 import type { CapturedAgent } from "../../transports/transport.js";
 import type { CommandDeps } from "../command-deps.js";
 
@@ -103,9 +104,9 @@ async function promptAgentMetadata(
       "INVALID_ARGUMENT",
       "Agent registration needs an interactive terminal or M365_AGENT_ALIAS and M365_AGENT_CAPABILITY_CLASS."
     );
+  const suggestedAlias = previewAlias(candidate.displayName, candidate.stableAgentId ?? candidate.url);
   const aliasValue =
-    env.M365_AGENT_ALIAS ??
-    ((await prompter.question(`Alias [${slug(candidate.displayName)}]: `)) || slug(candidate.displayName));
+    env.M365_AGENT_ALIAS ?? ((await prompter.question(`Alias [${suggestedAlias}]: `)) || suggestedAlias);
   const aliasResult = AliasSchema.safeParse(aliasValue);
   if (!aliasResult.success)
     throw new DomainError(

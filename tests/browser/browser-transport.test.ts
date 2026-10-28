@@ -564,6 +564,9 @@ describe("BrowserTransport conversation creation", () => {
     await transport.dispose();
   });
 
+  // The login deadline includes Windows real-ACL profile preparation before the fixture opens.
+  const loginBudget = process.platform === "win32" ? 60_000 : 5_000;
+
   it("invalidates open conversations when an interactive sign-in resets the hidden context", async () => {
     const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
     const transport = await makeTransport(fixtureAdapter(events, true));
@@ -576,7 +579,7 @@ describe("BrowserTransport conversation creation", () => {
       conversationHandle: "conv_reset"
     });
 
-    await expect(transport.login(5_000)).resolves.toMatchObject({ authenticated: true });
+    await expect(transport.login(loginBudget)).resolves.toMatchObject({ authenticated: true });
 
     expect(crashes).toBe(1);
     await expect(transport.invoke(conversation, { message: "hello" })).rejects.toMatchObject({
@@ -589,12 +592,12 @@ describe("BrowserTransport conversation creation", () => {
     const transport = await makeTransport(
       fixtureAdapter({ started: 0, verified: 0, filled: 0, submitted: 0 }, true)
     );
-    const pending = transport.login(5_000);
+    const pending = transport.login(loginBudget);
     const rejected = expect(pending).rejects.toMatchObject({ code: "AUTH_FAILED" });
     try {
       await expect(transport.cancelLogin()).resolves.toEqual({ cancelled: true });
       await rejected;
-      await expect(transport.login(5_000)).resolves.toMatchObject({ authenticated: true });
+      await expect(transport.login(loginBudget)).resolves.toMatchObject({ authenticated: true });
     } finally {
       await transport.dispose();
     }
@@ -616,11 +619,11 @@ describe("BrowserTransport conversation creation", () => {
     const second: string[] = [];
     try {
       const results = await Promise.all([
-        transport.login(5_000, (event) => {
+        transport.login(loginBudget, (event) => {
           first.push(event.phase);
           throw new Error("disconnected");
         }),
-        transport.login(30_000, (event) => second.push(event.phase))
+        transport.login(process.platform === "win32" ? 90_000 : 30_000, (event) => second.push(event.phase))
       ]);
       expect(results).toEqual([
         { authenticated: true, state: "authenticated" },
@@ -938,79 +941,92 @@ describe("BrowserTransport reading a conversation (v0.2.8 review 2026-10-10)", (
     return { adapter, show: () => (shown = true) };
   }
 
-  it("reads the outcome of an unacknowledged ask without typing or pressing anything", async () => {
-    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
-    const { adapter, show } = slowPage(events);
-    const transport = await makeTransport(adapter);
-    const conversation = await transport.createConversation(agent, {
-      workspaceKey: "workspace",
-      conversationHandle: "conv_read"
-    });
-    await expect(transport.invoke(conversation, { message: ask })).rejects.toMatchObject({
-      code: "SUBMIT_STATE_UNKNOWN",
-      retryable: false,
-      options: { submissionState: "unknown" }
-    });
-    expect(events).toMatchObject({ filled: 1, submitted: 1 });
-    show();
-    await expect(transport.readConversation(conversation, {})).resolves.toEqual({
-      message: "shown",
-      reply: "complete",
-      response: { text: "answer", citations: [], actionRequired: false, truncated: false, attachments: [] }
-    });
-    // Reading never types or presses.
-    expect(events).toMatchObject({ filled: 1, submitted: 1 });
-    const health = await transport.healthCheck();
-    expect(health.correlations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ phase: "invoke", decision: "unconfirmed", usersNow: 0 }),
-        expect.objectContaining({
-          phase: "read",
-          decision: "shown",
-          usersNow: 1,
-          reason: "confirmed-user-anchor"
-        })
-      ])
-    );
-    expect(JSON.stringify(health.correlations)).not.toContain(ask);
-    expect(health.correlations!.every((item) => item.user === null || /^[0-9a-f]{16}$/.test(item.user))).toBe(
-      true
-    );
-    await transport.dispose();
-  }, 20_000);
+  it(
+    "reads the outcome of an unacknowledged ask without typing or pressing anything",
+    async () => {
+      const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+      const { adapter, show } = slowPage(events);
+      const transport = await makeTransport(adapter);
+      const conversation = await transport.createConversation(agent, {
+        workspaceKey: "workspace",
+        conversationHandle: "conv_read"
+      });
+      await expect(transport.invoke(conversation, { message: ask })).rejects.toMatchObject({
+        code: "SUBMIT_STATE_UNKNOWN",
+        retryable: false,
+        options: { submissionState: "unknown" }
+      });
+      expect(events).toMatchObject({ filled: 1, submitted: 1 });
+      show();
+      await expect(transport.readConversation(conversation, {})).resolves.toEqual({
+        message: "shown",
+        reply: "incomplete",
+        partialResponse: { text: "answer", citations: [] }
+      });
+      await expect(transport.readConversation(conversation, { waitMs: 1000 })).resolves.toEqual({
+        message: "shown",
+        reply: "complete",
+        response: { text: "answer", citations: [], actionRequired: false, truncated: false, attachments: [] }
+      });
+      // Reading never types or presses.
+      expect(events).toMatchObject({ filled: 1, submitted: 1 });
+      const health = await transport.healthCheck();
+      expect(health.correlations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ phase: "invoke", decision: "unconfirmed", usersNow: 0 }),
+          expect.objectContaining({
+            phase: "read",
+            decision: "shown",
+            usersNow: 1,
+            reason: "confirmed-user-anchor"
+          })
+        ])
+      );
+      expect(JSON.stringify(health.correlations)).not.toContain(ask);
+      expect(
+        health.correlations!.every((item) => item.user === null || /^[0-9a-f]{16}$/.test(item.user))
+      ).toBe(true);
+      await transport.dispose();
+    },
+    process.platform === "win32" ? 60_000 : 20_000
+  );
 
   // Independent review of the 2026-10-10 fixes: a read judges the last message typed into the
   // conversation, and says which ask that was. An ask that ends before typing anything (here,
   // cancelled before it began) must not replace the record of an earlier, unacknowledged one.
-  it("judges the last message typed, naming its ask, and keeps it over an ask that typed nothing", async () => {
-    const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
-    const { adapter, show } = slowPage(events);
-    const transport = await makeTransport(adapter);
-    const conversation = await transport.createConversation(agent, {
-      workspaceKey: "workspace",
-      conversationHandle: "conv_order"
-    });
-    await expect(
-      transport.invoke(conversation, { message: ask, requestId: "req_first" })
-    ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
-    const cancelled = new AbortController();
-    cancelled.abort();
-    await expect(
-      transport.invoke(conversation, {
-        message: "A different question",
-        requestId: "req_second",
-        signal: cancelled.signal
-      })
-    ).rejects.toMatchObject({ options: { submissionState: "not-sent" } });
-    expect(events).toMatchObject({ filled: 1, submitted: 1 });
-    show();
-    await expect(transport.readConversation(conversation, {})).resolves.toMatchObject({
-      message: "shown",
-      messageRequestId: "req_first",
-      reply: "complete"
-    });
-    await transport.dispose();
-  }, 20_000);
+  it(
+    "judges the last message typed, naming its ask, and keeps it over an ask that typed nothing",
+    async () => {
+      const events = { started: 0, verified: 0, filled: 0, submitted: 0 };
+      const { adapter, show } = slowPage(events);
+      const transport = await makeTransport(adapter);
+      const conversation = await transport.createConversation(agent, {
+        workspaceKey: "workspace",
+        conversationHandle: "conv_order"
+      });
+      await expect(
+        transport.invoke(conversation, { message: ask, requestId: "req_first" })
+      ).rejects.toMatchObject({ code: "SUBMIT_STATE_UNKNOWN" });
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await expect(
+        transport.invoke(conversation, {
+          message: "A different question",
+          requestId: "req_second",
+          signal: cancelled.signal
+        })
+      ).rejects.toMatchObject({ options: { submissionState: "not-sent" } });
+      expect(events).toMatchObject({ filled: 1, submitted: 1 });
+      show();
+      await expect(transport.readConversation(conversation, { waitMs: 1000 })).resolves.toMatchObject({
+        message: "shown",
+        messageRequestId: "req_first",
+        reply: "complete"
+      });
+      await transport.dispose();
+    },
+    process.platform === "win32" ? 60_000 : 20_000
+  );
 
   it("has nothing to judge in a conversation no message was entered in", async () => {
     const events = { started: 0, verified: 0, filled: 0, submitted: 0 };

@@ -41,9 +41,35 @@ export class PolicyService {
   /** §28.3 fail-fast order. Throws the first DomainError that applies; never starts a browser. */
   async authorize(root: string, alias: string): Promise<AuthorizedAgent> {
     const workspace = await this.loadWorkspace(root);
-    if (!workspace.config.agents.some((item) => item.alias === alias))
-      throw new DomainError("AGENT_NOT_ASSIGNED", "The requested agent is not assigned to this workspace.");
     const { agents, approvals } = await this.load();
+    if (!workspace.config.agents.some((item) => item.alias === alias)) {
+      // Only names already visible in the approved public roster may resolve a selection.
+      // Never disclose names or eligibility of unapproved or globally registered agents.
+      const matches: BrowserAgentDefinition[] = [];
+      for (const requested of workspace.config.agents) {
+        try {
+          const candidate = agents.assertEligible(requested.alias);
+          approvals.assertApproved(workspace, candidate);
+          if (candidate.displayName === alias) matches.push(candidate);
+        } catch {
+          /* keep the same privacy boundary as roster() */
+        }
+      }
+      if (matches.length === 1) return { workspace, agent: matches[0]! };
+      const choices = (matches.length ? matches : workspace.config.agents).map((item) => item.alias);
+      throw new DomainError(
+        matches.length > 1 ? "INVALID_ARGUMENT" : "AGENT_NOT_ASSIGNED",
+        matches.length > 1
+          ? "The display name matches more than one approved agent. Select an alias."
+          : "The requested agent is not assigned to this workspace.",
+        false,
+        {
+          remediation: choices.length
+            ? `Call m365_agent_list and select an assigned alias: ${choices.join(", ")}.`
+            : "Configure agents for this workspace with AgentPickLink setup."
+        }
+      );
+    }
     const agent = agents.assertEligible(alias);
     approvals.assertApproved(workspace, agent);
     return { workspace, agent };
@@ -75,7 +101,7 @@ export class PolicyService {
     const { agents: agentService, approvals } = await this.load();
     const agents = workspace.config.agents.map((requested) => {
       const remediation =
-        "Open the AgentPickLink panel in VS Code, review the selected agents, and press Save to approve this workspace. For diagnostics, run AgentPickLink: Copy diagnostics from the command palette.";
+        "Review and approve the selected agents in AgentPickLink setup. For a portable installation, rerun apl-setup with this workspace's path; in VS Code, use the AgentPickLink panel's Save action.";
       try {
         const candidate = agentService.assertEligible(requested.alias);
         approvals.assertApproved(workspace, candidate);

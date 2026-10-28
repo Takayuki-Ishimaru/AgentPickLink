@@ -202,7 +202,7 @@ describe("MCP SDK v2 integration", () => {
 
     const badAlias = await client.callTool({
       name: "m365_agent_ask",
-      arguments: { agent: "NOT-A-VALID-ALIAS!!", message: "hello" }
+      arguments: { agent: "invalid\u0000selection", message: "hello" }
     });
     expect(badAlias.isError).toBe(true);
     expect(badAlias.structuredContent).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT" } });

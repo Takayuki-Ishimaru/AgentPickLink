@@ -164,25 +164,29 @@ describe.skipIf(!executable || !!process.env.CI)("session-preserving launcher", 
     45_000
   );
 
-  it("rejects the handoff when native hiding fails", async () => {
-    const profile = await mkdtemp(path.join(os.tmpdir(), "apl-hide-failed-"));
-    const launcher = createBrowserLauncher(chromium, async () => {
-      throw new Error("native hide failed");
-    });
-    let context: BrowserContextLike | undefined;
-    try {
-      context = await launcher.launchInteractiveContext!(
-        profile,
-        {
-          executablePath: executable,
-          timeout: 15_000
-        },
-        { headless: true, acceptDownloads: false }
-      );
-      await expect(context.completeInteractiveLogin!()).rejects.toThrow("native hide failed");
-    } finally {
-      await context?.close();
-      await rm(profile, { recursive: true, force: true });
-    }
-  }, 30_000);
+  it.skipIf(!HEADED)(
+    "rejects the handoff when native hiding fails",
+    async () => {
+      const profile = await mkdtemp(path.join(os.tmpdir(), "apl-hide-failed-"));
+      const launcher = createBrowserLauncher(chromium, async () => {
+        throw new Error("native hide failed");
+      });
+      let context: BrowserContextLike | undefined;
+      try {
+        context = await launcher.launchInteractiveContext!(
+          profile,
+          {
+            executablePath: executable,
+            timeout: 15_000
+          },
+          { headless: true, acceptDownloads: false }
+        );
+        await expect(context.completeInteractiveLogin!()).rejects.toThrow("native hide failed");
+      } finally {
+        await context?.close();
+        await rm(profile, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
 });

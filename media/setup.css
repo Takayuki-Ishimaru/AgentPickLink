@@ -240,6 +240,7 @@ button:disabled {
   cursor: default;
 }
 
+input:not([type]),
 input[type="text"],
 input[type="search"],
 input[type="number"],

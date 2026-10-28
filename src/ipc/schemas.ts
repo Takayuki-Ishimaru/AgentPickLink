@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AliasSchema } from "../domain/agent.js";
 import { DomainError } from "../domain/errors.js";
-import { isSendableMessage } from "../domain/text.js";
+import { isAgentSelection, isSendableMessage } from "../domain/text.js";
 const RequestIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 export const IpcEnvelopeSchema = z
   .object({
@@ -36,7 +36,7 @@ export const BrokerMethodSchemas = {
   "workspace.list": WorkspaceSchema,
   "conversation.create": WorkspaceSchema.extend({ agent: AliasSchema }).strict(),
   "conversation.invoke": WorkspaceSchema.extend({
-    agent: AliasSchema,
+    agent: z.string().refine(isAgentSelection),
     // The same rule as the MCP argument check: 1-12000 code points, not whitespace alone.
     message: z.string().refine(isSendableMessage),
     conversationHandle: ConversationHandleSchema.optional(),
@@ -47,7 +47,10 @@ export const BrokerMethodSchemas = {
   "conversation.close": WorkspaceSchema.extend({ conversationHandle: ConversationHandleSchema }).strict(),
   "conversation.closeAllForWorkspace": WorkspaceSchema,
   /** Minor 5: reads a conversation of this workspace without sending anything. */
-  "conversation.read": WorkspaceSchema.extend({ conversationHandle: ConversationHandleSchema }).strict()
+  "conversation.read": WorkspaceSchema.extend({
+    conversationHandle: ConversationHandleSchema,
+    waitMs: z.number().int().min(0).max(300000).optional()
+  }).strict()
 } as const;
 export type BrokerMethod = keyof typeof BrokerMethodSchemas;
 export function parseMethod(

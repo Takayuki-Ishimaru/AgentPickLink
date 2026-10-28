@@ -266,6 +266,15 @@ describe("host-agnostic setup flow", () => {
     expect(written.servers["m365-agents"].command).toBe("${userHome}/bin/node");
   });
 
+  it("rejects an empty alias before the approval dialog or any save", async () => {
+    const { host, service, controller } = await createHarness();
+    await controller.runSetup();
+    await controller.save(savePlan({ agents: [{ key: "agent-hr", alias: "" }] }));
+    expect(host.confirmed).toHaveLength(0);
+    expect(service.appliedPlans).toHaveLength(0);
+    expect(host.last().error?.code).toBe("INVALID_ARGUMENT");
+  });
+
   it("asks before widening the machine-wide capability allowance, and a decline aborts the save", async () => {
     const { host, service, controller } = await createHarness();
     service.status_ = setupStatus({
@@ -348,6 +357,13 @@ describe("host-agnostic setup flow", () => {
       failedCount: 1,
       failedCountKnown: false
     });
+  });
+
+  it("respects a clean service verdict even when the store is unavailable", async () => {
+    const { host, service, controller } = await createHarness();
+    service.discovery = { candidates: [], warnings: ["store-unavailable"], partial: false };
+    await controller.runSetup();
+    expect(host.last().discoverySummary?.partial).toBe(false);
   });
 
   it("falls back to the warning-text heuristic when the service reports no partial verdict", async () => {

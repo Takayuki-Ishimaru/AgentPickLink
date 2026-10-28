@@ -84,6 +84,7 @@
       broker: "ブローカー",
       browser: "ブラウザー",
       workspace: "ワークスペース",
+      alias: "別名",
       platform: "プラットフォーム",
       running: "起動中",
       stopped: "停止",
@@ -214,6 +215,7 @@
       broker: "Broker",
       browser: "Browser",
       workspace: "Workspace",
+      alias: "Alias",
       platform: "Platform",
       running: "running",
       stopped: "stopped",
@@ -475,6 +477,9 @@
             ? strings.workspaceApprovalRequired
             : strings.workspacePending
       }),
+      status && status.workspace.root
+        ? h("p", { class: "muted", text: strings.workspace + ": " + status.workspace.root })
+        : null,
       h("p", { class: "muted", text: approved ? strings.updatingSummary : "" })
     );
   }
@@ -840,6 +845,18 @@
         "div",
         { class: "agent-body" },
         h("span", { class: "agent-url", text: candidate.url }),
+        h("label", { for: "alias-" + key, text: strings.alias }),
+        h("input", {
+          id: "alias-" + key,
+          value:
+            local.edits[key] && local.edits[key].alias !== undefined
+              ? local.edits[key].alias
+              : (candidate.registered && candidate.registered.alias) || candidate.suggestedAlias || "",
+          disabled: !!candidate.registered,
+          oninput: function (event) {
+            edit(key).alias = event.target.value;
+          }
+        }),
         h("label", { for: "usage-" + key, text: strings.usageHint }),
         h(
           "textarea",
@@ -929,7 +946,7 @@
             class: "notice notice--partial",
             role: "status",
             text:
-              state.discoverySummary.failedCountKnown === false
+              state.discoverySummary.failedCountKnown === false || !state.discoverySummary.failedCount
                 ? strings.discoveryPartialNoticeUnknown
                 : strings.discoveryPartialNotice.replace(
                     "{count}",
@@ -1235,6 +1252,11 @@
       if (!local.selected.has(candidate.key)) return;
       agents.push({
         key: candidate.key,
+        alias: candidate.registered
+          ? candidate.registered.alias
+          : local.edits[candidate.key] && local.edits[candidate.key].alias !== undefined
+            ? local.edits[candidate.key].alias
+            : candidate.suggestedAlias,
         usageHint: candidateUsageHint(candidate),
         actionsPossible: candidateActions(candidate)
       });

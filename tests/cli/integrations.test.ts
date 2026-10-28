@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   fileFor,
   resolveStandaloneDefinition,
+  snippetFor,
   runIntegrationsRemove,
   runIntegrationsSnippet,
   runIntegrationsStatus,
@@ -186,7 +187,7 @@ describe("integrations remove", () => {
 });
 
 describe("integrations snippet", () => {
-  it("renders a vendor one-liner for codex and claude, and a file entry for vscode/vscode-workspace/claude-project", async () => {
+  it("renders raw client snippets, including the Codex timeouts and Claude vendor command", async () => {
     const paths = await makeTempPaths();
     const osHome = await makeOsHome();
     const { deps } = makeCommandDeps({ paths, homedir: () => osHome });
@@ -195,21 +196,37 @@ describe("integrations snippet", () => {
       client: "vscode,vscode-workspace,claude,claude-project,codex"
     });
 
-    expect(snippets.codex).toMatch(/^codex mcp add m365-agents --/);
-    // §4.4: the vendor CLI's own blessed form -- the JSON is one argv element -- plus a fallback
-    // JSON block (not a single-quoted shell one-liner, which is not valid cmd.exe/PowerShell
-    // syntax) for Windows.
+    expect(snippets.codex).toContain("[mcp_servers.m365-agents]");
+    expect(snippets.codex).toContain("startup_timeout_sec = 60");
+    expect(snippets.codex).toContain("tool_timeout_sec = 900");
+    expect(snippets.codex).toContain("M365_AGENT_MANAGED");
+    expect(snippets.codex).toContain("M365_AGENT_BUILD");
     const claudeSnippet = snippets.claude as string;
-    expect(claudeSnippet).toMatch(/^claude mcp add-json m365-agents '.*' --scope user/);
-    // The one-liner's own JSON argument is compact (no embedded newline); the pretty-printed
-    // fallback block is the only thing starting a line with "{".
-    const pretty = claudeSnippet.slice(claudeSnippet.indexOf("\n{") + 1);
-    expect(JSON.parse(pretty).command).toBeTruthy();
+    if (process.platform === "win32") {
+      expect(claudeSnippet).toMatch(/^# PowerShell\nclaude mcp add m365-agents --scope user/);
+      expect(claudeSnippet).toContain("-e M365_AGENT_MANAGED=1");
+      expect(claudeSnippet).toContain("-e M365_AGENT_BUILD=");
+    } else expect(claudeSnippet).toMatch(/^claude mcp add-json m365-agents '.*' --scope user/);
     // vscode/vscode-workspace share the same JSON shape today (neither carries a cwd any more).
     expect(JSON.parse(snippets.vscode as string).servers["m365-agents"]).toBeTruthy();
     expect(JSON.parse(snippets["vscode-workspace"] as string).servers["m365-agents"]).toBeTruthy();
     // claude-project uses Claude Code's own container key, with no vendor-CLI one-liner.
     expect(JSON.parse(snippets["claude-project"] as string).mcpServers["m365-agents"]).toBeTruthy();
+  });
+
+  it("prints a PowerShell-safe Claude user command on Windows", async () => {
+    const definition = {
+      command: "C:\\Program Files\\Agent Pick Link\\node.exe",
+      args: ["C:\\Users\\test user\\bin\\apl.js", "serve"],
+      env: { M365_AGENT_MANAGED: "1", M365_AGENT_BUILD: "build-1", M365_AGENT_CUSTOM: "value;$x" }
+    };
+    const snippet = snippetFor("claude-user", definition, "win32");
+    expect(snippet).toContain("claude mcp add m365-agents --scope user");
+    expect(snippet).toContain("-e M365_AGENT_MANAGED=1");
+    expect(snippet).toContain("-e 'M365_AGENT_CUSTOM=value;$x'");
+    expect(snippet).toContain(
+      "-- 'C:\\Program Files\\Agent Pick Link\\node.exe' 'C:\\Users\\test user\\bin\\apl.js' serve"
+    );
   });
 });
 

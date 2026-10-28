@@ -377,7 +377,7 @@ export class ConversationDriver {
   /**
    * Reads the conversation without sending anything (m365_agent_session action=read): whether the
    * last message entered in it (`request.entered`) is shown there, and the reply to the latest user
-   * message, waiting for it to start (responseStartTimeoutMs) and to finish within the request's
+   * message. waitMs=0 snapshots it; an explicit positive wait waits for it to start and finish within the request's
    * budget, then collected like an invocation's reply. The context checks of a submission apply:
    * the page must still show the agent the conversation was opened with. A message whose submission
    * was uncertain gets the acknowledgement time once more, counted from the end of its request, to
@@ -393,7 +393,9 @@ export class ConversationDriver {
     request: BrowserReadRequest
   ): Promise<ConversationReading> {
     const started = Date.now();
-    const deadline = started + (request.timeoutMs ?? 300_000);
+    const snapshot = request.waitMs === 0;
+    // A snapshot must not silently enter the missing-identity-name grace period either.
+    const deadline = started + (snapshot ? 0 : (request.waitMs ?? request.timeoutMs ?? 300_000));
     const report = this.reporter(request.onProgress, started);
     const { assertPostSubmitContext } = this.contextChecks(page, agent, adapter, {
       signal: request.signal,
@@ -450,7 +452,7 @@ export class ConversationDriver {
       const shown = (judgement: ReturnType<typeof judge>) => judgement === "shown" || judgement === "differs";
       let exchange = await capture();
       let judgement = judge(exchange);
-      if (entered.state !== "not-sent" && !shown(judgement)) {
+      if (!snapshot && entered.state !== "not-sent" && !shown(judgement)) {
         exchange = await watch(
           exchange,
           (current) => shown(judge(current)),
@@ -496,6 +498,7 @@ export class ConversationDriver {
           : undefined;
       };
       if (!replyAnchor(exchange)) {
+        if (snapshot) return { message, ...about, reply: "none" };
         report("waiting-response", "Waiting for the agent to start responding");
         exchange = await watch(
           exchange,
@@ -534,6 +537,22 @@ export class ConversationDriver {
       };
       let reply: CollectedReply;
       try {
+        if (snapshot) {
+          // A single observation cannot establish that generation has finished. Return only the
+          // correlated text, never wait for stability or downloads, and retain the conversation.
+          const partial = await adapter.extractLatestResponse(page, {
+            assistantCount: exchange.assistantCount,
+            digest: exchange.digest,
+            turn: anchor
+          });
+          await assertReplyContext();
+          return {
+            message,
+            ...about,
+            reply: "incomplete",
+            ...(partial.text ? { partialResponse: { text: partial.text, citations: partial.citations } } : {})
+          };
+        }
         reply = await this.collectReply(
           {
             page,

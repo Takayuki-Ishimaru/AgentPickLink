@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runAgentAdd } from "../../src/cli/commands/agent-add.js";
+import { previewAlias } from "../../src/services/setup-plan.js";
 import { loadRegistry } from "../../src/config/registry.js";
 import {
   capturedAgent,
@@ -70,6 +71,33 @@ describe("agent add", () => {
     const result = await runAgentAdd(deps, { url: "https://m365.cloud.microsoft/chat/requirements" });
 
     expect(result).toMatchObject({ added: true, enabled: true, verificationStatus: "verified" });
+  });
+
+  it("suggests a stable hash alias for a Japanese display name", async () => {
+    const paths = await makeTempPaths();
+    const candidate = capturedAgent({ displayName: "営業資料アシスタント", stableAgentId: "agent-42" });
+    const broker = makeFakeBrokerClient({ "agent.inspectUrl": candidate });
+    const prompter = makeScriptedPrompter({
+      questionAnswers: {
+        [`Alias [${previewAlias(candidate.displayName, candidate.stableAgentId)}]: `]: "",
+        [`Local display name [${candidate.displayName}]: `]: "",
+        "Kind (m365-agent-builder/sharepoint-agent/copilot-studio): ": "m365-agent-builder",
+        "Capability (knowledge-only/actions-possible/unknown): ": "knowledge-only",
+        "Description (optional): ": "",
+        "Usage hint (optional): ": ""
+      }
+    });
+    const { deps } = makeCommandDeps({
+      paths,
+      env: {},
+      prompter,
+      connectOrStartDefaultBroker: async () => broker as never
+    });
+
+    const result = await runAgentAdd(deps, { url: candidate.url });
+
+    expect(prompter.questionCalls[0]).toContain(`Alias [${previewAlias(candidate.displayName, "agent-42")}]`);
+    expect(result).toMatchObject({ alias: previewAlias(candidate.displayName, "agent-42") });
   });
 
   it("registration requires an interactive terminal or M365_AGENT_ALIAS when metadata is not scripted", async () => {

@@ -10,9 +10,11 @@ export { assertNever };
  * `conversation.invoke`, and `conversationHandle` on a failed invoke that left its conversation
  * open; a client calls `conversation.read` only when the negotiated minor is at least
  * `BROKER_READ_MINOR`. */
-export const BROKER_PROTOCOL = { major: 1, minor: 5 } as const;
+export const BROKER_PROTOCOL = { major: 1, minor: 6 } as const;
 export const BROKER_CANCEL_MINOR = 4;
 export const BROKER_READ_MINOR = 5;
+/** Minor 6 makes reads immediate snapshots by default and adds an explicit waitMs budget. */
+export const BROKER_SNAPSHOT_READ_MINOR = 6;
 export const BROKER_CAPABILITIES = ["conversation", "workspace-policy", "interactive-setup"] as const;
 export type BrokerDescriptor = {
   pid: number;

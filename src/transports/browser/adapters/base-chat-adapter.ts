@@ -14,6 +14,7 @@ import {
 } from "../composer-text.js";
 import { identityDigest, assertIdentity, directAgentIdFromUrl } from "../identity.js";
 import { ResponseExtractor } from "../response-extractor.js";
+import { responseStructure } from "../response-structure.js";
 import {
   activateSendControl,
   cancelledBeforeSubmission,
@@ -632,6 +633,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     };
   }
   async captureSubmissionMarker(page: PageLike, verifiedIdentityDigest?: string): Promise<SubmissionMarker> {
+    await responseStructure(page);
     const marker = await this.captureConversationMarker(page);
     const identity = verifiedIdentityDigest ? undefined : await this.detectAgentIdentity(page);
     const url = page.url();
@@ -884,6 +886,7 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     signal?: AbortSignal
   ): Promise<ResponseMarker> {
     const end = Date.now() + timeoutMs;
+    let unknownSince: number | undefined;
     while (Date.now() < end) {
       if (signal?.aborted)
         throw new BrowserTransportError(
@@ -905,6 +908,27 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
             responseKey: correlation.responseKey
           }
         };
+      const structure =
+        correlation.confirmed && correlation.userKey
+          ? await responseStructure(page, correlation.userKey)
+          : undefined;
+      if (structure?.elements) {
+        unknownSince ??= Date.now();
+        if (Date.now() - unknownSince >= 15_000)
+          throw new BrowserTransportError(
+            "UI_CHANGED",
+            "Microsoft 365 displayed new response content that this version could not recognize.",
+            "Microsoft 365 may have changed its page structure. Do not resend the question. Read this conversation or inspect it in Microsoft 365, and share doctor output or Copy diagnostics with the maintainer.",
+            {
+              submissionState: "sent",
+              completion: {
+                reason: "unrecognized-response-dom",
+                sawStreamingSignal: false,
+                finalChars: structure.chars
+              }
+            }
+          );
+      } else unknownSince = undefined;
       await delay(100, page);
     }
     throw new BrowserTransportError(

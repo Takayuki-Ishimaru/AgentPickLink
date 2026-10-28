@@ -129,7 +129,11 @@ export class IpcBrokerClient implements FrontendBrokerPort {
     if (input.action === "read") {
       const value = await this.call<Record<string, unknown>>(
         "conversation.read",
-        { root: workspaceRoot, conversationHandle: input.conversationHandle },
+        {
+          root: workspaceRoot,
+          conversationHandle: input.conversationHandle,
+          ...(input.waitMs === undefined ? {} : { waitMs: input.waitMs })
+        },
         requestId,
         signal,
         onProgress ? { onProgress } : undefined

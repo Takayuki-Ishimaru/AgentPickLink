@@ -470,6 +470,7 @@ export class BrowserTransport implements InteractiveAgentTransport {
       diagnosticPage = item.page;
       diagnosticAdapter = item.adapter;
       const reading = await this.driver.read(item.page, item.conversation, item.agent, item.adapter, {
+        waitMs: request.waitMs ?? 0,
         requestId: request.requestId,
         signal: request.signal,
         onProgress: request.onProgress,

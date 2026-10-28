@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { get } from "node:https";
 import type { ClientRequest, IncomingMessage } from "node:http";
-import { compareVersions } from "./update-checker.js";
+import { compareVersions, releaseInChannel, type UpdateChannel } from "./update-checker.js";
 
 export type ExtensionRelease = { tag: string; name: string; url: string; sha256: string; size: number };
 export const MAX_VSIX_BYTES = 64 * 1024 * 1024;
@@ -18,13 +18,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Prefer the newest published version with an uploaded universal VSIX and a SHA-256 digest. */
-export function newestExtensionRelease(feed: unknown, installed: string): ExtensionRelease | undefined {
+export function newestExtensionRelease(
+  feed: unknown,
+  installed: string,
+  channel: UpdateChannel = "beta"
+): ExtensionRelease | undefined {
   if (!Array.isArray(feed) || compareVersions(installed, installed) === undefined) return undefined;
   let result: ExtensionRelease | undefined;
   for (const value of feed.slice(0, 100)) {
     const release = record(value);
     if (!release || release.draft !== false || typeof release.tag_name !== "string") continue;
     const tag = release.tag_name;
+    if (!releaseInChannel({ tag_name: tag, prerelease: release.prerelease }, channel)) continue;
     if (compareVersions(tag, result?.tag ?? installed) !== 1 || !Array.isArray(release.assets)) continue;
     const name = `agent-pick-link-${tag.replace(/^v/, "")}.vsix`;
     for (const value of release.assets.slice(0, 100)) {

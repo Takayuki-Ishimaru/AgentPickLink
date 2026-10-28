@@ -4,12 +4,14 @@
 
 このページは、AgentPickLink の **拡張機能なしインストール経路**（GitHub Release からポータブルアーカイブを
 ダウンロードして展開し、`apl-setup <ワークスペース>` を 1 回実行する方式。VS Code 拡張機能のインストール
-は不要）を評価・展開する IT・セキュリティ管理者向けです。v0.2.14 の導入方法を説明します。
+は不要）を評価・展開する IT・セキュリティ管理者向けです。v0.2.15 の導入方法を説明します。
 Windows 11 / Microsoft Edge を主な対象とし、macOS は開発・検証向け、Linux は開発・CI 専用です。
 SmartScreen、AppLocker / WDAC などの実行制御やテナント設定による制限は、導入先で確認してください。
 この版の対応範囲は [対応環境と検証範囲](RELEASE-CHECKLIST.md) を参照してください。
 
 ## 登録される内容と識別子
+
+以下の `apl` は、セットアップ結果が表示するランチャーの絶対パスで実行します。PATH への自動追加は行いません。既定の場所は Windows が `%LOCALAPPDATA%\AgentPickLink\bin\apl.cmd`、macOS が `~/.local/share/AgentPickLink/bin/apl` です。PowerShell の例: `& "<ランチャーの絶対パス>" doctor`。
 
 `apl-setup` は、その端末で検出した MCP クライアントごとに設定ファイルを 1 つずつ書き込みます。すべての
 ファイルは、版に依存しない同じ固定識別子を使用します。

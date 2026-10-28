@@ -8,6 +8,7 @@
   var pendingRequests = 0;
   var expired = false;
   var requestFailure = false;
+  var completed = false;
   function transportState() {
     if (listener) listener({ type: "transport", pending: pendingRequests > 0, expired: expired });
   }
@@ -64,6 +65,7 @@
           );
         }
       } catch {
+        if (completed && message.type === "save") return;
         requestFailure = true;
         showNotice(
           "Network disconnected; result unknown. Check the terminal and current settings before sending again. / 通信が切断され、結果は不明です。再送する前に端末と現在の設定を確認してください。"
@@ -98,6 +100,7 @@
           pending = pending.slice(end + 2);
           if (event.indexOf("data: ") !== 0) continue;
           var message = JSON.parse(event.slice(6));
+          if (message.type === "state" && message.state && message.state.phase === "done") completed = true;
           if (message.type === "terminal") showNotice(message.text);
           else if (listener) listener(message);
         }
@@ -107,7 +110,11 @@
     }
     expired = true;
     transportState();
-    if (!requestFailure)
+    if (completed)
+      showNotice(
+        "Setup completed. You can close this tab. / セットアップが完了しました。このタブを閉じてかまいません。"
+      );
+    else if (!requestFailure)
       showNotice("Setup closed. Check the terminal. / セットアップは終了しました。端末を確認してください。");
   })();
 })();

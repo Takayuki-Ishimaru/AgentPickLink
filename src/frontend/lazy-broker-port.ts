@@ -63,7 +63,7 @@ export async function defaultBrokerStalenessCheck(): Promise<void> {
  * stdio transport is even listening. A successful connection is memoised and
  * reused by every later call. A failed connection is NOT memoised: the next
  * call retries the factory, since the broker may become reachable afterward
- * (e.g. the user runs `m365-agent broker restart`). Factory failures never
+ * (e.g. the user runs `apl broker restart`). Factory failures never
  * throw out of list/ask/session -- they are converted into a structured
  * ToolError (BROKER_UNAVAILABLE, or the more specific broker code the factory
  * failed with) so the frontend always returns the normal error envelope.
@@ -198,7 +198,7 @@ function toBrokerError(error: unknown, requestId: string): ToolError {
     "BROKER_UNAVAILABLE",
     domain.message || "The local Microsoft 365 broker is unavailable.",
     true,
-    { remediation: "Run: m365-agent broker status" }
+    { remediation: "Run: apl broker status" }
   );
   return fallback.toResult(requestId).error;
 }
