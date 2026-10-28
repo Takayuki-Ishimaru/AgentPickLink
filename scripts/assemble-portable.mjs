@@ -126,24 +126,37 @@ async function ensureNodeArchive(nodePlatform, version, cacheDir) {
 // Extracts only the node binary and its LICENSE from the official archive into a flat runtime/ layout
 // (runtime/node.exe or runtime/node, runtime/LICENSE-node) -- no bin/, no npm, no headers, no docs.
 //
-// windows-latest GitHub runners ship bsdtar as `tar.exe` but neither `zip` nor `unzip`
-// (ubuntu-latest and macos-latest have both GNU/bsdtar and zip/unzip), so the Windows branch must
-// extract the official .zip with `tar`, whose bundled libarchive reads .zip transparently, rather
-// than shelling out to `unzip`.
+// windows-latest GitHub runners ship bsdtar as `tar.exe` but neither `zip` nor `unzip`, and macOS
+// ships bsdtar as `tar`, whose bundled libarchive reads .zip transparently -- so the Windows-target
+// .zip is extracted with `tar` there. Linux hosts have GNU tar, which cannot read .zip at all
+// ("This does not look like a tar archive"), so on Linux the same .zip goes through `unzip`, which
+// ubuntu-latest ships and which exits non-zero when a requested member is absent, keeping the
+// required-membership check intact.
 async function extractNodeRuntime({ archivePath, nodePlatform, version, destDir, isWindows }) {
   const topFolder = `node-v${version}-${nodePlatform}`;
   await mkdir(destDir, { recursive: true });
   const tmp = await mkdtemp(path.join(os.tmpdir(), "apl-node-extract-"));
   try {
     if (isWindows) {
-      await execFileAsync(tarCommand, [
-        "xf",
-        archivePath,
-        "-C",
-        tmp,
-        `${topFolder}/node.exe`,
-        `${topFolder}/LICENSE`
-      ]);
+      if (process.platform === "linux") {
+        await execFileAsync("unzip", [
+          "-qq",
+          archivePath,
+          `${topFolder}/node.exe`,
+          `${topFolder}/LICENSE`,
+          "-d",
+          tmp
+        ]);
+      } else {
+        await execFileAsync(tarCommand, [
+          "xf",
+          archivePath,
+          "-C",
+          tmp,
+          `${topFolder}/node.exe`,
+          `${topFolder}/LICENSE`
+        ]);
+      }
       await cp(path.join(tmp, topFolder, "node.exe"), path.join(destDir, "node.exe"));
       await cp(path.join(tmp, topFolder, "LICENSE"), path.join(destDir, "LICENSE-node"));
     } else {
@@ -286,23 +299,22 @@ Node.js license for that bundled runtime.
 }
 
 // windows-latest has no `zip`/`unzip` but ships bsdtar as `tar.exe`, which can create a .zip via
-// `-a` (auto-compress by extension); ubuntu-latest and macos-latest both have `zip`, which is kept
-// there since it is the more common tool for this format. Falls back to tar if `zip` is ever
-// missing on a non-Windows runner.
-async function createArchive({
-  stageParent,
-  folderName,
-  outDir,
-  version,
-  platformKey,
-  outputExt,
-  isWindows
-}) {
+// `-a` (auto-compress by extension); macOS ships the same capability as `tar`, so both hosts keep
+// bsdtar. Linux hosts have GNU tar, which cannot create .zip at all -- a `-a` fallback there would
+// write a tar archive disguised as .zip -- so Linux uses `zip` and fails closed when it is missing.
+// The choice depends on the *host*, never on the target.
+async function createArchive({ stageParent, folderName, outDir, version, platformKey, outputExt }) {
   const archiveName = `AgentPickLink-${version}-${platformKey}.${outputExt}`;
   const archivePath = path.join(outDir, archiveName);
   await rm(archivePath, { force: true });
   if (outputExt === "zip") {
-    if (!isWindows && (await commandExists("zip"))) {
+    if (process.platform === "linux") {
+      if (!(await commandExists("zip"))) {
+        throw new Error(
+          `Cannot create ${archiveName}: this host's tar (GNU tar) cannot write .zip archives, ` +
+            `so the "zip" command is required on Linux hosts.`
+        );
+      }
       await execFileAsync("zip", ["-rqX", archivePath, folderName], { cwd: stageParent });
     } else {
       await execFileAsync(tarCommand, ["-a", "-cf", archivePath, folderName], { cwd: stageParent });
