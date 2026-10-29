@@ -95,14 +95,19 @@ export function createExtensionAttestationVerifier(deps: AttestationDependencies
   };
 }
 
-function assertSupportedRuntime(): void {
-  const [major, minor, patch] = process.versions.node.split(".").map(Number);
-  if (!(
+/** Also used before downloading a VSIX on older VS Code extension hosts. */
+export function supportsExtensionAttestation(nodeVersion = process.versions.node): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(nodeVersion)) return false;
+  const [major, minor, patch] = nodeVersion.split(".").map(Number);
+  return (
     major >= 26 ||
     (major === 24 && minor >= 15) ||
     (major === 22 && (minor > 22 || (minor === 22 && patch >= 2)))
-  ))
-    throw new Error("update-attestation-node-version");
+  );
+}
+
+function assertSupportedRuntime(): void {
+  if (!supportsExtensionAttestation()) throw new Error("update-attestation-node-version");
 }
 
 async function verify(

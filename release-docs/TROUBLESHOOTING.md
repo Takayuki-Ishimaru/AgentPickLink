@@ -45,9 +45,11 @@ v0.2.14 以前のセットアップ保存には、ワークスペースのルー
 
 ## 自動更新が反映されない・設定を保存できない場合
 
-拡張機能の自動更新は v0.2.12 から利用できます。v0.2.11 以前からは、まず v0.2.15 の VSIX を手動でインストールしてください。以降は、サイドバーの **拡張機能の自動更新** と VS Code の `agentpicklink.checkForUpdates` が有効か確認します。更新のインストール後は VS Code の再読み込みが必要です。オフラインや取得・検証・インストールの失敗時は、次の確認時に再試行します。すぐ更新する場合は Releases から VSIX を取得して手動でインストールできます。
+拡張機能の自動更新は v0.2.12 から利用できます。v0.2.11 以前からは、まず v0.2.16 の VSIX を手動でインストールしてください。以降は、サイドバーの **拡張機能の自動更新** と VS Code の `agentpicklink.checkForUpdates` が有効か確認します。更新のインストール後は VS Code の再読み込みが必要です。オフラインや取得・検証・インストールの失敗時は、次の確認時に再試行します。すぐ更新する場合は Releases から VSIX を取得して手動でインストールできます。
 
-v0.2.15 は実際のインストール状態を確認してから自動更新します。手動で旧版に戻した後も再試行しますが、インストール情報が読み取れない・矛盾している場合は自動更新を見送ります。VS Code を再読み込みし、更新が進まなければ Releases の VSIX で手動更新してください。
+v0.2.16 は実際のインストール状態を確認してから自動更新します。手動で旧版に戻した後も再試行しますが、インストール情報が読み取れない・矛盾している場合は自動更新を見送ります。VS Code を再読み込みし、更新が進まなければ Releases の VSIX で手動更新してください。
+
+古い VS Code の内蔵 Node.js がビルド証明の検証に対応しない場合は、VSIX をダウンロードせず手動更新を案内します。案内から公式 Releases を開き、配布元を確認して VSIX をインストールしてください。`agentpicklink.nodePath` を変更しても、拡張機能の更新検証に使う内蔵ランタイムは変わりません。
 
 専用ブラウザープロファイルに `BROWSER_PROFILE_INVALID` が出る場合は、クラウド同期フォルダーの外にあるローカルの専用フォルダーを指定してください。同期フォルダー内の `..private` などの名前のサブフォルダーも利用できません。変更後はサインインし直す必要がある場合があります。
 
@@ -72,7 +74,7 @@ English: `NEW_CONVERSATION_UNVERIFIED` with `submissionState: "not-sent"` stops 
 }
 ```
 
-読む操作は入力欄や送信ボタンを操作しません。既定では待機せず、現在の質問の表示状態と途中の回答を返します。このスナップショットだけでは完了と断定しないため、回答が見えていても `reply: "incomplete"` になる場合があります。完了を待って回答とファイルを回収する場合は、同じ引数に `"waitMs": 300000`（最大5分）を追加してください。待機中にキャンセルしても質問は再送されません。
+読む操作は入力欄や送信ボタンを操作しません。既定では待機せず、現在の質問の表示状態と途中の回答を返します。v0.2.16 では、同じ会話で完了を確認済みの回答について、質問・回答の対応と本文が変わらず、再生成中でないことを確認できれば、直後の読み取りでも `reply: "complete"` を返します。本文の変化・再生成・対応の不明確さを検出した場合は完了扱いにしません。完了をまだ確認できていない回答は、表示されていても `reply: "incomplete"` になる場合があります。完了を待って回答とファイルを回収する場合は、同じ引数に `"waitMs": 300000`（最大5分）を追加してください。待機中にキャンセルしても質問は再送されません。
 
 | `message`     | 意味と対処                                                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------- |
@@ -90,15 +92,15 @@ English: `NEW_CONVERSATION_UNVERIFIED` with `submissionState: "not-sent"` stops 
 
 失敗後の確認用に残した単発の会話は、完了した回答を回収すると閉じ、`conversationClosed: true` を返します。未完了・キャンセルの場合は再度読むことができますが、会話の有効期限・会話数上限・ローカルプロセスの再起動でハンドルが使えなくなる場合があります。ハンドルを受け取ったら早めに確認してください。`CONVERSATION_EXPIRED` / `CONVERSATION_NOT_FOUND` の場合は Microsoft 365 側の会話を確認します。
 
-`BROKER_VERSION_MISMATCH` は古いローカルプロセスが読む操作に対応していない状態です。v0.2.15 に更新して VS Code と MCP 接続を再起動してください。再起動前のハンドルは無効になるため、既存の質問は Microsoft 365 側で確認します。ローカル接続が切れた失敗など、ハンドルが返らない場合も Microsoft 365 側で確認し、自動再送しないでください。
+`BROKER_VERSION_MISMATCH` は古いローカルプロセスが読む操作に対応していない状態です。v0.2.16 に更新して VS Code と MCP 接続を再起動してください。再起動前のハンドルは無効になるため、既存の質問は Microsoft 365 側で確認します。ローカル接続が切れた失敗など、ハンドルが返らない場合も Microsoft 365 側で確認し、自動再送しないでください。
 
-English: When an error carries `conversationHandle`, call `m365_agent_session` with only `action: "read"` and that handle instead of resending. Reading leaves the composer and send button untouched and saves reply files under the usual settings. Only `message: "not-shown"` confirms non-submission; `"unconfirmed"` requires another read later or inspection in Microsoft 365. Replies are `complete`, `incomplete`, or `none`. A retained one-shot conversation closes after its complete reply is collected. Handles can expire or become invalid after process restart; inspect the Microsoft 365 conversation if a handle is unavailable. Reading requires the new MCP connection and local process.
+English: When an error carries `conversationHandle`, call `m365_agent_session` with only `action: "read"` and that handle instead of resending. Reading leaves the composer and send button untouched and saves reply files under the usual settings. Only `message: "not-shown"` confirms non-submission; `"unconfirmed"` requires another read later or inspection in Microsoft 365. Replies are `complete`, `incomplete`, or `none`. In v0.2.16, an immediate read can preserve a previously verified completed reply if its conversation, question, answer, and non-generating state are still verified. A changed answer, regeneration, or uncertain correspondence invalidates that completion. Use `waitMs` to wait when completion has not been established. A retained one-shot conversation closes after its complete reply is collected. Handles can expire or become invalid after process restart; inspect the Microsoft 365 conversation if a handle is unavailable. Reading requires the new MCP connection and local process.
 
 ## 拡張機能が起動しない・質問入力が失敗する
 
-v0.2.5 の VS Code 拡張機能で `Cannot find module './impl/format'` が出る場合は、v0.2.15 の VSIX をインストールし、VS Code を再読み込みしてください。
+v0.2.5 の VS Code 拡張機能で `Cannot find module './impl/format'` が出る場合は、v0.2.16 の VSIX をインストールし、VS Code を再読み込みしてください。
 
-長文の入力中に `UI_CHANGED` と未送信（`not-sent`）が返る場合は、入力を完了・確認できなかった状態です。v0.2.15 では入力の長さに応じて時間上限を調整します。入力が遅い場合は、[設定ガイド](CONFIGURATION.md) の `browser.typingDelayMs` を確認してください。旧版で保存された待ち時間は、更新だけでは変更されません。
+長文の入力中に `UI_CHANGED` と未送信（`not-sent`）が返る場合は、入力を完了・確認できなかった状態です。v0.2.16 では入力の長さに応じて時間上限を調整します。入力が遅い場合は、[設定ガイド](CONFIGURATION.md) の `browser.typingDelayMs` を確認してください。旧版で保存された待ち時間は、更新だけでは変更されません。
 
 ## 送信ボタン待ち・NBSP により未送信になる場合
 
@@ -108,13 +110,13 @@ NBSP（改行しない空白、U+00A0）が通常の空白に変換されたと�
 
 ## 添付取得で認証を再試行する場合
 
-v0.2.15 では、401 / 403 やサインイン画面を検出した場合に限り、同じ専用ブラウザー内のタブで接続状態を確認し、取得を一度再試行します。SharePoint 共有リンクのプレビュー画面では、ファイルの取得先を解決するためにもこの処理を使います。認証フォームの入力や追加認証は自動で行いません。
+v0.2.16 では、401 / 403 やサインイン画面を検出した場合に限り、同じ専用ブラウザー内のタブで接続状態を確認し、取得を一度再試行します。SharePoint 共有リンクのプレビュー画面では、ファイルの取得先を解決するためにもこの処理を使います。認証フォームの入力や追加認証は自動で行いません。
 
 404 / 5xx、容量超過、許可されていない転送先、空の応答、通信エラー、通常の HTML ページは、認証を再試行せず未保存として返します。必要なサインイン・権限・ファイルの存在・容量設定を確認してください。
 
 ## PDF の日本語表示・重なり・ページ数が正しくない
 
-生成するエージェントに、日本語を含む文字に対応するフォントの埋め込み、見出し・本文の文字サイズに合った行間と段落間隔、表紙・結論を含む総ページ数を明示してください。v0.2.15 は、呼び出し元の AI クライアントにもこれらの確認を促す案内を提供します。
+生成するエージェントに、日本語を含む文字に対応するフォントの埋め込み、見出し・本文の文字サイズに合った行間と段落間隔、表紙・結論を含む総ページ数を明示してください。v0.2.16 は、呼び出し元の AI クライアントにもこれらの確認を促す案内を提供します。
 
 フォント名やテキスト抽出だけでは表示の正しさを確認できません。実ファイルを PDF リーダーで開いて各ページの文字・重なり・はみ出しを確認し、実ページ数も確認してください。生成元のエージェントに固定のページ数を求める指示がある場合は、利用者の指定と矛盾していないか確認します。AgentPickLink はエージェントの指示、送信する質問、受信した PDF を自動で書き換えません。案内の追加だけで、すべての生成結果が正しくなることは保証しません。
 
@@ -135,11 +137,11 @@ v0.2.5 では、ブラウザー経由のダウンロードとファイルカー�
 | `download-not-started`       | 待機時間内にダウンロードが始まらなかった         |
 | `download-incomplete`        | ダウンロードが時間内に完了せず、取り消された     |
 
-各操作の待機上限は `browser.navigationTimeoutMs`（既定 45 秒）で、ダウンロード開始待ちは最大 30 秒です。v0.2.15 では、複数ファイルや再試行を含む添付取得全体にも `browser.attachmentPhaseTimeoutMs`（既定 45 秒）を適用します。全体の期限を超えた未取得分は `attachment-phase-timeout`、保存件数上限を超えた分は `attachment-count-limit` として返します。保存済みのファイルは保持します。これらは回答生成の制限時間とは別です。
+各操作の待機上限は `browser.navigationTimeoutMs`（既定 45 秒）で、ダウンロード開始待ちは最大 30 秒です。v0.2.16 では、複数ファイルや再試行を含む添付取得全体にも `browser.attachmentPhaseTimeoutMs`（既定 45 秒）を適用します。全体の期限を超えた未取得分は `attachment-phase-timeout`、保存件数上限を超えた分は `attachment-count-limit` として返します。保存済みのファイルは保持します。これらは回答生成の制限時間とは別です。
 
 大きなファイルや遅い接続では、上限に達して未保存になることがあります。[設定ガイド](CONFIGURATION.md) の上限、サインイン状態、取得先の許可ホストを確認してください。許可されていないホストへの転送は `host-not-allowed / redirect-host-not-allowed` として返します。対象ファイルを Microsoft 365 から直接開けるかも確認し、質問を再送する前に、Microsoft 365 側で処理が完了していないか確認してください。
 
-v0.2.15 は取得経路によらず、同じ失敗に同じ `errorCode` と `stage` を返します。許可されていない取得元は `host-not-allowed / source-host-not-allowed`、許可されていない転送先は `host-not-allowed / redirect-host-not-allowed` です。
+v0.2.16 は取得経路によらず、同じ失敗に同じ `errorCode` と `stage` を返します。許可されていない取得元は `host-not-allowed / source-host-not-allowed`、許可されていない転送先は `host-not-allowed / redirect-host-not-allowed` です。
 
 | `stage`                       | 確認すること                                                       |
 | ----------------------------- | ------------------------------------------------------------------ |

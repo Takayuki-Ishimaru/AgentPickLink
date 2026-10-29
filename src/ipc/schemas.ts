@@ -34,7 +34,7 @@ export const BrokerMethodSchemas = {
   "agent.cancelDiscovery": z.object({ operationId: z.string().uuid() }).strict(),
   "agent.validate": z.object({ agent: AliasSchema, sendTestMessage: z.boolean().optional() }).strict(),
   "workspace.list": WorkspaceSchema,
-  "conversation.create": WorkspaceSchema.extend({ agent: AliasSchema }).strict(),
+  "conversation.create": WorkspaceSchema.extend({ agent: z.string().refine(isAgentSelection) }).strict(),
   "conversation.invoke": WorkspaceSchema.extend({
     agent: z.string().refine(isAgentSelection),
     // The same rule as the MCP argument check: 1-12000 code points, not whitespace alone.

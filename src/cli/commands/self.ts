@@ -95,6 +95,9 @@ export async function runSelfStatus(
   }
   return {
     home,
+    appData: deps.paths.root,
+    configPath: deps.paths.config,
+    logsPath: deps.paths.logs,
     cliPath: path.join(home, "bin", deps.platform === "win32" ? "apl.cmd" : "apl"),
     installed: !!installJson,
     install: installJson ?? null,

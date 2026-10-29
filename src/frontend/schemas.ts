@@ -159,6 +159,8 @@ export type SessionResult = {
   requestId: string;
   action: SessionAction;
   conversation?: Conversation;
+  /** Singleton session actions expose the same handle location as ask; nested form is retained. */
+  conversationHandle?: string;
   conversations?: Conversation[];
   closedCount?: number;
   /** action=read only. */
@@ -233,9 +235,11 @@ export const sessionInputSchema = {
       },
       agent: {
         type: "string",
-        pattern: ALIAS_PATTERN,
+        minLength: 1,
+        maxLength: 256,
+        pattern: "^[^\\u0000-\\u001f\\u007f]*\\S[^\\u0000-\\u001f\\u007f]*$",
         description:
-          "The agent alias to start a new conversation with. Required for action=new; not accepted otherwise."
+          "Assigned alias or exact display name unique among approved workspace agents. Required only for action=new."
       },
       conversationHandle: {
         type: "string",
@@ -413,6 +417,7 @@ export const sessionOutputSchema = {
         ok: { const: true },
         requestId: { type: "string" },
         action: { type: "string", enum: ["new", "list", "close", "close_all", "read"] },
+        conversationHandle: { type: "string", pattern: HANDLE_PATTERN },
         conversation: conversationSchema,
         conversations: { type: "array", items: conversationSchema },
         closedCount: { type: "integer", minimum: 0 },

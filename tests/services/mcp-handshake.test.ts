@@ -135,6 +135,21 @@ async function withScript(
 }
 
 describe("mcpHandshake", () => {
+  it("includes bounded, sanitized final stderr when a child exits early", async () => {
+    const diagnostic =
+      "\u001b[31mConfiguration missing\u001b[0m\npassword=example-secret\n" + "x".repeat(5000);
+    const error = (await mcpHandshake({
+      command: process.execPath,
+      args: ["-e", `process.stderr.write(${JSON.stringify(diagnostic)}, () => process.exit(1))`],
+      timeoutMs: 5000
+    }).catch((value: unknown) => value)) as Error;
+    expect(error).toMatchObject({ code: "BROKER_START_FAILED" });
+    expect(error.message).toContain("code=1");
+    expect(error.message).toContain("Configuration missing");
+    expect(error.message).not.toContain("\u001b");
+    expect(error.message).not.toContain("example-secret");
+    expect(error.message.length).toBeLessThan(4500);
+  });
   it("performs initialize -> notifications/initialized -> tools/list against a fake server", async () => {
     await withScript("ok", async (scriptPath) => {
       const result = await mcpHandshake({ command: process.execPath, args: [scriptPath], timeoutMs: 5_000 });

@@ -7,6 +7,7 @@ import type {
   LocatorLike,
   PageLike,
   ResponseMarker,
+  ResponseObservation,
   SubmissionAck,
   SubmissionMarker,
   AuthState,
@@ -85,6 +86,8 @@ export interface ChatUiAdapter {
     onGrowing?: (responseChars: number) => void
   ): Promise<CompletionResult>;
   extractLatestResponse(page: PageLike, marker: ResponseMarker): Promise<ExtractedResponse>;
+  /** A single anchored observation, shared with completion detection. Unknown is never complete. */
+  observeResponse?(page: PageLike, marker: ResponseMarker): Promise<ResponseObservation>;
   /** The conversation's latest exchange, for reading it without sending anything. Optional so a
    * hand-built test double stays a valid adapter; every real adapter (BaseChatUiAdapter) has it. */
   captureExchange?(page: PageLike): Promise<ConversationExchange>;

@@ -97,7 +97,13 @@ export class IpcBrokerClient implements FrontendBrokerPort {
       );
       return isToolError(value)
         ? value
-        : { ok: true, requestId, action: "new", conversation: publicConversation(value) };
+        : {
+            ok: true,
+            requestId,
+            action: "new",
+            conversationHandle: publicConversation(value).conversationHandle,
+            conversation: publicConversation(value)
+          };
     }
     if (input.action === "list") {
       const value = await this.call<unknown[]>(
@@ -124,7 +130,13 @@ export class IpcBrokerClient implements FrontendBrokerPort {
       );
       return isToolError(value)
         ? value
-        : { ok: true, requestId, action: "close", conversation: publicConversation(value) };
+        : {
+            ok: true,
+            requestId,
+            action: "close",
+            conversationHandle: publicConversation(value).conversationHandle,
+            conversation: publicConversation(value)
+          };
     }
     if (input.action === "read") {
       const value = await this.call<Record<string, unknown>>(
@@ -147,6 +159,8 @@ export class IpcBrokerClient implements FrontendBrokerPort {
         ok: true,
         requestId,
         action: "read",
+        conversationHandle: publicConversation(value.conversation as Record<string, unknown>)
+          .conversationHandle,
         conversation: publicConversation(value.conversation as Record<string, unknown>),
         ...reading
       };

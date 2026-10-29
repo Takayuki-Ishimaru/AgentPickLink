@@ -14,6 +14,12 @@ VS Code には拡張機能から MCP 定義を提供します。追加の連携�
 
 既存のクライアント設定に `m365-agents` の起動設定を統合します。クライアント側でも MCP ツールの利用許可が必要な場合があります。
 
+上記の Claude Code と VS Code のチェックは、このフォルダーへの追加を意味します。ポータブル版の導入でユーザー全体へ登録済みの場合、ブラウザーのセットアップ画面に「登録済み（ユーザー全体）」と表示します。フォルダーへの追加は任意で、ユーザー全体の登録とは別に切り替えられます。
+
+`apl self status` でインストール先・設定・ログの保存先をまとめて確認できます。既存の承認とサインイン状態を保持するため、バイナリーは `AgentPickLink`、設定・ログは従来の `M365AgentWorkspace` に保存します。
+
+npm・開発用の Node.js 要件は、22系では22.22.2以降、24系では24.15.0以降、または26以降です。拡張機能の自動更新は VS Code 内蔵の Node.js でビルド証明を検証するため、`agentpicklink.nodePath` の変更では検証環境は変わりません。対応しない古い VS Code では手動更新の通知を表示します。
+
 Codex 設定は、AgentPickLink の対象外設定を保持したうえで更新します。変更前の内容を同じ場所の `config.toml.agentpicklink-<ランダムID>.bak` に保存します。構文エラーや安全に編集できない定義がある場合は保存を中止します。バックアップは設定全体を含むため、適切に管理し、不要になったら削除してください。
 
 ## VS Code 設定
@@ -27,7 +33,7 @@ Codex 設定は、AgentPickLink の対象外設定を保持したうえで更新
 | `agentpicklink.integrations.claudeCode`    | `false` | Claude Code 設定の更新を有効化                                    |
 | `agentpicklink.integrations.vscodeMcpJson` | `false` | VS Code の MCP JSON 設定の更新を有効化                            |
 
-`agentpicklink.updateChannel` は `stable`（安定版のみ）と `beta`（ベータ版を含む）から選べ、初期値は `beta` です。自動インストールと手動更新の通知の両方に適用します。v0.2.15 はベータ版のため、`stable` では更新対象になりません。
+`agentpicklink.updateChannel` は `stable`（安定版のみ）と `beta`（ベータ版を含む）から選べ、初期値は `beta` です。自動更新も初期値で有効なため、既定の設定で v0.2.16 を含むベータ版を取得・検証し、自動インストールします。利用者が `stable` を明示的に選択した場合は安定版だけが対象になるため、ベータ版も更新する場合は `beta` を選んでください。チャネルは自動インストールと手動更新の通知の両方に適用します。
 
 `agentpicklink.autoUpdate` は初期値 `true` です。起動時と6時間ごとに GitHub の選択したチャネルの新リリースを確認し、公開 VSIX の SHA-256 とビルド証明を検証して自動インストールします。サイドバーの **拡張機能の更新 → 拡張機能の自動更新** で切り替えられ、変更はユーザー設定にすぐ保存されます。更新後は通知の **再読み込み** を押して反映します。
 
@@ -37,15 +43,15 @@ Codex 設定は、AgentPickLink の対象外設定を保持したうえで更新
 
 `agentpicklink.checkForUpdates` も初期値 `true` です。これをユーザー設定で無効にすると、自動更新と更新通知を両方停止します。以前の設定で無効にしていた場合も保持します。サイドバーで自動更新をオンにすると、リリース確認も再び有効になります。
 
-English: Automatic extension updates are enabled by default in v0.2.15. `agentpicklink.updateChannel` selects `stable` or `beta` (the default) for installation and notifications. This beta is not offered on `stable`. Releases are checked on startup and every six hours; installation requires a matching SHA-256 digest and verified build attestation for the official repository and release tag. Verification requires GitHub and Sigstore access and Node.js 22.22.2 or later in the 22 line, 24.15.0 or later in the 24 line, or version 26 or later. Missing or unverifiable proof, or an unsupported runtime, blocks automatic installation. Reload VS Code to apply an installed update. The sidebar toggle saves immediately. Turning automatic updates off keeps one notification per new version; setting `agentpicklink.checkForUpdates` to `false` stops both updates and notifications. An existing opt-out is preserved. Turning automatic updates on in the sidebar also enables release checks. Machine installation updates remain manual.
+English: Automatic extension updates are enabled by default in v0.2.16. `agentpicklink.updateChannel` selects `stable` or `beta` (the default) for installation and notifications. This beta is not offered on `stable`. Releases are checked on startup and every six hours; installation requires a matching SHA-256 digest and verified build attestation for the official repository and release tag. Verification requires GitHub and Sigstore access and Node.js 22.22.2 or later in the 22 line, 24.15.0 or later in the 24 line, or version 26 or later. Missing or unverifiable proof, or an unsupported runtime, blocks automatic installation. Reload VS Code to apply an installed update. The sidebar toggle saves immediately. Turning automatic updates off keeps one notification per new version; setting `agentpicklink.checkForUpdates` to `false` stops both updates and notifications. An existing opt-out is preserved. Turning automatic updates on in the sidebar also enables release checks. Machine installation updates remain manual.
 
 複数ウィンドウで設定を保存した場合、別の項目への変更は保持されます。エージェントの説明・利用ヒントなど、同じ項目を異なる内容に変更した場合は保存を止めるため、一覧を更新して選び直してください。更新通知を開いたままでも定期確認は続き、別ウィンドウでインストール済みの同じ更新は繰り返しインストールしません。
 
 English: Concurrent saves preserve edits to distinct settings. Conflicting edits to the same agent metadata field stop the save; refresh the list before saving again. Pending update notifications do not block periodic checks, and a successful update installed by another window is not installed again.
 
-v0.2.15 では、自動更新の前に実際のインストール状態を確認します。手動で旧版に戻した後も再試行でき、すでに入っている新しい版は古い更新で上書きしません。状態を確認できない場合は自動更新を見送るため、必要に応じて Releases の VSIX で手動更新してください。
+v0.2.16 では、自動更新の前に実際のインストール状態を確認します。手動で旧版に戻した後も再試行でき、すでに入っている新しい版は古い更新で上書きしません。状態を確認できない場合は自動更新を見送るため、必要に応じて Releases の VSIX で手動更新してください。
 
-English: v0.2.15 checks the actual installed version before automatic installation. It can retry after a manual downgrade and protects newer installed versions. When the installed state cannot be confirmed, installation is deferred; use the release VSIX for a manual update if needed.
+English: v0.2.16 checks the actual installed version before automatic installation. It can retry after a manual downgrade and protects newer installed versions. When the installed state cannot be confirmed, installation is deferred; use the release VSIX for a manual update if needed.
 
 ## ローカルデータ
 
@@ -80,11 +86,11 @@ English: `browser.composerStabilityMs` controls input stability (default 500 ms,
 
 ### 質問入力の速度
 
-`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.15 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
+`config.yaml` の `browser.typingDelayMs` は、リッチテキスト入力欄に文字を入力するときの待ち時間（0〜200 ミリ秒）です。v0.2.16 の既定値は `0` です。最初は文字ごとの待ち時間なしで入力し、入力内容の一致・安定確認に失敗した場合だけ、20 ミリ秒で一度入力し直します。確認できない場合は送信せず、`UI_CHANGED` を返します。
 
 既存の設定に保存された正の値は更新時にも保持します。例えば `20` を保存していた環境は、そのまま 20 ミリ秒で入力します。新しい入力速度を使うには値を `0` に変更し、接続プロセスを再起動してください。正の値を指定した場合は、入力し直す場合にも同じ値を使います。入力操作の時間上限は質問の長さと設定に応じて調整しますが、各試行で最大 2 分です。
 
-English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.15. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
+English: `browser.typingDelayMs` accepts 0–200 milliseconds and defaults to `0` in v0.2.16. Zero starts without a per-character delay, with one 20 ms retry only if the entered text fails verification. Positive values already saved in your configuration are preserved and apply to both attempts. To opt into faster typing, set it to `0` and restart the local process. Unverified input is not submitted. Each typing attempt has a length-based timeout capped at two minutes.
 
 入力検証では段落・改行・空行を確認し、CRLF / CR を LF として比較します。全角・半角の変換、ZWJ・ゼロ幅文字の削除、前後空白やコードの字下げの変更は一致扱いにしません。入力や送信前の確認待ちでキャンセルを受け取ると、入力を止め、下書きを消去して `SUBMIT_FAILED / not-sent` を返します。送信済みの質問は取り消しません。
 

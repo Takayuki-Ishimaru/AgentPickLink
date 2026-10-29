@@ -8,7 +8,7 @@
 
 [日本語](release-docs/README.md) | [English](README.en.md)
 
-**v0.2.15 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
+**v0.2.16 Beta** — A local MCP bridge for asking approved Microsoft 365 agents questions from VS Code.
 
 Sign in to Microsoft 365, select your agents, and approve their use for each workspace. MCP-compatible AI clients can then ask those agents questions, receive response text and citations, and save agent-generated files.
 
@@ -16,13 +16,15 @@ AgentPickLink is **open-source software released under the MIT License**. Third-
 
 This is not an official Microsoft product. This beta may encounter connection or extraction failures due to Microsoft 365 interface changes or tenant settings.
 
-## What's new in v0.2.15
+## What's new in v0.2.16
 
-- Settings saves preserve workspace directory permissions. Earlier permission changes are not restored automatically; see the recovery instructions if affected.
-- Improved discovery and post-save messages, alias editing for new agents, and questions using approved display names.
-- Conversation reads return the current state by default. Specify `waitMs` to wait for completion and retrieve replies and files.
-- Added extension update channels (`stable` / `beta`) and build-attestation verification before automatic installation.
-- Improved portable setup and CLI guidance, Git exclusion for generated files, and citation numbering.
+**Automatic updates, including beta releases, are enabled by default.** The default `beta` channel downloads, verifies, and automatically installs newer prereleases. Reload VS Code after installation.
+
+- Older VS Code runtimes that cannot verify build attestations offer a manual update.
+- Reduced discovery delays when agent descriptions are unavailable.
+- Immediate reads preserve a reply's completed state when the same question and answer can still be verified and generation has not resumed.
+- Improved setup integration states, post-save messages, and Japanese help, diagnostics, and progress. `apl self status` also shows configuration and log paths.
+- New conversations accept uniquely matching approved display names. Responses containing one conversation also expose `conversationHandle` at the top level.
 
 See the [release notes](release-docs/CHANGELOG.md) for details and update instructions.
 
@@ -33,7 +35,7 @@ See the [release notes](release-docs/CHANGELOG.md) for details and update instru
 - A Microsoft 365 work or school account with access to the selected agents. Required licenses and permissions must be obtained separately.
 - An AI client that supports MCP.
 
-You can install Node.js 22 or later to provide an explicit runtime. Otherwise, the extension attempts to use VS Code's built-in runtime. Building from source requires Node.js 22 or later and npm.
+You can install Node.js to provide an explicit runtime. npm installation and source builds require Node.js 22.22.2 or later in the 22 line, 24.15.0 or later in the 24 line, or version 26 or later, plus npm. Otherwise, the extension attempts to use VS Code's built-in runtime. Older built-in runtimes that cannot verify build attestations offer manual updates.
 
 WSL, Remote SSH, Dev Containers, Codespaces, multi-root workspaces, remote MCP servers, and unattended operation are unsupported. Compatibility with every Microsoft 365 agent or interface layout is not guaranteed.
 
@@ -41,23 +43,23 @@ Public CI runs automated checks on Windows, macOS, and Ubuntu. Ubuntu is a devel
 
 ## Installation
 
-1. Download `agent-pick-link-0.2.15.vsix` from **Releases → v0.2.15 (Beta)** on GitHub.
+1. Download `agent-pick-link-0.2.16.vsix` from **Releases → v0.2.16 (Beta)** on GitHub.
 2. In VS Code's Command Palette, run **Extensions: Install from VSIX…** and select the downloaded file.
 3. Reload VS Code if prompted.
 
 You can also install it from a terminal:
 
 ```sh
-code --install-extension agent-pick-link-0.2.15.vsix
+code --install-extension agent-pick-link-0.2.16.vsix
 ```
 
 The VSIX includes the extension, CLI, local broker, and MCP server. Installation from npm or the Marketplace is not part of this beta's distribution procedure.
 
 ### Updating from an earlier version
 
-Install the v0.2.15 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
+Install the v0.2.16 VSIX using the same steps, then reload VS Code. Your existing settings, workspace approvals, and dedicated browser profile can be reused. Check the connection in the panel and select **Connect and refresh** if needed. Restart external AI clients' MCP connections to load the new version as well. Codex / Claude Code / VS Code integrations enabled under v0.1.x are updated to the new form at startup, with a one-time notice.
 
-If automatic updates are enabled in v0.2.12 or later, reload VS Code after the update is installed. From v0.2.11 or earlier, or when automatic updates are disabled, manually install the v0.2.15 VSIX. To opt out, turn off **Automatically update the extension** in the sidebar after updating. An existing `agentpicklink.checkForUpdates: false` setting is preserved.
+If automatic updates are enabled in v0.2.12 or later, reload VS Code after the update is installed. From v0.2.11 or earlier, or when automatic updates are disabled, manually install the v0.2.16 VSIX. To opt out, turn off **Automatically update the extension** in the sidebar after updating. An existing `agentpicklink.checkForUpdates: false` setting is preserved.
 
 ## Install without the extension
 
@@ -113,6 +115,8 @@ Enable the `m365-agents` MCP tools in your client. For example, ask it to list t
 | `m365_agent_ask`     | Ask an approved agent a question                           |
 | `m365_agent_session` | Create, list, close, or read conversations without sending |
 
+Questions and new conversations accept an agent alias or a uniquely matching approved display name. When `m365_agent_session` returns one conversation, its top-level `conversationHandle` can be used for subsequent questions and reads. The existing `conversation.conversationHandle` is preserved.
+
 A single-use question automatically closes its conversation after the response is retrieved. If an uncertain-submission or response-timeout error carries `conversationHandle`, that conversation is kept open. Use `m365_agent_session` with `action: "read"` to inspect it without resending; it closes when its complete reply is collected. See [Troubleshooting](release-docs/TROUBLESHOOTING.md). For multiple turns, create a session, use it for subsequent questions, and close it when finished. Responses and file generation can take several minutes. Requests are not automatically resent when submission status is uncertain.
 
 ## Generated files
@@ -150,7 +154,7 @@ License and dependency information:
 - [Open-source and third-party software inventory](release-docs/OSS-LICENSES.md) — bilingual introduction and package tables
 - [Third-party copyright and license texts](release-docs/THIRD-PARTY-NOTICES.txt)
 
-Developers can download `agent-pick-link-0.2.15-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
+Developers can download `agent-pick-link-0.2.16-source.zip`. Dependency versions are pinned in `package-lock.json`. From the extracted directory containing `package.json`, run:
 
 ```sh
 npm ci
@@ -161,7 +165,7 @@ npm run schemas:check
 npm run package:vsix
 ```
 
-The generated VSIX is `dist-vsix/agent-pick-link-0.2.15.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
+The generated VSIX is `dist-vsix/agent-pick-link-0.2.16.vsix`. Browser tests require a locally installed Edge or Chrome; use `M365_AGENT_TEST_BROWSER` to specify a nonstandard executable path. Tests requiring a missing browser or a different operating system are skipped. Visible-window browser tests are skipped by default; enable them with `M365_AGENT_TEST_HEADED=1`. They are always skipped when `CI` is set. Tests use local fixtures and temporary data, without Microsoft 365 credentials.
 
 ## CLI output and uninstall checks
 

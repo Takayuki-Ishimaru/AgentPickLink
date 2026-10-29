@@ -13,6 +13,7 @@ import {
 import { directAgentIdFromUrl, matchesValidatedAgentPath } from "./identity.js";
 import { changedBeforePress } from "./send-activation.js";
 import { SubmissionTracker } from "./submission-tracker.js";
+import { responseTextDigest } from "./completion-detector.js";
 import { correlateTurn, submissionContinuityProblem, type TurnSnapshot } from "./turn-correlation.js";
 import type { CorrelationDiagnostic } from "../../observability/correlation.js";
 import {
@@ -70,6 +71,16 @@ export class ConversationDriver {
     EnteredMessage,
     Partial<Record<"invoke" | "read", string>>
   >();
+  private readonly completedReplies = new WeakMap<
+    EnteredMessage,
+    {
+      page: PageLike;
+      handle: string;
+      bindingFingerprint: string;
+      marker: ResponseMarker;
+      reply: Extract<CollectedReply, { complete: true }>;
+    }
+  >();
   constructor(
     private readonly navigator: AgentNavigator,
     private readonly attachmentSaver = new AttachmentSaver(),
@@ -110,6 +121,7 @@ export class ConversationDriver {
     let userMessagesBeforeTyping: number | undefined;
     let turnBeforeTyping: TurnSnapshot | undefined;
     const entered = request.entered;
+    if (entered) this.completedReplies.delete(entered);
     const stopWatching = this.navigator.watch(page, "app");
     try {
       tracker.transition("ASSERTING_IDENTITY_BEFORE_FILL");
@@ -333,6 +345,8 @@ export class ConversationDriver {
             completion: reply.completion
           }
         );
+      if (await this.rememberCompletedReply(entered, page, conversation, adapter, responseMarker, reply))
+        await assertPostSubmitContext();
       tracker.complete();
       if (entered) Object.assign(entered, { state: "sent", settledAt: Date.now() });
       report("done", "The agent response is complete");
@@ -346,6 +360,7 @@ export class ConversationDriver {
         sourceType: "m365-agent"
       };
     } catch (error) {
+      if (entered) this.completedReplies.delete(entered);
       tracker.fail();
       // Every failure says whether the message was sent; one that does not yet takes the state the
       // submission reached (SubmissionTracker).
@@ -431,6 +446,7 @@ export class ConversationDriver {
     };
     const stopWatching = this.navigator.watch(page, "app");
     try {
+      if (request.signal?.aborted) throw cancelled();
       report("asserting-identity", "Verifying the active agent identity");
       await assertPostSubmitContext();
       const entered = request.entered;
@@ -482,6 +498,7 @@ export class ConversationDriver {
         );
       const message = judgement;
       if (message !== "shown") {
+        this.completedReplies.delete(entered);
         report("done", "The conversation was read");
         return { message, ...about, reply: "none" };
       }
@@ -498,7 +515,10 @@ export class ConversationDriver {
           : undefined;
       };
       if (!replyAnchor(exchange)) {
-        if (snapshot) return { message, ...about, reply: "none" };
+        this.completedReplies.delete(entered);
+        if (snapshot) {
+          return { message, ...about, reply: "none" };
+        }
         report("waiting-response", "Waiting for the agent to start responding");
         exchange = await watch(
           exchange,
@@ -524,7 +544,8 @@ export class ConversationDriver {
         await assertPostSubmitContext();
         const current = await capture();
         const currentMessage = judge(current);
-        if (currentMessage !== "shown" || replyAnchor(current)?.responseKey !== anchor.responseKey) {
+        if (currentMessage !== "shown" || !sameReplyAnchor(replyAnchor(current), anchor)) {
+          this.completedReplies.delete(entered);
           lostMessage = currentMessage === "differs" ? "differs" : "unconfirmed";
           this.logCorrelation(current, entered, "unconfirmed", "read", "response-reassigned");
           throw new BrowserTransportError(
@@ -538,14 +559,38 @@ export class ConversationDriver {
       let reply: CollectedReply;
       try {
         if (snapshot) {
-          // A single observation cannot establish that generation has finished. Return only the
-          // correlated text, never wait for stability or downloads, and retain the conversation.
+          // Reuse completion only for the exact reply already confirmed by this broker. A new
+          // snapshot alone cannot certify completion and never waits or downloads files.
           const partial = await adapter.extractLatestResponse(page, {
             assistantCount: exchange.assistantCount,
             digest: exchange.digest,
             turn: anchor
           });
           await assertReplyContext();
+          const cached = this.completedReplies.get(entered);
+          if (
+            cached &&
+            cached.page === page &&
+            cached.handle === conversation.handle &&
+            cached.bindingFingerprint === conversation.bindingFingerprint &&
+            sameReplyAnchor(cached.marker.turn, anchor) &&
+            responseSignature(partial) === responseSignature(cached.reply.response) &&
+            (await this.replyStillComplete(page, adapter, cached.marker, cached.reply))
+          ) {
+            await assertReplyContext();
+            if (request.signal?.aborted) throw cancelled();
+            report("done", "The agent response is complete");
+            return {
+              message,
+              ...about,
+              reply: "complete",
+              response: {
+                ...cached.reply.response,
+                attachments: cached.reply.attachments
+              }
+            };
+          }
+          this.completedReplies.delete(entered);
           return {
             message,
             ...about,
@@ -574,6 +619,7 @@ export class ConversationDriver {
         throw error;
       }
       if (!reply.complete) {
+        this.completedReplies.delete(entered);
         // A cancelled read reports the cancellation, not a reply that merely did not finish.
         if (request.signal?.aborted) throw cancelled();
         return {
@@ -583,6 +629,15 @@ export class ConversationDriver {
           ...(reply.partialResponse ? { partialResponse: reply.partialResponse } : {})
         };
       }
+      await this.rememberCompletedReply(
+        entered,
+        page,
+        conversation,
+        adapter,
+        { assistantCount: exchange.assistantCount, digest: exchange.digest, turn: anchor },
+        reply
+      );
+      await assertReplyContext();
       report("done", "The agent response is complete");
       return {
         message,
@@ -590,9 +645,53 @@ export class ConversationDriver {
         reply: "complete",
         response: { ...reply.response, attachments: reply.attachments }
       };
+    } catch (error) {
+      if (request.entered) this.completedReplies.delete(request.entered);
+      throw error;
     } finally {
       stopWatching();
     }
+  }
+
+  private async replyStillComplete(
+    page: PageLike,
+    adapter: ChatUiAdapter,
+    marker: ResponseMarker,
+    reply: Extract<CollectedReply, { complete: true }>
+  ): Promise<boolean> {
+    if (!marker.turn || !reply.responseDigest || !adapter.observeResponse) return false;
+    const observed = await adapter.observeResponse(page, marker).catch(() => undefined);
+    return (
+      !!observed &&
+      observed.readable &&
+      !observed.streaming &&
+      !observed.anchorLost &&
+      !!observed.text &&
+      responseTextDigest(observed.text) === reply.responseDigest
+    );
+  }
+
+  private async rememberCompletedReply(
+    entered: EnteredMessage | undefined,
+    page: PageLike,
+    conversation: BrowserPageConversation,
+    adapter: ChatUiAdapter,
+    marker: ResponseMarker,
+    reply: Extract<CollectedReply, { complete: true }>
+  ): Promise<boolean> {
+    if (!entered) return false;
+    this.completedReplies.delete(entered);
+    if (await this.replyStillComplete(page, adapter, marker, reply)) {
+      this.completedReplies.set(entered, {
+        page,
+        handle: conversation.handle,
+        bindingFingerprint: conversation.bindingFingerprint,
+        marker,
+        reply
+      });
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -714,7 +813,7 @@ export class ConversationDriver {
     // The saver stops at its next safe point once cancelled; if that cut any file short, report it
     // like a cancel above. A cancel arriving after every file was handled changes nothing.
     if (attachments.some((item) => item.stage === "cancelled")) throw cancelledWhileCollecting();
-    return { complete: true, response, attachments };
+    return { complete: true, response, attachments, responseDigest: completion.responseDigest };
   }
 
   /**
@@ -913,12 +1012,28 @@ type CollectedReply =
       complete: true;
       response: Omit<ExtractedResponse, "attachmentCandidates">;
       attachments: AgentAttachment[];
+      responseDigest?: string;
     }
   | {
       complete: false;
       partialResponse?: PartialResponse;
       completion: { reason: string; sawStreamingSignal: boolean; finalChars: number };
     };
+
+function sameReplyAnchor(left: ResponseMarker["turn"], right: ResponseMarker["turn"]): boolean {
+  return (
+    !!left &&
+    !!right &&
+    left.documentId === right.documentId &&
+    left.conversationId === right.conversationId &&
+    left.userKey === right.userKey &&
+    left.responseKey === right.responseKey
+  );
+}
+
+function responseSignature(response: Omit<ExtractedResponse, "attachmentCandidates">): string {
+  return JSON.stringify([response.text, response.citations, response.actionRequired, response.truncated]);
+}
 
 /** The digest a conversation's last entered message is remembered by: its text with line endings
  * and no-break spaces folded the way the acknowledgement compares the user's bubble. */

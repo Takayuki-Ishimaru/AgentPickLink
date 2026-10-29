@@ -157,6 +157,8 @@ export interface SetupHost {
   readonly version: string;
   /** The shared application paths; `restartBrokerIfStale()` needs them alongside `brokerEntry()`. */
   readonly paths: AppPaths;
+  /** Standalone hosts supply their own return destination after browser sign-in. */
+  signInInstructions?(): string;
   post(message: HostMessage): void; // webview, browser page, or terminal renderer
   log(line: string): void; // metadata only, same invariant as today
   confirm(request: ConfirmRequest): Promise<boolean>;
@@ -683,17 +685,18 @@ export class SetupController {
   /** Explain the browser handoff before it takes focus, only when a visible login is needed. */
   private interactiveSignIn(automatic = false): Promise<{ state: string }> {
     const t = translator(this.host.locale);
+    const instructions = this.host.signInInstructions?.() ?? t("browserSignInInstructions");
     return this.setup().ensureSignedIn({
       interactive: true,
       beforeInteractiveLogin: async () => {
         if (automatic) {
           this.patch({ phase: "signing-in", progress: undefined });
-          this.host.notify("info", t("browserSignInInstructions"));
+          this.host.notify("info", instructions);
           return true;
         }
         const confirmed = await this.host.confirm({
           title: t("browserSignInTitle"),
-          detail: t("browserSignInInstructions"),
+          detail: instructions,
           confirmLabel: t("openSignInBrowser"),
           severity: "info",
           kind: "plan"

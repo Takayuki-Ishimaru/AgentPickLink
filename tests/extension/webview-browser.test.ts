@@ -128,6 +128,20 @@ describe.skipIf(!executable)("setup webview in a real browser", () => {
     await post(state);
   });
 
+  it("shows user registration independently from the optional project integration", async () => {
+    state.locale = "en";
+    state.userIntegrations = { claudeCode: true, vscodeMcpJson: false };
+    state.clientApplication = "not-selected";
+    await post(state);
+    await page.locator(".options-section summary").click();
+    expect(await page.locator("#user-integrations").innerText()).toContain(
+      "Registered (user-wide): Claude Code"
+    );
+    expect(await page.locator("#integration-claudeCode").isChecked()).toBe(false);
+    expect(await page.locator("label:has(#integration-claudeCode)").innerText()).toContain(".mcp.json");
+    expect(await page.locator("#app").innerText()).not.toContain("No integrations selected");
+  });
+
   it("shows the workspace and lets a new candidate's alias be edited", async () => {
     state.candidates = [
       candidate({ key: "japanese", displayName: "営業", suggestedAlias: "agent-12345678" })

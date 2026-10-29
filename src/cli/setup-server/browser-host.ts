@@ -17,6 +17,7 @@ import type {
 import type { CommandDeps } from "../command-deps.js";
 import { TerminalSetupHost, type TerminalSetupHostOptions } from "../setup-host-terminal.js";
 import { startSetupServer, type SetupServer } from "./server.js";
+import { runIntegrationsStatus } from "../commands/integrations.js";
 
 /** Polls only an existing broker; closing the host releases both timer and IPC client. */
 export function pollSetupHealth(
@@ -74,7 +75,8 @@ export class BrowserSetupHost extends TerminalSetupHost {
      * that same config.yaml default, unchanged. The default, zero-touch user-scope writers
      * (`vscodeUser`/`claudeUser`) are `install`'s own concern outside this panel entirely and have
      * no slot in `IntegrationFlags` to show here -- documented in the report, not modeled here. */
-    private readonly initialIntegrationFlags?: IntegrationFlags
+    private readonly initialIntegrationFlags?: IntegrationFlags,
+    private readonly userIntegrations?: PanelState["userIntegrations"]
   ) {
     super(options, clients);
   }
@@ -88,6 +90,7 @@ export class BrowserSetupHost extends TerminalSetupHost {
   override post(message: HostMessage): void {
     super.post(message);
     const copy = structuredClone(message);
+    if (this.userIntegrations) copy.state.userIntegrations = this.userIntegrations;
     this.keys.clear();
     const keyFor = (key: string): string => {
       const opaque = createHash("sha256").update(this.salt).update(key).digest("hex");
@@ -130,10 +133,15 @@ export class BrowserSetupHost extends TerminalSetupHost {
     });
     this.deps.stdout(`${request.title}\n${request.detail ? `${request.detail}\n` : ""}`);
     // No browser message or automatic flag can answer this confirmation.
-    const accepted = await this.deps.prompter.confirm(request.confirmLabel);
-    if (this.server.active() && this.lastPanelState())
-      this.post({ type: "state", state: this.lastPanelState()! });
-    return this.server.active() && accepted;
+    try {
+      const accepted = await this.deps.prompter.confirm(request.confirmLabel);
+      return this.server.active() && accepted;
+    } finally {
+      if (this.server.active()) {
+        this.server.send({ type: "terminal", text: "" });
+        if (this.lastPanelState()) this.post({ type: "state", state: this.lastPanelState()! });
+      }
+    }
   }
   override onHealth(listener: (health: BrokerHealthSnapshot | undefined) => void): Disposable {
     return pollSetupHealth(this.deps, listener);
@@ -154,7 +162,25 @@ export async function runBrowserSetup(
   if (!deps.prompter.interactive)
     throw new DomainError("INVALID_ARGUMENT", "Browser setup needs an interactive terminal for consent.");
   const config = await loadGlobalConfig(deps.paths);
-  const host = new BrowserSetupHost(options, config.clients, deps, initialIntegrationFlags);
+  const registration = await runIntegrationsStatus(deps, {
+    client: "claude-user,vscode-user",
+    workspace: options.workspaceRoot,
+    home: options.installHome
+  }).catch(() => undefined);
+  const entries = registration?.clients as
+    Array<{ client: string; status: string; needsRefresh: boolean }> | undefined;
+  const registered = (client: string) =>
+    !!entries?.some(
+      (entry) =>
+        entry.client === client && ["managed", "legacy"].includes(entry.status) && !entry.needsRefresh
+    );
+  const host = new BrowserSetupHost(
+    options,
+    config.clients,
+    deps,
+    initialIntegrationFlags,
+    entries ? { claudeCode: registered("claude-user"), vscodeMcpJson: registered("vscode-user") } : undefined
+  );
   const service = deps.createSetupService(deps, () => options.workspaceRoot);
   const controller = new SetupController(host, () => service);
   let resolveDone!: () => void;
@@ -165,6 +191,7 @@ export async function runBrowserSetup(
   });
   const server = await startSetupServer({
     mediaDirectory: path.join(packageRoot, "media"),
+    locale: options.locale,
     onExpired: () => {
       void service.cancelSignIn().catch(() => undefined);
       controller.dispose();
@@ -223,7 +250,7 @@ export async function runBrowserSetup(
           if (
             !(await host.confirm({
               title: message.type,
-              confirmLabel: "Continue / 続行",
+              confirmLabel: options.locale === "ja" ? "続行" : "Continue",
               severity: "warning",
               kind: "agents"
             }))

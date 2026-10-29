@@ -76,9 +76,12 @@
       noSavedDownloadHosts: "保存されるホストはありません",
       saveBlockedByHosts: "ダウンロードを許可するホストに使えない値があります。修正すると保存できます。",
       integrations: "AI クライアント連携",
-      codex: "Codex",
-      claudeCode: "Claude Code",
-      vscodeMcpJson: "VS Code",
+      codex: "Codex（ユーザー全体）",
+      claudeCode: "Claude Code（このフォルダーの .mcp.json）",
+      vscodeMcpJson: "VS Code（このフォルダーの .vscode/mcp.json）",
+      integrationScopeHint:
+        "チェックすると上記の設定ファイルへ連携を追加します。ユーザー全体へ登録済みの場合、フォルダーへの追加は任意です。",
+      userRegistered: "登録済み（ユーザー全体）: ",
       capability: "ファイル生成・アクションあり",
       details: "詳細",
       broker: "ブローカー",
@@ -207,9 +210,12 @@
       noSavedDownloadHosts: "No hosts will be saved",
       saveBlockedByHosts: "Some download hosts cannot be used. Fix them to save.",
       integrations: "AI client integrations",
-      codex: "Codex",
-      claudeCode: "Claude Code",
-      vscodeMcpJson: "VS Code",
+      codex: "Codex (user settings)",
+      claudeCode: "Claude Code (this folder: .mcp.json)",
+      vscodeMcpJson: "VS Code (this folder: .vscode/mcp.json)",
+      integrationScopeHint:
+        "Selecting a checkbox adds the integration to the indicated settings file. Folder registration is optional when already registered for this user.",
+      userRegistered: "Registered (user-wide): ",
       capability: "File output / actions possible",
       details: "Details",
       broker: "Broker",
@@ -247,15 +253,15 @@
       diagnostics: "Diagnostics",
       agents: "Agents",
       phase: {
-        idle: "idle",
+        idle: "Ready to set up",
         checking: "Checking connection",
         "signing-in": "Signing in",
         discovering: "Loading agents",
-        selecting: "select agents",
+        selecting: "Choose agents",
         saving: "Saving settings",
-        done: "done",
-        connected: "connected",
-        error: "error"
+        done: "Completed",
+        connected: "Connected",
+        error: "Needs attention"
       },
       progressPhase: {
         connecting: "Starting the local connection",
@@ -499,7 +505,9 @@
     if (state.clientApplication === "complete") return ja ? "確認済み" : "Confirmed";
     if (state.clientApplication === "partial")
       return ja ? "一部未完了。警告を確認" : "Incomplete; check warnings";
-    if (state.clientApplication === "not-selected") return ja ? "連携の選択なし" : "No integrations selected";
+    if (registeredUserClients().length) return ja ? "登録済み（ユーザー全体）" : "Registered (user-wide)";
+    if (state.clientApplication === "not-selected")
+      return ja ? "このフォルダーへの追加なし" : "No folder integrations selected";
     return ja ? "未確認" : "Not checked";
   }
 
@@ -1141,6 +1149,11 @@
     return local.integrations || state.integrations;
   }
 
+  function registeredUserClients() {
+    var flags = state.userIntegrations || {};
+    return [flags.claudeCode ? "Claude Code" : "", flags.vscodeMcpJson ? "VS Code" : ""].filter(Boolean);
+  }
+
   function optionsSection() {
     var strings = t();
     var flags = integrationFlags();
@@ -1221,6 +1234,13 @@
         h("span", { text: strings.acceptDownloads })
       ),
       h("h2", { text: strings.integrations }),
+      h("p", { class: "muted", text: strings.integrationScopeHint }),
+      registeredUserClients().length
+        ? h("p", {
+            id: "user-integrations",
+            text: strings.userRegistered + registeredUserClients().join(", ")
+          })
+        : null,
       toggle("codex", strings.codex),
       toggle("claudeCode", strings.claudeCode),
       toggle("vscodeMcpJson", strings.vscodeMcpJson)

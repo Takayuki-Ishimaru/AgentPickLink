@@ -234,6 +234,19 @@ async function harness(
 }
 
 describe("InvocationService", () => {
+  it("creates a reusable conversation by its unique approved display name", async () => {
+    const fixture = await harness();
+    const conversation = await fixture.service.create(fixture.workspaceRoot, agent.displayName);
+    expect(conversation.agentAlias).toBe(agent.alias);
+    expect(fixture.transport.creates).toBe(1);
+  });
+  it("refuses an unapproved display name before creating a conversation", async () => {
+    const fixture = await harness({ approved: false });
+    await expect(fixture.service.create(fixture.workspaceRoot, agent.displayName)).rejects.toMatchObject({
+      code: "AGENT_NOT_ASSIGNED"
+    });
+    expect(fixture.transport.creates).toBe(0);
+  });
   it("resolves a unique approved display name and keeps the canonical alias in conversations", async () => {
     const fixture = await harness();
     const conversation = await fixture.service.create(fixture.workspaceRoot, agent.alias);

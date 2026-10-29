@@ -1,5 +1,62 @@
 # リリースノート
 
+## v0.2.16 Beta
+
+**ベータ版も自動更新の対象です。** 自動更新は初期値で有効で、更新チャネルの初期値は `beta`（ベータ版を含む）です。新しいベータ版の VSIX を取得し、SHA-256 とビルド証明を検証して自動インストールします。反映には VS Code の再読み込みが必要です。
+
+### 主な変更
+
+- **古い VS Code での更新案内を修正しました。** 内蔵 Node.js がビルド証明の検証に対応しない場合は、VSIX をダウンロードせず、公式 Releases からの手動更新を案内します。対応する環境では、引き続き SHA-256 とビルド証明を検証してから自動インストールします。
+- **エージェント一覧の表示待ちを抑えました。** 説明文を取得できないエージェントで長く待ち続けないよう、説明取得の待ち時間を制限しました。説明文がない結果も短時間保持し、すぐに再探索した場合の待ち時間を抑えます。
+- **完了済みの回答を読み直したときの状態を修正しました。** 同じ会話・質問・回答を確認でき、回答の生成が再開していなければ、直後の `read` でも `reply: "complete"` を返します。本文の変化・再生成・質問との対応の不明確さを検出した場合は、完了扱いにしません。質問の自動再送は行いません。
+- **セットアップの連携表示と保存後の案内を改善しました。** ユーザー全体に登録済みの連携と、このフォルダーへの任意の追加を区別して表示します。状態名、確認後の表示、日本語のヘルプ・診断・進捗、非対話操作の `--yes` の案内、MCP 接続失敗時の説明を見直しました。`apl self status` でインストール先・設定・ログの保存先をまとめて確認できます。
+- **会話作成時のエージェント指定と応答形式をそろえました。** `m365_agent_session` の `action: "new"` でも、一意に一致する承認済みの表示名を指定できます。同名が複数ある場合は別名を指定してください。会話を1件返す応答には最上位の `conversationHandle` を追加し、従来の入れ子形式も保持します。ツールの説明も簡潔にしました。
+- **npm・ソースビルドの Node.js 要件を更新しました。** 対応範囲は22系の22.22.2以降、24系の24.15.0以降、または26以降です。ポータブル版には引き続き Node.js 24.22.1 を同梱します。
+
+### 更新方法
+
+v0.2.12 以降で自動更新が有効なら、既定の `beta` チャネルで v0.2.16 も自動取得・検証・インストールされます。インストール後に VS Code を再読み込みしてください。利用者が `stable`（安定版のみ）を明示的に選択している場合は、`beta` に切り替えるとベータ版も自動更新の対象になります。自動更新を無効にしている場合は、サイドバーで **拡張機能の自動更新** をオンにしてください。手動更新する場合は、`agent-pick-link-0.2.16.vsix` を **拡張機能: VSIX からのインストール…** でインストールし、再読み込みしてください。
+
+ビルド証明の検証には GitHub と Sigstore への接続が必要です。拡張機能の更新検証は VS Code 内蔵の Node.js を使うため、`agentpicklink.nodePath` の変更では検証環境は変わりません。手動で更新する場合は、配布元とファイルの出所を確認してください。
+
+ポータブル版は、お使いの OS・CPU 向けのアーカイブを展開し、`apl-setup <ワークスペース>` を実行します。機械インストールの更新は手動です。既存の設定・ワークスペース承認・専用ブラウザープロファイルは引き続き利用できます。設定・ログの保存先の移動は行いません。外部 AI クライアントの MCP 接続とローカルプロセスも再起動してください。再起動前の会話ハンドルは引き継げないため、既存の質問は Microsoft 365 の元の会話で確認してください。設定ファイルの形式に変更はありません。
+
+`read` は既定では待機しません。完了をまだ確認できていない回答を待つ場合は `waitMs`（最大 `300000` ミリ秒）を指定してください。[導入手順](README.md)、[設定ガイド](CONFIGURATION.md)、[トラブルシューティング](TROUBLESHOOTING.md)も参照してください。
+
+### 配布物
+
+- `agent-pick-link-0.2.16.vsix` — VS Code 拡張機能。
+- `AgentPickLink-0.2.16-win-x64.zip` / `AgentPickLink-0.2.16-win-arm64.zip` — Windows 用ポータブル版。
+- `AgentPickLink-0.2.16-darwin-arm64.tgz` / `AgentPickLink-0.2.16-darwin-x64.tgz` — macOS 用ポータブル版（開発・検証向け）。
+- `AgentPickLink-0.2.16-linux-x64.tgz` — Linux 用アーカイブ（開発・CI 専用）。
+- `agent-pick-link-0.2.16-source.zip` — ソースコード。
+- `SHA256SUMS` — 配布ファイルの SHA-256 チェックサム。
+
+### 対応範囲
+
+Windows 11 と Microsoft Edge を主な対象とするベータ版です。macOS は開発・検証向け、Linux は開発・CI 専用です。Linux の標準の `serve` は `PLATFORM_UNSUPPORTED` を返します。
+
+実 Microsoft 365 テナント、実際の VS Code 画面、実際の AI クライアントの停止操作、および最終配布物のすべての OS・CPU での実機動作は未確認です。ブラウザーの自動検証は模擬画面を使い、拡張機能の試験は API モックを使います。利用する環境で質問・回答・ファイル取得・設定保存・更新動作を確認してください。[対応環境と検証範囲](RELEASE-CHECKLIST.md)を参照してください。
+
+### English
+
+**Beta releases are included in automatic updates.** Automatic updates are enabled by default, and the default `beta` channel includes prereleases. The extension downloads newer beta VSIX files, verifies SHA-256 and build provenance, and installs them automatically. Reload VS Code to apply an installed update.
+
+- **Corrected update guidance on older VS Code runtimes.** When the built-in Node.js cannot verify build attestations, the extension offers a manual update without downloading the VSIX. Supported runtimes continue to verify SHA-256 and build provenance before automatic installation.
+- **Reduced discovery delays when descriptions are unavailable.** Description lookup has a bounded wait, and missing results are retained briefly to avoid repeating that delay on immediate rediscovery.
+- **Fixed immediate reads of completed replies.** `read` returns `reply: "complete"` when the same conversation, question, and answer are still verified and generation has not resumed. Changed answers, regeneration, or uncertain correspondence invalidate that completion. Questions are never automatically resent.
+- **Improved setup and CLI guidance.** User-wide registrations are shown separately from optional folder integrations. Improved state labels, post-confirmation messages, Japanese help, diagnostics and progress, noninteractive `--yes` guidance, and MCP connection failure messages. `apl self status` shows installation, configuration, and log paths together.
+- **Aligned conversation creation and responses.** `m365_agent_session` with `action: "new"` accepts a uniquely matching approved display name; use an alias for ambiguous names. Responses containing one conversation also expose `conversationHandle` at the top level while preserving the nested form. Tool descriptions are shorter.
+- **Updated Node.js requirements for npm and source builds.** Use 22.22.2 or later in the 22 line, 24.15.0 or later in the 24 line, or version 26 or later. Portable archives continue to bundle Node.js 24.22.1.
+
+With automatic updates enabled in v0.2.12 or later, the default `beta` channel automatically downloads, verifies, and installs v0.2.16. Reload VS Code after installation. If you explicitly selected `stable`, switch to `beta` to include prereleases. If automatic updates are off, enable **Automatically update the extension** in the sidebar. For a manual update, install `agent-pick-link-0.2.16.vsix` and reload. Attestation verification requires GitHub and Sigstore access and uses VS Code's built-in Node.js. Changing `agentpicklink.nodePath` does not change that verification runtime. Check the release source and file provenance before manual installation.
+
+For portable installations, extract the archive for your OS and CPU and run `apl-setup <workspace>`. Machine installation updates remain manual. Existing settings, approvals, and the dedicated browser profile can be reused; configuration and log locations are unchanged. Restart external MCP connections and local processes. Conversation handles issued before a restart cannot be reused; inspect existing questions in the original Microsoft 365 conversation. Configuration formats are unchanged. `read` remains immediate by default; use `waitMs`, up to `300000`, when completion has not yet been verified. See the [English setup guide](README.en.md).
+
+Downloads include the VSIX, Windows x64 / ARM64 and macOS Apple Silicon / Intel portable archives, a development/CI-only Linux x64 archive, source code, and `SHA256SUMS`.
+
+Windows 11 with Microsoft Edge remains the primary target; macOS is for development and verification, and Linux is for development/CI only. Standard Linux `serve` returns `PLATFORM_UNSUPPORTED`. Live Microsoft 365 tenant and actual VS Code interface checks, cancellation through actual AI clients' stop controls, and native execution of the final distribution on every OS/CPU remain unverified. Browser checks use mock pages and extension checks use API mocks. Validate questions, replies, file retrieval, settings, and updates in your environment. See [supported environments and validation scope](RELEASE-CHECKLIST.md).
+
 ## v0.2.15 Beta
 
 ### 主な変更

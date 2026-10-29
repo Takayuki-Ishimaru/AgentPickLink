@@ -119,6 +119,10 @@ const MESSAGES = {
     ja: "これからサインイン用のブラウザーを開きます。エージェントを利用する職場または学校アカウントでサインインし、追加認証を求められた場合もブラウザーで操作してください。\n\nサインインが完了すると、このウィンドウは自動で閉じます。その後、VS Code の AgentPickLink パネルに戻ってください。",
     en: "A browser window will open for sign-in. Sign in with the work or school account that has your agents and complete any additional authentication in that browser.\n\nIf a personal account appears, use its account menu to switch to your work or school account. The window closes automatically when sign-in is complete. Then return to the AgentPickLink panel in VS Code."
   },
+  standaloneBrowserSignInInstructions: {
+    ja: "これからサインイン用のブラウザーを開きます。エージェントを利用する職場または学校アカウントでサインインし、追加認証を求められた場合もブラウザーで操作してください。\n\nサインインが完了すると、このウィンドウは自動で閉じます。その後、AgentPickLink のセットアップ画面に戻ってください。",
+    en: "A browser window will open for sign-in. Sign in with the work or school account that has your agents and complete any additional authentication in that browser.\n\nIf a personal account appears, use its account menu to switch to your work or school account. The window closes automatically when sign-in is complete. Then return to AgentPickLink setup."
+  },
   openSignInBrowser: { ja: "ブラウザーを開く", en: "Open browser" },
   // G3: unregistering a registered agent (distinct from the panel's "hide from list", which never
   // touches the registry) and revoking this workspace's local approval.
@@ -264,8 +268,8 @@ const MESSAGES = {
     en: "--dry-run was given; nothing was changed."
   },
   installNotConfirmed: {
-    ja: "確認されなかったため、インストールを中止しました。",
-    en: "Installation was not confirmed; nothing was changed."
+    ja: "確認されなかったため、インストールを中止しました。端末なしで計画を承認する場合は apl-setup --yes を指定してください（エージェントの承認は別途必要です）。",
+    en: "Installation was not confirmed; nothing was changed. To confirm the plan without a terminal, use apl-setup --yes (agent approval remains separate)."
   },
   installStaging: { ja: "パッケージを配置しています...", en: "Staging the package..." },
   installStagingSkipped: {

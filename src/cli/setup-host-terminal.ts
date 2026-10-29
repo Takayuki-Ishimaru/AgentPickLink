@@ -17,6 +17,7 @@ import type { AppPaths } from "../config/paths.js";
 import { loadGlobalConfig, saveGlobalConfig } from "../config/global-config.js";
 import type { GlobalConfig } from "../config/schema.js";
 import { persistedEnvironment } from "../services/env-policy.js";
+import { localizedProgressMessage } from "../services/progress-localize.js";
 import {
   buildStamp,
   identityFor,
@@ -159,26 +160,6 @@ const PROGRESS_PHASE_LABELS: Record<PanelProgress["phase"], { ja: string; en: st
   "restarting-broker": { ja: "バックグラウンド処理を再起動中", en: "Restarting background service" }
 };
 
-const PROGRESS_MESSAGES_JA: Record<string, string> = {
-  Working: "処理中",
-  "Preparing local state": "ローカルの設定を準備しています",
-  "Connecting to broker": "バックグラウンド処理に接続しています",
-  "Checking sign-in status": "サインインの状態を確認しています",
-  "Waiting for sign-in confirmation": "サインインの確認を待っています",
-  "Starting agent discovery": "エージェントの探索を開始しています",
-  "Opening the Microsoft 365 landing page": "Microsoft 365 のホームページを開いています",
-  "Waiting for sign-in in the AgentPickLink window": "AgentPickLink のウィンドウでサインインしてください",
-  "Sign-in completed; closing the sign-in window": "サインインを確認しました。ウィンドウを閉じています",
-  "Verifying the session in the hidden browser": "バックグラウンドのブラウザーでサインインを確認しています",
-  "The dedicated automation profile is signed in": "自動操作用のプロファイルでサインインしました"
-};
-
-function localizedProgressMessage(message: string, locale: Locale): string {
-  if (locale !== "ja") return message;
-  const found = /^Found (\d+) agent candidate\(s\)$/.exec(message);
-  return PROGRESS_MESSAGES_JA[message] ?? (found ? `${found[1]} 件の候補が見つかりました` : message);
-}
-
 function progressLine(progress: PanelProgress, locale: Locale, verbose: boolean): string {
   if (progress.message?.startsWith("login-reason:") && !verbose) return "";
   const seconds = progress.elapsedMs !== undefined ? Math.round(progress.elapsedMs / 1000) : undefined;
@@ -221,6 +202,11 @@ export class TerminalSetupHost implements SetupHost {
 
   private clients: ClientFlags;
   private lastState?: PanelState;
+  private lastProgressSignature = "";
+  private lastProgressAt = 0;
+  signInInstructions(): string {
+    return translator(this.locale)("standaloneBrowserSignInInstructions");
+  }
   private lastSaveSummary?: SaveSummary;
 
   constructor(
@@ -267,7 +253,23 @@ export class TerminalSetupHost implements SetupHost {
       if (state.progress.message?.startsWith("login-reason:"))
         void appendCliLog(this.paths, state.progress.message).catch(() => undefined);
       const line = progressLine(state.progress, this.locale, !!this.options.verboseOut);
-      if (line.length > 0) this.options.out(`  ${line}`);
+      const signature = JSON.stringify([
+        state.progress.phase,
+        state.progress.message?.replace(/ \(still working\)$/, ""),
+        state.progress.current,
+        state.progress.total
+      ]);
+      const now = Date.now();
+      if (
+        line.length > 0 &&
+        (this.options.verboseOut ||
+          signature !== this.lastProgressSignature ||
+          now - this.lastProgressAt >= 30_000)
+      ) {
+        this.options.out(`  ${line}`);
+        this.lastProgressSignature = signature;
+        this.lastProgressAt = now;
+      }
     }
 
     if (state.discoverySummary && !sameJson(state.discoverySummary, previous?.discoverySummary)) {

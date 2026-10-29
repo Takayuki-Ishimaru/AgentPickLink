@@ -270,6 +270,9 @@ type LandingStructure = {
 const discoverySignals = new WeakMap<PageLike, AbortSignal>();
 const partialDiscoveries = new WeakMap<PageLike, DiscoveredAgent[]>();
 const DESCRIPTION_CACHE_MS = 30 * 60_000;
+/** How long a description an inspection completed without finding counts as absent. Far shorter
+ * than the successful TTL, so late-published metadata is picked up quickly. */
+const DESCRIPTION_ABSENT_CACHE_MS = 60_000;
 
 export class AgentDiscovery {
   private readonly manager: BrowserManager;
@@ -297,7 +300,9 @@ export class AgentDiscovery {
     this.rowsSettleMs = options.rowsSettleMs ?? 8_000;
     this.storeWaitMs = options.storeWaitMs ?? 5_000;
     this.storeItemWaitMs = options.storeItemWaitMs ?? 3_000;
-    this.descriptionWaitMs = options.descriptionWaitMs ?? this.navigationTimeoutMs;
+    // An absent optional description must not cost a discovery run more than 3s per agent; each
+    // call site additionally caps the wait by the remaining overall discovery deadline.
+    this.descriptionWaitMs = options.descriptionWaitMs ?? Math.min(3_000, this.navigationTimeoutMs);
     this.storeMaxItems = options.storeMaxItems ?? 500;
     this.relocateDelayMs = options.relocateDelayMs ?? STORE_RETRY_SETTLE_MS;
   }
@@ -307,7 +312,8 @@ export class AgentDiscovery {
     return neutralLandingUrl(this.appHosts, this.neutralAppUrl);
   }
 
-  private readonly descriptionCache = new Map<string, { text: string; at: number }>();
+  private readonly descriptionCache = new Map<string, { text?: string; at: number }>();
+  private readonly descriptionBudgets = new WeakMap<PageLike, Map<string, number>>();
 
   clearDescriptionCache(): void {
     this.descriptionCache.clear();
@@ -315,24 +321,69 @@ export class AgentDiscovery {
 
   private descriptionKey(url: string, name: string): string {
     const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}\0${name}`;
+    // Store cards can land on a conversation route. Descriptions belong to the agent, so a
+    // newly allocated thread must not bypass either the successful or absent metadata cache.
+    const agentId = agentIdFromPath(url);
+    const pathname = agentId ? `/chat/agent/${encodeURIComponent(agentId)}` : parsed.pathname;
+    return `${parsed.origin}${pathname}\0${name}`;
   }
 
-  private cachedDescription(url: string, name: string): string | undefined {
+  /** An entry whose inspection completed successfully; `text` absent means confirmed absent.
+   * Expired and future-dated (clock-skew) entries are dropped, not trusted. */
+  private freshDescriptionEntry(url: string, name: string): { text?: string; at: number } | undefined {
     const key = this.descriptionKey(url, name);
     const entry = this.descriptionCache.get(key);
-    if (entry && Date.now() >= entry.at && Date.now() - entry.at < DESCRIPTION_CACHE_MS) return entry.text;
-    this.descriptionCache.delete(key);
+    if (entry) {
+      const age = Date.now() - entry.at;
+      const ttl = entry.text === undefined ? DESCRIPTION_ABSENT_CACHE_MS : DESCRIPTION_CACHE_MS;
+      if (age >= 0 && age < ttl) return entry;
+      this.descriptionCache.delete(key);
+    }
     return undefined;
   }
 
-  private rememberDescription(url: string, name: string, text: string): string {
+  private cachedDescription(url: string, name: string): string | undefined {
+    return this.freshDescriptionEntry(url, name)?.text;
+  }
+
+  private descriptionRemaining(page: PageLike, url: string, name: string): number {
+    return this.descriptionBudgets.get(page)?.get(this.descriptionKey(url, name)) ?? this.descriptionWaitMs;
+  }
+
+  /** True when a recent successful inspection already settled this agent's description, present
+   * or absent -- the second case lets repeated discovery skip the optional wait entirely. */
+  private hasCachedDescriptionAttempt(url: string, name: string): boolean {
+    return this.freshDescriptionEntry(url, name) !== undefined;
+  }
+
+  private setCachedDescription(url: string, name: string, entry: { text?: string; at: number }): void {
     const key = this.descriptionKey(url, name);
     this.descriptionCache.delete(key);
-    this.descriptionCache.set(key, { text, at: Date.now() });
+    this.descriptionCache.set(key, entry);
     if (this.descriptionCache.size > 500)
       this.descriptionCache.delete(this.descriptionCache.keys().next().value!);
+  }
+
+  private rememberDescription(url: string, name: string, text: string): string {
+    this.setCachedDescription(url, name, { text, at: Date.now() });
     return text;
+  }
+
+  private async rememberAbsentDescription(
+    page: PageLike,
+    url: string,
+    name: string
+  ): Promise<string | undefined> {
+    discoverySignals.get(page)?.throwIfAborted();
+    if (page.url() !== url) return undefined;
+    this.navigator.assertNavigationSafe(page, "app");
+    if ((await this.navigator.authState(page)) !== "authenticated") return undefined;
+    discoverySignals.get(page)?.throwIfAborted();
+    if (page.url() !== url) return undefined;
+    const positive = this.freshDescriptionEntry(url, name)?.text;
+    if (positive) return positive;
+    this.setCachedDescription(url, name, { at: Date.now() });
+    return undefined;
   }
 
   async discover(
@@ -354,6 +405,7 @@ export class AgentDiscovery {
     const pageKey = `${DISCOVERY_PAGE_KEY}-${randomBytes(6).toString("hex")}`;
     const handle = await this.manager.createConversationPage(pageKey);
     const page = handle.page;
+    this.descriptionBudgets.set(page, new Map());
     const partial: DiscoveredAgent[] = [];
     partialDiscoveries.set(page, partial);
     if (signal) discoverySignals.set(page, signal);
@@ -419,26 +471,33 @@ export class AgentDiscovery {
         let attempted = 0;
         let recovered = 0;
         const details = new Map<string, number>();
-        for (const agent of agents.filter((candidate) => !candidate.description)) {
+        for (const agent of agents.filter(
+          (candidate) =>
+            !candidate.description && !this.hasCachedDescriptionAttempt(candidate.url, candidate.displayName)
+        )) {
           signal?.throwIfAborted();
           if (Date.now() >= deadline) break;
           attempted++;
           progress("Retrying an agent description after the page has loaded");
           try {
             this.policy.validate(agent.url, "app");
-            await page.goto?.(agent.url, {
-              waitUntil: "domcontentloaded",
-              timeout: Math.max(1, Math.min(this.navigationTimeoutMs, deadline - Date.now()))
-            });
+            // The optional retry -- navigation and metadata polling together -- stays within one
+            // per-agent budget, also capped by the remaining overall discovery deadline.
+            const remaining = this.descriptionRemaining(page, agent.url, agent.displayName);
+            if (remaining <= 0) continue;
+            const budgetMs = Math.max(1, Math.min(remaining, deadline - Date.now()));
+            const retryDeadline = Date.now() + budgetMs;
+            await page.goto?.(agent.url, { waitUntil: "domcontentloaded", timeout: budgetMs });
             this.navigator.assertNavigationSafe(page, "app");
             const description = await this.agentPageDescription(
               page,
               agent.displayName,
-              deadline,
+              retryDeadline,
               (shape) => {
                 if (details.has(shape) || details.size < 10)
                   details.set(shape, (details.get(shape) ?? 0) + 1);
-              }
+              },
+              true
             );
             if (description) {
               agent.description = description;
@@ -492,6 +551,7 @@ export class AgentDiscovery {
     } finally {
       signal?.removeEventListener("abort", onAbort);
       discoverySignals.delete(page);
+      this.descriptionBudgets.delete(page);
       partialDiscoveries.delete(page);
       stopWatching();
       await this.manager.closePage(pageKey).catch(() => undefined);
@@ -868,12 +928,13 @@ export class AgentDiscovery {
       if (!id || !displayName) continue;
       const url = this.safeAgentUrl(origin, id);
       if (!url) continue;
+      const description = usableDescription(candidate.description);
       agents.push({
         url,
         surface,
         displayName,
         stableAgentId: id,
-        description: usableDescription(candidate.description),
+        description: description ? this.rememberDescription(url, displayName, description) : undefined,
         source: "sidebar"
       });
     }
@@ -1657,12 +1718,15 @@ export class AgentDiscovery {
       if (!url) return undefined;
       const displayName = usableName(card.name) ?? usableName(card.key);
       if (!displayName) return undefined;
+      const description = usableDescription(card.description);
       return {
         url,
         surface,
         displayName,
         stableAgentId: id,
-        description: usableDescription(card.description) ?? usableDescription(pageDescription),
+        description: description
+          ? this.rememberDescription(url, displayName, description)
+          : usableDescription(pageDescription),
         source: "store"
       };
     };
@@ -1748,17 +1812,31 @@ export class AgentDiscovery {
     page: PageLike,
     agentName: string,
     deadlineMs: number,
-    onDiagnostic?: (summary: string) => void
+    onDiagnostic?: (summary: string) => void,
+    finalAttempt = false
   ): Promise<string | undefined> {
-    const cached = this.cachedDescription(page.url(), agentName);
-    if (cached) {
+    const agentUrl = page.url();
+    const cached = this.freshDescriptionEntry(agentUrl, agentName);
+    if (cached?.text) {
       onDiagnostic?.("stage=cached-description");
-      return cached;
+      return cached.text;
+    }
+    if (cached) {
+      // A recent inspection already confirmed this agent has no description: do not wait again.
+      onDiagnostic?.("stage=cached-absent");
+      return undefined;
     }
     if (!page.evaluate) return undefined;
     // A route change can precede the agent header and its modal data by several seconds.
     // Keep both phases within one bounded inspection budget and the overall discovery deadline.
-    const deadline = Math.min(deadlineMs, Date.now() + this.descriptionWaitMs);
+    // A negative is only cached after an inspection ran to completion: one cut short by an
+    // already-exhausted deadline, an error, or an aborted page proves nothing.
+    const inspectionStarted = Date.now();
+    const remaining = this.descriptionRemaining(page, agentUrl, agentName);
+    // Reserve half the optional metadata budget for one revisit, since a store navigation can
+    // reveal a still-cold header. Only the final inspection may cache an absent description.
+    const allowance = finalAttempt ? remaining : remaining / 2;
+    const deadline = Math.min(deadlineMs, inspectionStarted + allowance);
     if (Date.now() >= deadline) return undefined;
     let opened = false;
     let stage = "explicit";
@@ -1777,7 +1855,7 @@ export class AgentDiscovery {
         (!title || (await title.count?.()) !== 1 || !((await title.isVisible?.()) ?? false)) &&
         Date.now() < deadline
       ) {
-        await wait(STORE_REACT_POLL_MS, page);
+        await wait(Math.min(STORE_REACT_POLL_MS, Math.max(1, deadline - Date.now())), page);
         title = page.getByRole?.("button", { name: agentName, exact: true });
       }
       if (
@@ -1786,7 +1864,7 @@ export class AgentDiscovery {
         (await title.count?.()) !== 1 ||
         !((await title.isVisible?.()) ?? false)
       )
-        return undefined;
+        return finalAttempt ? await this.rememberAbsentDescription(page, agentUrl, agentName) : undefined;
       await title.click?.({ timeout: Math.max(1, deadline - Date.now()) });
       opened = true;
       stage = "dialog";
@@ -1796,12 +1874,19 @@ export class AgentDiscovery {
           stage = "found-dialog";
           return this.rememberDescription(page.url(), agentName, description);
         }
-        if (Date.now() >= deadline) return undefined;
-        await wait(STORE_REACT_POLL_MS, page);
+        if (Date.now() >= deadline)
+          return finalAttempt ? await this.rememberAbsentDescription(page, agentUrl, agentName) : undefined;
+        await wait(Math.min(STORE_REACT_POLL_MS, Math.max(1, deadline - Date.now())), page);
       }
     } catch {
       return undefined;
     } finally {
+      this.descriptionBudgets
+        .get(page)
+        ?.set(
+          this.descriptionKey(agentUrl, agentName),
+          Math.max(0, remaining - (Date.now() - inspectionStarted))
+        );
       if (onDiagnostic) {
         const shape = stage.startsWith("found-")
           ? ""

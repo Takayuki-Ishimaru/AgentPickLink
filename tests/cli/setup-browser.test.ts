@@ -48,6 +48,8 @@ it.skipIf(!executable)(
         expect(await page.locator("#terminal-notice").textContent()).toBe("端末で確認してください。")
       );
       expect(errors).toEqual([]);
+      server.send({ type: "terminal", text: "" });
+      await vi.waitFor(async () => expect(await page.locator("#terminal-notice").textContent()).toBe(""));
       expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(
         "rgb(242, 238, 245)"
       );

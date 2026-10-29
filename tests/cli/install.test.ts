@@ -166,28 +166,38 @@ describe("install --dry-run", () => {
 });
 
 describe("install confirmation", () => {
-  it("writes nothing and exits 1 when the plan is not confirmed", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));
-    const packageRoot = await makePackageRoot();
-    const workspace = await makeWorkspace();
-    const paths = await makeTempPaths();
-    const { deps } = makeCommandDeps({
-      paths,
-      root: () => workspace,
-      packageRoot: async () => packageRoot,
-      prompter: makeScriptedPrompter({ interactive: true, confirmAnswer: false }),
-      createSetupService: () => fakeService(),
-      mcpHandshake: okHandshake
-    });
+  it.each([true, false])(
+    "writes nothing and exits 1 when the plan is not confirmed (interactive=%s)",
+    async (interactive) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "apl-install-home-"));
+      const packageRoot = await makePackageRoot();
+      const workspace = await makeWorkspace();
+      const paths = await makeTempPaths();
+      const { deps } = makeCommandDeps({
+        paths,
+        root: () => workspace,
+        packageRoot: async () => packageRoot,
+        prompter: makeScriptedPrompter({ interactive, confirmAnswer: false }),
+        createSetupService: () => fakeService(),
+        mcpHandshake: okHandshake
+      });
 
-    const beforeHome = await hashTree(home);
-    const report = await runInstall(deps, { workspaces: [workspace], home, clients: "vscode" });
+      const beforeHome = await hashTree(home);
+      const output: string[] = [];
+      const print = deps.stdout;
+      deps.stdout = (text) => {
+        output.push(text);
+        print(text);
+      };
+      const report = await runInstall(deps, { workspaces: [workspace], home, clients: "vscode" });
 
-    expect(report.exitCode).toBe(1);
-    expect(report.confirmed).toBe(false);
-    expect(formatInstallReport(report)).not.toContain("uninstall");
-    expect(await hashTree(home)).toBe(beforeHome);
-  });
+      expect(report.exitCode).toBe(1);
+      expect(report.confirmed).toBe(false);
+      expect(output.join("\n")).toContain("--yes");
+      expect(formatInstallReport(report)).not.toContain("uninstall");
+      expect(await hashTree(home)).toBe(beforeHome);
+    }
+  );
 });
 
 describe("install staging failure", () => {

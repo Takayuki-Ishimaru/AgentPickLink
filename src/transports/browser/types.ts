@@ -220,7 +220,15 @@ export interface CompletionResult {
   sawStreamingSignal?: boolean;
   /** Length of the last observed response text. The text itself never leaves the page. */
   finalChars?: number;
+  /** Digest of the exact raw text that passed completion; internal, never response content. */
+  responseDigest?: string;
 }
+export type ResponseObservation = {
+  text: string;
+  streaming: boolean;
+  readable: boolean;
+  anchorLost?: boolean;
+};
 export interface ExtractedResponse {
   text: string;
   citations: AgentCitation[];

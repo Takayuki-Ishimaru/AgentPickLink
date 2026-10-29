@@ -7,7 +7,8 @@ import { DomainError } from "../domain/errors.js";
 import { toToolError } from "./ui/formatter.js";
 import { PACKAGE_VERSION } from "../config/package-version.js";
 import { formatInstallReport } from "./commands/install.js";
-import { pickLocaleFromEnv } from "../services/localize.js";
+import { pickLocaleFromEnv, describeErrorCode } from "../services/localize.js";
+import { localizeCliHelp } from "./localize.js";
 import { createDefaultCliApi } from "./runtime.js";
 import { isCliError, printResult, runCommand, type CliApi, type CliContext } from "./api.js";
 
@@ -33,6 +34,7 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
       json: !!options.json,
       yes: !!options.yes,
       verbose: !!options.verbose,
+      locale: pickLocaleFromEnv(process.env),
       out: (s) => process.stdout.write(`${s}\n`),
       error: (s) => process.stderr.write(`${s}\n`),
       api
@@ -209,11 +211,7 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
         verbose: ctx.verbose
       });
       if (isCliError(result)) {
-        if (ctx.json) ctx.out(JSON.stringify(result, null, 2));
-        else
-          ctx.error(
-            `${result.code}: ${result.message}${result.remediation ? `\n${result.remediation}` : ""}`
-          );
+        printResult(ctx, result);
         process.exitCode = 1;
         return;
       }
@@ -363,6 +361,7 @@ export function buildProgram(api: CliApi = createDefaultCliApi()): Command {
         process.exitCode = 1;
       }
     });
+  localizeCliHelp(program, pickLocaleFromEnv(process.env));
   return program;
 }
 
@@ -383,7 +382,13 @@ export async function main(argv = process.argv): Promise<void> {
         ? { code: "INVALID_ARGUMENT", message: error.message, retryable: false }
         : toToolError(error);
     if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    else process.stderr.write(`${result.code}: ${result.message}\n`);
+    else {
+      const description =
+        pickLocaleFromEnv(process.env) === "ja" ? describeErrorCode("ja", result.code) : undefined;
+      process.stderr.write(
+        `${result.code}: ${description ? `${description.summary}\n${result.message}` : result.message}\n`
+      );
+    }
     process.exitCode = 1;
   }
 }

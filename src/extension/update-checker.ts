@@ -4,6 +4,7 @@ import type { ExtensionRuntime } from "./runtime.js";
 import { checkGithubUpdate, fetchReleases } from "../services/update-checker.js";
 import { newestExtensionRelease } from "../services/extension-update.js";
 import { installExtensionRelease } from "./extension-update.js";
+import { supportsExtensionAttestation } from "../services/extension-attestation.js";
 
 export {
   RELEASES_API,
@@ -82,7 +83,9 @@ export function startUpdateCheck(
     try {
       const feed = await deps.fetch(abort.signal);
       if (!active()) return;
-      const release = automatic ? newestExtensionRelease(feed, runtime.version, channel) : undefined;
+      const canVerify = supportsExtensionAttestation();
+      const release =
+        automatic && canVerify ? newestExtensionRelease(feed, runtime.version, channel) : undefined;
       if (release) {
         if (!(await deps.install(context, release, abort.signal, active))) return;
         // Do not reinstall while this window still runs the old extension awaiting reload.
@@ -110,9 +113,13 @@ export function startUpdateCheck(
           notify: async (tag) => {
             const button = runtime.locale === "ja" ? "リリースを開く" : "Open release";
             const message =
-              runtime.locale === "ja"
-                ? `AgentPickLink ${tag} が公開されています（現在: ${runtime.version}）。`
-                : `AgentPickLink ${tag} is available (installed: ${runtime.version}).`;
+              automatic && !canVerify
+                ? runtime.locale === "ja"
+                  ? `AgentPickLink ${tag} が公開されています。この VS Code の Node.js ではビルド証明を検証できません。VS Code を更新するか、リリースの手順で手動更新してください。`
+                  : `AgentPickLink ${tag} is available. This VS Code Node.js runtime cannot verify its build attestation. Update VS Code or follow the release instructions to update manually.`
+                : runtime.locale === "ja"
+                  ? `AgentPickLink ${tag} が公開されています（現在: ${runtime.version}）。`
+                  : `AgentPickLink ${tag} is available (installed: ${runtime.version}).`;
             return (await vscode.window.showInformationMessage(message, button)) === button;
           },
           open: (url) => vscode.env.openExternal(vscode.Uri.parse(url))

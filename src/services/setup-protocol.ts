@@ -111,6 +111,8 @@ export type PanelState = {
   diagnostics: string[];
   incidents: Incident[];
   integrations: IntegrationFlags;
+  /** Read-only registrations already present in user settings; independent of project toggles. */
+  userIntegrations?: { claudeCode: boolean; vscodeMcpJson: boolean };
   locale: Locale;
   version: string;
   /** G4: hostnames the broker suggested from the last `discover()` that are not already in

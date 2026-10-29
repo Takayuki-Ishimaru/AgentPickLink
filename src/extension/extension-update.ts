@@ -7,6 +7,7 @@ import { downloadExtensionRelease, type ExtensionRelease } from "../services/ext
 import { readInstalledExtensionVersion } from "./installed-extension.js";
 import {
   ATTESTATION_WORKFLOW,
+  supportsExtensionAttestation,
   verifyExtensionAttestation,
   type VerifiedExtensionAttestation
 } from "../services/extension-attestation.js";
@@ -99,6 +100,7 @@ export async function installExtensionRelease(
 ): Promise<boolean> {
   const enabled = () => !signal.aborted && active();
   if (!enabled()) return false;
+  if (!supportsExtensionAttestation()) throw new Error("update-attestation-node-version");
   const storage = context.globalStorageUri.fsPath;
   await mkdir(storage, { recursive: true, mode: 0o700 });
   const receiptFile = path.join(storage, RECEIPT_FILE);

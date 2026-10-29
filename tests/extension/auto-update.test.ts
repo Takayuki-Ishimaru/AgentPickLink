@@ -58,6 +58,31 @@ describe("automatic extension updates", () => {
     expect(options.install).toHaveBeenCalledOnce();
   });
 
+  it.each(["v0.1.1", "v0.2.0-beta.1"])(
+    "automatically installs published beta %s with default settings",
+    async (tag) => {
+      const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+      const properties = manifest.contributes.configuration.properties;
+      expect(properties["agentpicklink.autoUpdate"].default).toBe(true);
+      expect(properties["agentpicklink.checkForUpdates"].default).toBe(true);
+      expect(properties["agentpicklink.updateChannel"].default).toBe("beta");
+      const options = deps();
+      options.fetch.mockResolvedValue([
+        {
+          ...feed[0],
+          tag_name: tag,
+          prerelease: true,
+          assets: [{ ...feed[0].assets[0], name: `agent-pick-link-${tag.slice(1)}.vsix` }]
+        }
+      ]);
+      start(options);
+      await vi.advanceTimersByTimeAsync(UPDATE_CHECK_DELAY_MS);
+      expect(options.install).toHaveBeenCalledOnce();
+      expect(options.install.mock.calls[0][1].tag).toBe(tag);
+      expect(vscodeMock.configurationUpdates).toEqual([]);
+    }
+  );
+
   it.each([true, false])("uses the stable channel for automatic=%s", async (automatic) => {
     vscodeMock.configuration.set("agentpicklink.updateChannel", "stable");
     vscodeMock.configuration.set("agentpicklink.autoUpdate", automatic);

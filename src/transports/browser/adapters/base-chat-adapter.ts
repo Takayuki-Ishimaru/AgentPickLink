@@ -52,6 +52,7 @@ import {
   type LocatorLike,
   type PageLike,
   type ResponseMarker,
+  type ResponseObservation,
   type SubmissionAck,
   type SubmissionMarker,
   type UiFingerprint
@@ -947,6 +948,9 @@ export class BaseChatUiAdapter implements ChatUiAdapter {
     onGrowing?: (responseChars: number) => void
   ): Promise<CompletionResult> {
     return this.completion.wait(page, marker, timeoutMs, signal, onSettling, onGrowing);
+  }
+  async observeResponse(page: PageLike, marker: ResponseMarker): Promise<ResponseObservation> {
+    return this.completion.observeResponse(page, marker);
   }
   async captureExchange(page: PageLike): Promise<ConversationExchange> {
     const marker = await this.captureConversationMarker(page);

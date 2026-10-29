@@ -79,6 +79,7 @@ describe("CompletionDetector", () => {
       complete: true,
       reason: "stable",
       sawStreamingSignal: true,
+      responseDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       finalChars: 6
     });
   });

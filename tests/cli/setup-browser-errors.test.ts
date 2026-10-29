@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { expect, it, vi } from "vitest";
 const script = await readFile(new URL("../../media/setup-browser.js", import.meta.url), "utf8");
-async function fixture(post: () => Promise<unknown>) {
+async function fixture(post: () => Promise<unknown>, locale = "en") {
   const notice = { textContent: "" };
   const fetch = vi.fn((url: string) =>
     url === "/events"
@@ -19,11 +19,22 @@ async function fixture(post: () => Promise<unknown>) {
       onMessage: (fn: (message: unknown) => void) => void;
     };
   };
-  vm.runInNewContext(script, { window, document: { getElementById: () => notice }, fetch, TextDecoder });
+  vm.runInNewContext(script, {
+    window,
+    document: { documentElement: { lang: locale }, getElementById: () => notice },
+    fetch,
+    TextDecoder
+  });
   const listener = vi.fn();
   window.aplBrowser.onMessage(listener);
   return { window, notice, fetch, listener };
 }
+it("uses only the selected language for browser notices", async () => {
+  const f = await fixture(async () => ({ ok: false, status: 403 }), "ja");
+  await f.window.aplBrowser.postMessage({ type: "save" });
+  expect(f.notice.textContent).toContain("セッション失効");
+  expect(f.notice.textContent).not.toContain("Session expired");
+});
 it.each([403, 409, 410, 500, 502])(
   "shows actionable HTTP %s feedback without exposing the session token",
   async (status) => {

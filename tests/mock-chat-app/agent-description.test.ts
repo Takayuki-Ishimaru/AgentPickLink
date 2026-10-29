@@ -30,6 +30,73 @@ afterAll(async () => {
 });
 
 describe.skipIf(!executable)("agent description discovery through a real browser", () => {
+  it("preserves a concurrent successful description while an absent inspection awaits authentication", async () => {
+    const context = await browser!.newContext();
+    const origin = "http://127.0.0.1:9";
+    const pages = new Map<string, import("playwright-core").Page>();
+    const generations = new WeakMap<import("playwright-core").Page, number>();
+    let generation = 0;
+    let firstPage: import("playwright-core").Page | undefined;
+    const waiting = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const policy = new NavigationPolicy({ appHosts: ["127.0.0.1"], allowInsecureLoopback: true });
+    const navigator = new AgentNavigator(policy);
+    vi.spyOn(navigator, "authState").mockImplementation(async (page) => {
+      if (page === firstPage) {
+        waiting.resolve();
+        await release.promise;
+      }
+      return "authenticated";
+    });
+    try {
+      await context.route(`${origin}/**`, async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        const positive = generations.get(route.request().frame().page()) === 2;
+        const body = pathname.startsWith("/chat/agent/")
+          ? `<main>Microsoft 365 Copilot${positive ? '<p data-agent-description="Fresh description">Fresh description</p>' : ""}</main>`
+          : '<main>Microsoft 365 Copilot</main><nav><a href="/chat/agent/one">One</a></nav>';
+        await route.fulfill({ contentType: "text/html", body });
+      });
+      const discovery = new AgentDiscovery({
+        policy,
+        navigator,
+        appHosts: ["127.0.0.1"],
+        neutralAppUrl: `${origin}/chat`,
+        rowsSettleMs: 10,
+        storeWaitMs: 10,
+        descriptionWaitMs: 500,
+        manager: {
+          createConversationPage: async (key: string) => {
+            const page = await context.newPage();
+            generations.set(page, ++generation);
+            if (!firstPage) firstPage = page;
+            pages.set(key, page);
+            return { page: page as unknown as PageLike };
+          },
+          closePage: async (key: string) => {
+            await pages.get(key)?.close();
+            pages.delete(key);
+          }
+        } as unknown as BrowserManager
+      });
+      const absent = discovery.discover(10_000);
+      await Promise.race([
+        waiting.promise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(Error("absent inspection did not start")), 5_000)
+        )
+      ]);
+      expect((await discovery.discover(10_000)).agents[0]?.description).toBe("Fresh description");
+      release.resolve();
+      expect((await absent).agents[0]?.description).toBe("Fresh description");
+      expect((await discovery.discover(10_000)).agents[0]?.description).toBe("Fresh description");
+      expect(pages.size).toBe(0);
+    } finally {
+      release.resolve();
+      await context.close();
+    }
+  }, 20_000);
+
   it("reuses fresh descriptions, expires them, and cancels only the discovery page", async () => {
     const context = await browser!.newContext();
     const otherPage = await context.newPage();

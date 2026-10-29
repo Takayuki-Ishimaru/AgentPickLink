@@ -659,6 +659,7 @@ describe("results of m365_agent_session action=read", () => {
       ok: true,
       requestId: expect.any(String),
       action: "read",
+      conversationHandle: conversation.conversationHandle,
       conversation,
       message: "not-shown",
       reply: "none",

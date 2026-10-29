@@ -35,6 +35,135 @@ describe("AgentDiscovery", () => {
     vi.useRealTimers();
   });
 
+  it("bounds optional descriptions and skips cached absences on rediscovery", async () => {
+    const navigations: string[] = [];
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [
+        { id: "agent-alpha", name: "Alpha" },
+        { id: "agent-beta", name: "Beta" }
+      ],
+      links: () => [],
+      descriptionWaitMs: null,
+      onGoto: (url) => navigations.push(url)
+    });
+    const started = Date.now();
+    expect((await discovery.discover(60_000)).agents).toHaveLength(2);
+    expect(Date.now() - started).toBeLessThanOrEqual(7_000);
+    navigations.length = 0;
+    const again = Date.now();
+    expect((await discovery.discover(60_000)).agents).toHaveLength(2);
+    expect(Date.now() - again).toBeLessThan(1_000);
+    expect(navigations.filter((url) => url.includes("/chat/agent/"))).toHaveLength(0);
+  });
+
+  it("expires and clears absent descriptions without hiding fresh sidebar metadata", async () => {
+    const metadata: { description?: string } = {};
+    const navigations: string[] = [];
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-alpha", name: "Alpha", description: metadata.description }],
+      links: () => [],
+      onGoto: (url) => navigations.push(url)
+    });
+    await discovery.discover(60_000);
+    navigations.length = 0;
+    await vi.advanceTimersByTimeAsync(61_000);
+    await discovery.discover(60_000);
+    expect(navigations.some((url) => url.includes("/chat/agent/"))).toBe(true);
+    navigations.length = 0;
+    discovery.clearDescriptionCache();
+    await discovery.discover(60_000);
+    expect(navigations.some((url) => url.includes("/chat/agent/"))).toBe(true);
+    metadata.description = "New description";
+    expect((await discovery.discover(60_000)).agents[0].description).toBe(metadata.description);
+    delete metadata.description;
+    expect((await discovery.discover(60_000)).agents[0].description).toBe("New description");
+  });
+  it("shares one description budget between a store inspection and its bounded revisit", async () => {
+    const active: { page?: PageLike } = {};
+    let agentVisits = 0;
+    let metadataWait = 0;
+    const { discovery, page } = await makeDiscovery({
+      sidebar: () => [],
+      links: () => [{ href: "https://m365.example.test/chat/agentstore", name: "Agent catalogue" }],
+      storeCards: () => [{ key: "Alpha", name: "Alpha", list: "#0:-", opens: true }],
+      cardClick: () => {
+        void active.page?.goto?.("https://m365.example.test/chat/agent/agent-alpha");
+      },
+      onGoto: (url) => {
+        if (url.endsWith("/chat/agent/agent-alpha")) agentVisits++;
+      },
+      descriptionWaitMs: null,
+      onWait: (ms, url) => {
+        if (url.includes("/chat/agent/")) metadataWait += ms;
+      }
+    });
+    active.page = page;
+    expect((await discovery.discover(60_000)).agents).toHaveLength(1);
+    expect(agentVisits).toBe(2);
+    expect(metadataWait).toBeGreaterThan(2_500);
+    expect(metadataWait).toBeLessThanOrEqual(3_000);
+    metadataWait = 0;
+    await discovery.discover(60_000);
+    expect(metadataWait).toBe(0);
+  });
+  it("does not cache a navigation failure or cancelled inspection as absent metadata", async () => {
+    let mode: "failure" | "cancel" | "normal" = "failure";
+    const abort = new AbortController();
+    const navigations: string[] = [];
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-alpha", name: "Alpha" }],
+      links: () => [],
+      onGoto: (url) => {
+        if (!url.includes("/chat/agent/")) return;
+        navigations.push(url);
+        if (mode === "failure") throw Error("navigation failed");
+        if (mode === "cancel") abort.abort();
+      }
+    });
+    await discovery.discover(60_000);
+    mode = "cancel";
+    await discovery.discover(60_000, undefined, abort.signal);
+    mode = "normal";
+    const attempts = navigations.length;
+    await discovery.discover(60_000);
+    expect(navigations.length).toBeGreaterThan(attempts);
+  });
+  it("isolates absent metadata by the agent display name", async () => {
+    let name = "Alpha";
+    let attempts = 0;
+    const { discovery } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-alpha", name }],
+      links: () => [],
+      onGoto: (url) => {
+        if (url.includes("/chat/agent/")) attempts++;
+      }
+    });
+    await discovery.discover(60_000);
+    const first = attempts;
+    name = "Renamed Alpha";
+    await discovery.discover(60_000);
+    expect(attempts).toBeGreaterThan(first);
+  });
+
+  it("reuses absent metadata across conversation routes of the same agent", async () => {
+    const active: { page?: PageLike } = {};
+    let threads = 0;
+    const { discovery, page } = await makeDiscovery({
+      sidebar: () => [{ id: "agent-alpha", name: "Alpha" }],
+      links: () => [],
+      onGoto: (url) => {
+        if (url.endsWith("/chat/agent/agent-alpha"))
+          void active.page?.goto?.(`${url}/conversations/thread-${++threads}`);
+      }
+    });
+    active.page = page;
+    await discovery.discover(60_000);
+    const first = threads;
+    expect(first).toBeGreaterThan(0);
+    await discovery.discover(60_000);
+    expect(threads).toBe(first);
+  });
+
   it("merges sidebar rows and direct links, keeping one candidate per stable agent id", async () => {
     const events: ProgressEvent[] = [];
     const { discovery } = await makeDiscovery({
@@ -873,6 +1002,7 @@ async function makeDiscovery(options: {
   landing?: () => unknown;
   renderTimeoutMs?: number;
   rowsSettleMs?: number;
+  descriptionWaitMs?: number | null;
   /** The store budget (`storeWaitMs`); defaults to 1 ms since a fake never takes long to render. */
   storeWaitMs?: number;
   /** Optional catalogue cards for the store-route error accounting test. */
@@ -892,21 +1022,29 @@ async function makeDiscovery(options: {
   storeCardId?: (key: string) => string | undefined;
   /** Observes every navigation, so a test can make the next page look different. */
   onGoto?: (url: string) => void;
+  onWait?: (ms: number, url: string) => void;
   /** The agent section's own "show all" control: its accessible name, and what clicking it does. */
   sectionDisclosure?: { name: string; click: () => void };
 }) {
   const appHost = options.appHost ?? "m365.example.test";
   const landing = `https://${appHost}/chat`;
   let currentUrl = landing;
+  const navigationHistory: string[] = [];
   const closed: string[] = [];
   const page: PageLike = {
     url: () => currentUrl,
     goto: async (target: string) => {
+      if (currentUrl !== target) navigationHistory.push(currentUrl);
       currentUrl = target;
       options.onGoto?.(target);
     },
     evaluate: async (fn: unknown, arg?: unknown) => {
       const source = String(fn);
+      if (source.includes("history.back")) {
+        currentUrl = navigationHistory.pop() ?? currentUrl;
+        options.onGoto?.(currentUrl);
+        return true as never;
+      }
       if (source.includes("readStoreCards")) return (options.storeCards?.() ?? []) as never;
       // Strategies A and B share one body (readRail) that answers with rows and links together.
       if (source.includes("firstReadableBlock"))
@@ -975,6 +1113,7 @@ async function makeDiscovery(options: {
     // Advances the fake clock (see the top-level `beforeEach`) by exactly `ms` of virtual time
     // instead of ever really sleeping, so every deadline this file exercises is deterministic.
     waitForTimeout: async (ms: number) => {
+      options.onWait?.(ms, currentUrl);
       if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(ms);
     },
     isClosed: () => false,
@@ -1004,7 +1143,7 @@ async function makeDiscovery(options: {
     authHosts: ["login.example.test"],
     storeWaitMs: options.storeWaitMs ?? 1,
     storeItemWaitMs: 1,
-    descriptionWaitMs: 2,
+    ...(options.descriptionWaitMs === null ? {} : { descriptionWaitMs: options.descriptionWaitMs ?? 2 }),
     // Fake timers make this virtual regardless, but a tiny value keeps intent obvious alongside
     // the other budgets above.
     relocateDelayMs: 1,

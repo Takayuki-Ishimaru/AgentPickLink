@@ -2,6 +2,8 @@ import { toToolError } from "./ui/formatter.js";
 import type { AgentView, ToolError } from "../frontend/schemas.js";
 import type { AgentCandidate } from "../services/setup-service.js";
 import type { InstallCommandOptions, InstallReport } from "./commands/install.js";
+import { pickLocaleFromEnv, describeErrorCode } from "../services/localize.js";
+import type { Locale } from "../services/setup-protocol.js";
 
 export type CliResult<T = unknown> = T | ToolError;
 export type CliContext = {
@@ -12,6 +14,7 @@ export type CliContext = {
    * metadata-only diagnostic lines (a broker-release wait, a restart-and-retry outcome) to stderr,
    * prefixed `[log]`, in addition to them always being appended to the app-data log file. */
   verbose: boolean;
+  locale?: Locale;
   out: (text: string) => void;
   error: (text: string) => void;
   /** Implemented by the application composition root; commands stay browser-free. */
@@ -73,62 +76,88 @@ export function printResult(context: CliContext, result: unknown): void {
   // `undefined`, not the string "undefined" -- printing it unconditionally would
   // still emit the literal text "undefined" through context.out's template string.
   if (result === undefined) return;
+  const locale = context.locale ?? pickLocaleFromEnv(process.env);
   if (context.json) context.out(JSON.stringify(result, null, 2));
-  else if (isCliError(result))
-    context.error(`${result.code}: ${result.message}${result.remediation ? `\n${result.remediation}` : ""}`);
-  else if (typeof result === "string") context.out(result);
-  else context.out(formatReadableResult(result));
+  else if (isCliError(result)) {
+    const translated = locale === "ja" ? describeErrorCode(locale, result.code) : undefined;
+    context.error(
+      `${result.code}: ${translated ? `${translated.summary}\n${result.message}` : result.message}${
+        result.remediation
+          ? `\n${result.remediation}`
+          : translated?.remediation
+            ? `\n${translated.remediation}`
+            : ""
+      }`
+    );
+  } else if (typeof result === "string") context.out(result);
+  else context.out(formatReadableResult(result, locale));
 }
 
 /** Compact, scan-friendly rendering for common CLI results. `--json` remains the stable structured
  * output for scripts; ordinary terminal use should not dump a large JSON health report. */
-export function formatReadableResult(value: unknown): string {
+export function formatReadableResult(value: unknown, locale: Locale = "en"): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return String(value);
   const result = value as Record<string, unknown>;
+  const ja = locale === "ja";
+  if (Array.isArray(result.agents) && typeof result.workspaceKey === "string")
+    return [ja ? "ワークスペースの割り当て:" : "Workspace assignments:", ...readableLines(result, 1)].join(
+      "\n"
+    );
   if (Array.isArray(result.agents)) {
     const agents = result.agents as Array<Record<string, unknown>>;
     return agents.length === 0
-      ? "No agents registered."
+      ? ja
+        ? "登録済みのエージェントはありません。"
+        : "No agents registered."
       : [
-          "Agents:",
+          ja ? "エージェント:" : "Agents:",
           ...agents.flatMap((agent) => [
             `  ${String(agent.alias)} — ${String(agent.status)}${agent.name ? ` — ${String(agent.name)}` : ""}`,
             ...(typeof agent.description === "string" && agent.description
               ? [`    ${agent.description}`]
               : []),
             ...(typeof agent.usageHint === "string" && agent.usageHint
-              ? [`    Usage: ${agent.usageHint}`]
+              ? [`    ${ja ? "使い方" : "Usage"}: ${agent.usageHint}`]
               : [])
           ])
         ].join("\n");
   }
   if (typeof result.installed === "boolean" && Array.isArray(result.versions)) {
     return [
-      `CLI install: ${result.installed ? "installed" : "not installed"}`,
-      `Home: ${String(result.home)}`,
-      `CLI command: ${cliCommandPrefix(String(result.cliPath ?? "unknown"))} <command>`,
-      `Current version: ${String(result.currentVersion ?? "unknown")}`,
-      `Runtime: ${String(result.runtimeVersion ?? "unavailable")}`,
-      `Versions: ${(result.versions as unknown[]).join(", ") || "none"}`
+      ja
+        ? `CLI のインストール: ${result.installed ? "登録済み" : "未登録"}`
+        : `CLI install: ${result.installed ? "installed" : "not installed"}`,
+      `${ja ? "インストール先" : "Home"}: ${String(result.home)}`,
+      ...(result.appData
+        ? [`${ja ? "設定・ログの保存先" : "State directory"}: ${String(result.appData)}`]
+        : []),
+      ...(result.configPath
+        ? [`${ja ? "設定ファイル" : "Configuration"}: ${String(result.configPath)}`]
+        : []),
+      ...(result.logsPath ? [`${ja ? "ログ" : "Logs"}: ${String(result.logsPath)}`] : []),
+      `${ja ? "CLI コマンド" : "CLI command"}: ${cliCommandPrefix(String(result.cliPath ?? "unknown"))} <command>`,
+      `${ja ? "使用中のバージョン" : "Current version"}: ${String(result.currentVersion ?? "unknown")}`,
+      `${ja ? "実行環境" : "Runtime"}: ${String(result.runtimeVersion ?? "unavailable")}`,
+      `${ja ? "配置済みのバージョン" : "Versions"}: ${(result.versions as unknown[]).join(", ") || "none"}`
     ].join("\n");
   }
   if (typeof result.ok === "boolean" && Array.isArray(result.findings)) {
     const findings = result.findings as string[];
     const lines = [
-      `Health check: ${result.ok ? "all checks passed" : `${findings.length} issue(s) need attention`}`
+      ja
+        ? `診断: ${result.ok ? "すべての項目が正常です" : `${findings.length} 件の確認が必要です`}`
+        : `Health check: ${result.ok ? "all checks passed" : `${findings.length} issue(s) need attention`}`
     ];
     for (const finding of findings) {
       const detail = doctorFindingDetail(result, finding);
       lines.push(`- ${finding}${detail ? `: ${detail}` : ""}`);
-      const action = doctorFindingAction(finding);
-      if (action) lines.push(`  Next: ${action}`);
+      const action = doctorFindingAction(finding, result, locale);
+      if (action) lines.push(`  ${ja ? "次の手順" : "Next"}: ${action}`);
     }
-    if (findings.length) lines.push(`Problems found: ${findings.length}`);
+    if (findings.length) lines.push(`${ja ? "検出した問題" : "Problems found"}: ${findings.length}`);
     return lines.join("\n");
   }
-  return Object.entries(result)
-    .map(([key, item]) => `${key}: ${readableValue(item)}`)
-    .join("\n");
+  return readableLines(result).join("\n");
 }
 
 function cliCommandPrefix(cliPath: string): string {
@@ -223,7 +252,40 @@ function doctorFindingDetail(report: Record<string, unknown>, finding: string): 
   return items.join("; ");
 }
 
-function doctorFindingAction(finding: string): string | undefined {
+function doctorFindingAction(
+  finding: string,
+  report: Record<string, unknown>,
+  locale: Locale
+): string | undefined {
+  const ja = locale === "ja";
+  const workspace = report.workspace as Record<string, unknown> | undefined;
+  if (
+    finding.startsWith("workspace.") &&
+    (workspace?.code === "WORKSPACE_NOT_CONFIGURED" ||
+      workspace?.approvalStatus === "not-configured" ||
+      workspace?.configured === false)
+  )
+    return ja
+      ? "apl-setup <パス> でワークスペースを設定してください。"
+      : "Run `apl-setup <path>` to configure this workspace.";
+  if (ja) {
+    if (finding.startsWith("authentication."))
+      return "apl login を実行して Microsoft 365 にサインインしてください。";
+    if (finding.startsWith("agent.")) return "apl agent test <alias> で URL とアクセス権を確認してください。";
+    if (finding.startsWith("workspace."))
+      return "apl workspace validate で割り当てを確認し、apl workspace approve で承認してください。";
+    if (finding === "browser")
+      return "Edge または Chrome をインストール・修復し、セットアップ画面で選択してください。";
+    if (finding === "topology") return "Windows または macOS のローカルデスクトップで実行してください。";
+    if (finding === "node")
+      return "対応する Node.js をインストール・修復して apl doctor を再実行してください。";
+    if (finding.startsWith("install.")) return "apl-setup でインストールを修復してください。";
+    if (finding.startsWith("client."))
+      return "apl integrations status で設定を確認し、apl integrations write で更新してください。";
+    if (finding.startsWith("policy."))
+      return "AI クライアントの設定で連携を許可するポリシーを確認してください。";
+    return "上記の詳細を確認して修正し、apl doctor を再実行してください。";
+  }
   if (finding.startsWith("authentication.")) return "Run `apl login` and complete the Microsoft 365 sign-in.";
   if (finding === "agent.invalid") return "Run `apl agent test <alias>` and check the agent URL and access.";
   if (finding === "workspace.approval" || finding === "workspace.assignments")
@@ -251,6 +313,26 @@ function readableValue(value: unknown): string {
   return Object.entries(value as Record<string, unknown>)
     .map(([key, item]) => `${key}=${readableValue(item)}`)
     .join("; ");
+}
+
+function readableLines(value: unknown, depth = 0): string[] {
+  const indent = "  ".repeat(depth);
+  if (!value || typeof value !== "object") return [`${indent}${readableValue(value)}`];
+  if (Array.isArray(value))
+    return value.length
+      ? value.flatMap((item) =>
+          typeof item === "object" && item !== null
+            ? [`${indent}-`, ...readableLines(item, depth + 1)]
+            : [`${indent}- ${readableValue(item)}`]
+        )
+      : [`${indent}none`];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .flatMap(([key, item]) =>
+      item && typeof item === "object"
+        ? [`${indent}${key}:`, ...readableLines(item, depth + 1)]
+        : [`${indent}${key}: ${readableValue(item)}`]
+    );
 }
 
 export async function runCommand(context: CliContext, action: () => Promise<unknown>): Promise<void> {

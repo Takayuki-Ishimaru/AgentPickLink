@@ -13,6 +13,7 @@
  */
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { stripVTControlCharacters } from "node:util";
 import { DomainError } from "../domain/errors.js";
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -24,6 +25,15 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_BUFFER_BYTES = 1024 * 1024;
 /** Grace period after SIGTERM before escalating to SIGKILL. */
 const KILL_GRACE_MS = 2_000;
+
+function stderrDetail(text: string): string {
+  const clean = stripVTControlCharacters(text)
+    .replace(/\p{Cc}/gu, (character) => (character === "\n" || character === "\t" ? character : ""))
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/((?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+/gi, "$1[redacted]")
+    .trim();
+  return clean ? `\nstderr: ${clean.slice(0, 4096)}${clean.length > 4096 ? "…" : ""}` : "";
+}
 
 export type McpHandshakeOptions = {
   command: string;
@@ -186,7 +196,7 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
       reject(
         new DomainError(
           "RESPONSE_TIMEOUT",
-          `MCP handshake with ${opts.command} timed out after ${timeoutMs}ms.`,
+          `MCP handshake with ${opts.command} timed out after ${timeoutMs}ms.${stderrDetail(stderr)}`,
           true
         )
       );
@@ -198,11 +208,12 @@ export async function mcpHandshake(opts: McpHandshakeOptions): Promise<McpHandsh
     child.once("error", (error) => {
       reject(new DomainError("BROKER_START_FAILED", `Could not start ${opts.command}: ${error.message}`));
     });
-    child.once("exit", (code, signal) => {
+    // close follows stream drainage, so diagnostics written immediately before exit are retained.
+    child.once("close", (code, signal) => {
       reject(
         new DomainError(
           "BROKER_START_FAILED",
-          `${opts.command} exited before the MCP handshake completed (code=${code ?? "null"}, signal=${signal ?? "null"}).`
+          `${opts.command} exited before the MCP handshake completed (code=${code ?? "null"}, signal=${signal ?? "null"}).${stderrDetail(stderr)}`
         )
       );
     });

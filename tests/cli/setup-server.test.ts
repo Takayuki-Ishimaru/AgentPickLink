@@ -181,6 +181,7 @@ describe("browser setup terminal boundary", () => {
       ).toBe(false);
       expect(prompter.confirmCalls).toEqual(["Approve"]);
       expect(send).toHaveBeenCalledWith({ type: "terminal", text: "端末で確認してください。" });
+      expect(send).toHaveBeenLastCalledWith({ type: "terminal", text: "" });
     }
   );
   it("keeps shared candidate keys stable and rejects consent after expiry", async () => {
@@ -267,7 +268,8 @@ describe("browser setup terminal boundary", () => {
 
 describe("BrowserSetupHost ISSUE-08: initial integration flags reflect the --clients selection", () => {
   async function makeHost(
-    initialIntegrationFlags?: import("../../src/services/setup-protocol.js").IntegrationFlags
+    initialIntegrationFlags?: import("../../src/services/setup-protocol.js").IntegrationFlags,
+    userIntegrations?: { claudeCode: boolean; vscodeMcpJson: boolean }
   ) {
     const paths = await makeTempPaths();
     const { deps } = makeCommandDeps({ paths });
@@ -288,7 +290,8 @@ describe("BrowserSetupHost ISSUE-08: initial integration flags reflect the --cli
       // config.yaml's own saved default -- every client off -- so a test can tell the two apart.
       defaultGlobalConfig(paths.profile).clients,
       deps,
-      initialIntegrationFlags
+      initialIntegrationFlags,
+      userIntegrations
     );
     return host;
   }
@@ -301,5 +304,30 @@ describe("BrowserSetupHost ISSUE-08: initial integration flags reflect the --cli
   it("falls back to config.yaml's default when constructed without a CLI selection", async () => {
     const host = await makeHost(undefined);
     expect(host.integrationFlags()).toEqual({ codex: false, claudeCode: false, vscodeMcpJson: false });
+    expect(host.signInInstructions()).not.toContain("VS Code");
+    expect(host.signInInstructions()).toContain("AgentPickLink setup");
+  });
+  it("posts user registrations without enabling the project-scope checkbox", async () => {
+    const host = await makeHost(undefined, { claudeCode: true, vscodeMcpJson: false });
+    const send = vi.fn();
+    host.server = { url: "", active: () => true, send, close: async () => undefined };
+    host.post({
+      type: "state",
+      state: {
+        phase: "idle",
+        locale: "en",
+        version: "1.2.3",
+        candidates: [],
+        selectedKeys: [],
+        warnings: [],
+        diagnostics: [],
+        incidents: [],
+        integrations: host.integrationFlags()
+      }
+    });
+    expect(send.mock.calls[0][0].state).toMatchObject({
+      userIntegrations: { claudeCode: true },
+      integrations: { claudeCode: false }
+    });
   });
 });

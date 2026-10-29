@@ -16,6 +16,7 @@ export type SetupServer = {
 };
 export type SetupServerOptions = {
   mediaDirectory: string;
+  locale?: "ja" | "en";
   onMessage(message: WebviewMessage): Promise<void>;
   onExpired(): void;
   /** Test clock seam. Production always uses the hard fifteen-minute deadline. */
@@ -77,7 +78,7 @@ export async function startSetupServer(options: SetupServerOptions): Promise<Set
         res.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8" });
         const safeScript = (value: string): string => value.replace(/<\/script/gi, "<\\/script");
         res.end(
-          `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AgentPickLink</title><style nonce="${nonce}">${css}\n${standaloneCss}</style></head><body><div id="terminal-notice" role="status"></div><div id="app"></div><script nonce="${nonce}">window.aplSession=${JSON.stringify(session)};\n${safeScript(shim)}\n${safeScript(script)}</script></body></html>`
+          `<!doctype html><html lang="${options.locale === "ja" ? "ja" : "en"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AgentPickLink</title><style nonce="${nonce}">${css}\n${standaloneCss}</style></head><body><div id="terminal-notice" role="status"></div><div id="app"></div><script nonce="${nonce}">window.aplSession=${JSON.stringify(session)};\n${safeScript(shim)}\n${safeScript(script)}</script></body></html>`
         );
         return;
       }

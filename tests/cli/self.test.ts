@@ -90,6 +90,7 @@ describe("self status", () => {
     expect(result.installed).toBe(true);
     expect((result.versions as string[]).sort()).toEqual(["1.0.0", "2.0.0"]);
     expect(result.runtimeVersion).toBe(process.version);
+    expect(result).toMatchObject({ appData: paths.root, configPath: paths.config, logsPath: paths.logs });
     expect((result.install as { version: string }).version).toBe("2.0.0");
   });
 

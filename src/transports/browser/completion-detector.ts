@@ -1,4 +1,5 @@
-import type { CompletionResult, PageLike, ResponseMarker } from "./types.js";
+import { createHash } from "node:crypto";
+import type { CompletionResult, PageLike, ResponseMarker, ResponseObservation } from "./types.js";
 import type { TurnDomRegistry } from "./conversation-dom.js";
 import { RESPONSE_SELECTORS, STOP_GENERATING_PATTERN } from "./selectors/common.js";
 
@@ -11,7 +12,11 @@ export interface CompletionDetectorOptions {
   quietStreamingGraceMs?: number;
 }
 
-type CompletionSignal = { text: string; streaming: boolean; id?: string; anchorLost?: boolean };
+type CompletionSignal = ResponseObservation & { id?: string };
+
+export function responseTextDigest(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
 
 /** Polls observable UI signals; fixed sleep alone is deliberately not used. */
 export class CompletionDetector {
@@ -49,6 +54,9 @@ export class CompletionDetector {
     // while the agent was busy -- a status line while it searches -- must not count as an answer the
     // moment the signal goes.
     let quietSince: number | undefined;
+    // Cache evidence needs a full quiet interval of readable, non-streaming observations even
+    // when legacy adapters let the ordinary completion wait tolerate an unknown control probe.
+    let verifiedQuietSince: number | undefined;
     // Whether `onSettling` was called for the current quiet period: the same non-empty text on two
     // polls in a row, the second without a streaming signal. A poll where the text just changed only
     // starts the stability measurement above; the next poll that shows that text reports. A change of
@@ -65,10 +73,13 @@ export class CompletionDetector {
           sawStreamingSignal,
           finalChars: last.length
         };
-      const state = await this.signal(page, marker);
+      const state = await this.observeResponse(page, marker);
       if (state.anchorLost)
         return { complete: false, reason: "anchor-lost", sawStreamingSignal, finalChars: 0 };
       const now = Date.now();
+      if (!state.readable || state.streaming || !state.text) verifiedQuietSince = undefined;
+      else if (state.text !== last) verifiedQuietSince = now;
+      else verifiedQuietSince ??= now;
       // Report only growth from a previous observation, or a newly resumed generation signal.
       // The first observation is a baseline, including when the whole answer is already visible.
       if (observed && (state.text.length > last.length || (state.streaming && settlingReported)))
@@ -97,7 +108,15 @@ export class CompletionDetector {
       if (state.text && quietSince !== undefined) {
         const required = this.stabilityWindowMs + (sawStreamingSignal ? 0 : this.quietStreamingGraceMs);
         if (now - quietSince >= required)
-          return { complete: true, reason: "stable", sawStreamingSignal, finalChars: state.text.length };
+          return {
+            complete: true,
+            reason: "stable",
+            sawStreamingSignal,
+            finalChars: state.text.length,
+            ...(verifiedQuietSince !== undefined && now - verifiedQuietSince >= required
+              ? { responseDigest: responseTextDigest(state.text) }
+              : {})
+          };
       }
       await delay(this.pollIntervalMs, page);
     }
@@ -110,11 +129,11 @@ export class CompletionDetector {
       finalChars: last.length
     };
   }
-  private async signal(page: PageLike, marker: ResponseMarker): Promise<CompletionSignal> {
+  async observeResponse(page: PageLike, marker: ResponseMarker): Promise<CompletionSignal> {
     const stopControl = await this.stopControlVisible(page);
     try {
       if (page.evaluate) {
-        const observed = await page.evaluate<CompletionSignal>(
+        const observed = await page.evaluate<Omit<CompletionSignal, "readable">>(
           (args: { marker: ResponseMarker; selector: string }) => {
             const nodes = Array.from(document.querySelectorAll(args.selector)) as HTMLElement[];
             const node = args.marker.turn
@@ -123,11 +142,17 @@ export class CompletionDetector {
                 ).__aplTurnDomV1?.response(args.marker.turn, args.selector)
               : nodes[nodes.length - 1];
             const text = node?.innerText?.trim() || "";
-            const busy = node?.getAttribute("aria-busy") || "";
-            const streaming =
-              /generating|生成中|streaming/i.test(busy) ||
-              busy === "true" ||
-              node?.getAttribute("data-streaming") === "true";
+            // The text selector can resolve a markdown child while the assistant article owns
+            // the streaming attributes. Stop at the explicit message root.
+            let streaming = false;
+            for (let current: Element | null | undefined = node; current; current = current.parentElement) {
+              const busy = current.getAttribute("aria-busy") || "";
+              streaming ||=
+                /generating|生成中|streaming/i.test(busy) ||
+                busy === "true" ||
+                current.getAttribute("data-streaming") === "true";
+              if (current.hasAttribute("data-message-id") || current.hasAttribute("data-message-key")) break;
+            }
             return {
               text,
               id: node?.id,
@@ -137,28 +162,37 @@ export class CompletionDetector {
           },
           { marker, selector: RESPONSE_SELECTORS.join(", ") }
         );
-        return { ...observed, streaming: observed.streaming || stopControl };
+        return {
+          ...observed,
+          streaming: observed.streaming || stopControl === true,
+          readable:
+            typeof stopControl === "boolean" && typeof observed.text === "string" && !observed.anchorLost
+        };
       }
     } catch {
       /* unknown means keep polling; an unreadable page is not evidence of streaming */
     }
-    return { text: "", streaming: stopControl };
+    return { text: "", streaming: stopControl === true, readable: false };
   }
   /** The stop-generating control by accessible name: the most reliable "still writing" signal,
    * and the one that survives Microsoft 365 renaming its internal attributes. */
-  private async stopControlVisible(page: PageLike): Promise<boolean> {
+  private async stopControlVisible(page: PageLike): Promise<boolean | undefined> {
     try {
       const locator = page.getByRole?.("button", { name: STOP_GENERATING_PATTERN });
-      if (!locator) return false;
-      const count = (await locator.count?.()) ?? 0;
+      if (!locator?.count) return undefined;
+      const count = await locator.count();
+      if (!Number.isInteger(count) || count < 0) return undefined;
       if (count < 1) return false;
       for (let index = 0; index < count; index++) {
         const control = count === 1 ? locator : locator.nth?.(index);
-        if (await control?.isVisible?.()) return true;
+        if (!control?.isVisible) return undefined;
+        const visible = await control.isVisible();
+        if (typeof visible !== "boolean") return undefined;
+        if (visible) return true;
       }
       return false;
     } catch {
-      return false;
+      return undefined;
     }
   }
 }

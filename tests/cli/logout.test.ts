@@ -14,6 +14,9 @@ describe("logout", () => {
     });
 
     await expect(runLogout(deps)).rejects.toThrow(/not confirmed/i);
+    await expect(runLogout(deps)).rejects.toMatchObject({
+      options: { remediation: expect.stringContaining("apl logout --yes") }
+    });
     expect(broker.calls.filter((call) => call.method === "browser.resetProfile")).toHaveLength(0);
   });
 
